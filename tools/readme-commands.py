@@ -16,7 +16,13 @@ This builds the publishable tree, serves it as a local git remote, rewrites the 
 repository URL to point at it, and runs the documented paths for real: cargo install, the
 dependency block as an actual manifest, the pip install, and the quickstart.
 
-Usage: python3 tools/readme-commands.py [--keep]
+Usage:
+    python3 tools/readme-commands.py            hermetic; substitutes a local remote
+    python3 tools/readme-commands.py --live     uses the documented URL as written
+
+The default is hermetic so it runs offline on every push. It therefore CANNOT verify
+the URL itself -- it reads the documented URL only to replace it. --live closes that
+gap and needs the network and a published repository, so it belongs on release.
 """
 import pathlib
 import re
@@ -45,14 +51,58 @@ def documented_url() -> str:
     return m.group(0)
 
 
+def check_url_resolves(url: str, work: Path, failures: list) -> None:
+    """Clone the URL the README actually documents, and confirm it is THIS software.
+
+    WHY THIS IS A SEPARATE MODE. Everything else here is hermetic: it builds a local
+    remote and substitutes it for the documented URL, so the checks run offline and
+    deterministically. That substitution is correct for a per-push gate -- and it means
+    the default mode reads the documented URL only in order to replace it. So the one
+    defect it CANNOT catch is the first one in the list above: a URL pointing at the
+    wrong repository. Proven, not assumed: with the README pointing at the paper repo,
+    the hermetic mode exits 0 and reports that every documented command runs.
+
+    A wrong URL is not a dead link. `github.com/mgillr/acfa` resolves -- to a different
+    repository, with no build/ in it -- so the failure a reader sees is not 404 but
+    software that does not contain what the page describes. Existence is not the property
+    to test; identity is.
+
+    This needs the network and a published repository, so it runs on release rather than
+    on every push. Both halves are needed: hermetic on push, real URL on release.
+    """
+    dest = work / "live"
+    r = subprocess.run(f"git clone --quiet --depth 1 {url} {dest}",
+                       shell=True, capture_output=True, text=True)
+    if r.returncode != 0:
+        failures.append(f"the documented URL does not clone: {url}\n    {r.stderr.strip()}")
+        return
+
+    # Identity, not existence. These are the paths the README tells a reader to use.
+    expected = ["build/layer1-aggregate/Cargo.toml",
+                "build/layer2-receipt/Cargo.toml",
+                "adapters/flower/pyproject.toml"]
+    missing = [e for e in expected if not (dest / e).is_file()]
+    if missing:
+        failures.append(
+            f"{url} clones, but it is not this software: missing {', '.join(missing)}. "
+            "A URL that resolves to the wrong repository fails a reader more confusingly "
+            "than a dead one.")
+        return
+    print(f"OK   {url} clones and contains the crates the README names")
+
+
 def main() -> int:
     keep = "--keep" in sys.argv
+    live = "--live" in sys.argv
     work = Path(tempfile.mkdtemp(prefix="acfa-readme-"))
     failures = []
 
     try:
         url = documented_url()
         print(f"README documents: {url}")
+        if live:
+            print("live mode: the documented URL is NOT substituted\n")
+            check_url_resolves(url, work, failures)
 
         # Install the README's commands from a real git remote rather than the working
         # copy, so a missing or uncommitted file fails here exactly as it would for a
@@ -69,7 +119,9 @@ def main() -> int:
             pub = work / "pub"
             sh(f"git clone --quiet --depth 1 file://{REPO} {pub}")
             print(f"published repo: testing this repository at {pub}\n")
-        local = f"file://{pub}"
+        # In live mode the documented URL stands unmodified, so every install below
+        # exercises the string a reader would actually paste.
+        local = url if live else f"file://{pub}"
 
         # 1. The dependency block, used as a real manifest.
         block = re.search(r"```toml\n(\[dependencies\][^`]+)```", README.read_text())

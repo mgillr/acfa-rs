@@ -5,6 +5,8 @@ name: ci
 # machine. The fingerprint gate below is the claim's actual test surface.
 
 on:
+  release:
+    types: [published]
   push:
   pull_request:
   workflow_dispatch:
@@ -273,3 +275,21 @@ jobs:
         run: python3 tools/readme-commands.py
       - name: Coverage table must match what CI enforces
         run: python3 tools/coverage-claim-check.py
+
+  # The hermetic readme-commands job substitutes a local remote for the documented URL,
+  # which is right for a per-push gate and means it CANNOT verify the URL itself. Proven:
+  # with the README pointing at the paper repo, the hermetic run exits 0. This one uses
+  # the URL as written, so it needs the network and a published repository -- hence
+  # release and manual dispatch rather than every push.
+  readme-commands-live:
+    name: README commands against the real URL
+    if: github.event_name != 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python3 -m pip install --quiet pyyaml
+      - name: Run the documented commands without rewriting the URL
+        run: python3 tools/readme-commands.py --live
