@@ -97,10 +97,10 @@ fn check(cs: &[Contribution]) -> Result<usize, AggError> {
     // makes all five i128 accumulators on the path -- the three coordinate-wise sums, the
     // squared-distance accumulator, and the score sum -- safe by construction. See
     // `AggError::ValueOutOfRange` for the arithmetic.
-    if cs
-        .iter()
-        .any(|c| c.v.iter().any(|&x| !(crate::fixed::MIN..=crate::fixed::MAX).contains(&x)))
-    {
+    if cs.iter().any(|c| {
+        c.v.iter()
+            .any(|&x| !(crate::fixed::MIN..=crate::fixed::MAX).contains(&x))
+    }) {
         return Err(AggError::ValueOutOfRange);
     }
     Ok(d)

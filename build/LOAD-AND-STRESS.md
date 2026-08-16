@@ -62,12 +62,51 @@ never placed in the same table.
 The matrix is allocated **in full** before any distance is used, so this is a hard
 floor on resident memory, not an average.
 
-## Overflow headroom -- not a practical risk
+## Overflow headroom -- CORRECTED, and the original claim here was wrong
 
-Computed rather than argued: the Q16.16 span is 4 294 967 295, worst per-coordinate
-contribution is span^2 = 1.84e19, so `d` would have to exceed **9.2e18** before the
-i128 accumulator could wrap. `sq_dist` accumulates in i128 and never rescales. Time
-and memory bite many orders of magnitude first.
+**An earlier revision of this section was wrong and this is the correction.** It read:
+
+> Computed rather than argued: the Q16.16 span is 4 294 967 295, worst per-coordinate
+> contribution is span^2 = 1.84e19, so `d` would have to exceed **9.2e18** before the
+> i128 accumulator could wrap. [...] Time and memory bite many orders of magnitude first.
+
+**That figure was derived from the Q16.16 *span*, which is only the span if every value
+went through `fixed::encode`.** At the time it was written, nothing enforced that on the
+`i64` path: `rules::check` validated emptiness, dimension and tie-key uniqueness and no
+range, and `wire::decode` accepted any `i64`. So a signed contribution off the wire could
+carry values eighteen orders of magnitude outside the assumed span, and the real bound
+was `d >= 1`, not `d >= 9.2e18`.
+
+The label is the worst part. "Computed rather than argued" was meant to say *this has
+been checked*; it had been **derived under an unstated assumption**, and the label is
+exactly what stops the next reader checking it. A calculation that assumes the property
+whose absence is the vulnerability is not a bound, it is a restatement of the assumption.
+
+### What was measured, once the assumption was tested
+
+There are **two** accumulators on this path, not one, and the second binds first:
+
+| accumulator | overflows at |
+|---|---|
+| `sq_dist`, per-coordinate sum of `d^2` | `d >= 1` when `f >= 2` (adversary supplies both `i64::MAX` and `i64::MIN`, overflowing on the *multiply*); `d >= 2` at `f = 1` against a worst-case legal peer at `-2^31`; `d >= 3` against a zero peer |
+| the Krum score, summing the `m` smallest distances | **sooner than any of those** — each distance is already up to 1.7e38, so it overflows at `m = 2` and panics where `sq_dist` alone returns `Ok` |
+
+With `overflow-checks = true` (as this crate pins) these panic; without it, which is what
+a downstream consumer gets by default, they **wrap silently** and selection proceeds on
+garbage.
+
+### Current state
+
+Fixed. The Q16.16 range is now enforced wherever a raw `i64` enters — `rules::check` for
+a `Contribution` assembled by any route, and `wire::decode` at the untrusted door — so
+values are bounded to `+/-2^31`, `d <= 2^32`, `d^2 <= 2^64`, and the score to `m * 2^64`.
+Every accumulator is then unreachable **by construction** rather than by an argument
+about realistic inputs. The score sum also carries a `checked_add`, so behaviour cannot
+depend on the caller's overflow-checks profile.
+
+The headroom argument in the quoted paragraph is sound *only* under the enforced
+invariant. It is now true because the invariant is enforced, not because the arithmetic
+was ever the point.
 
 ## Projection to deployment shapes
 

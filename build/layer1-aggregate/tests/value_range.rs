@@ -138,8 +138,14 @@ fn in_range_extremes_still_compute() {
         })
         .collect();
 
-    assert!(multi_krum(&cs, 2).is_ok(), "full-range values must still aggregate");
-    assert!(bulyan_select(&cs, 2).is_ok(), "full-range values must still select");
+    assert!(
+        multi_krum(&cs, 2).is_ok(),
+        "full-range values must still aggregate"
+    );
+    assert!(
+        bulyan_select(&cs, 2).is_ok(),
+        "full-range values must still select"
+    );
     assert!(mean(&cs).is_ok());
     assert!(coord_median_trim(&cs, 2).is_ok());
 }
