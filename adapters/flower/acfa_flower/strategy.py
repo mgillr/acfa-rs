@@ -11,7 +11,7 @@ import struct
 import subprocess
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterable, Optional, Sequence
+from typing import Iterable, Optional, Sequence, Union
 
 import numpy as np
 
@@ -117,7 +117,7 @@ def aggregate(
     *,
     rule: Rule = Rule.KRUM,
     f: int = 1,
-    tie_keys: Optional[Sequence[bytes]] = None,
+    tie_keys: Optional[Sequence[Union[bytes, str]]] = None,
     beta: tuple = (1, 4),
     binary: Optional[str] = None,
 ) -> list:
@@ -151,6 +151,21 @@ def aggregate(
         tie_keys = [
             hashlib.sha256(fl.values.tobytes()).digest() for fl in flats
         ]
+    else:
+        # Accept str as well as bytes. The documentation says "client ids work" and a
+        # Flower client id is a str, so the documented usage went straight into
+        # `bytes(key)` and raised "string argument without an encoding" from deep inside
+        # the payload builder -- an error that names neither tie keys nor the caller's
+        # mistake. Encoding here is also what makes the duplicate check below correct:
+        # normalising after it would let "a" and b"a" count as two distinct keys.
+        tie_keys = [k.encode() if isinstance(k, str) else k for k in tie_keys]
+        for i, k in enumerate(tie_keys):
+            if not isinstance(k, (bytes, bytearray)):
+                raise AcfaAggregationError(
+                    f"tie_keys[{i}] is {type(k).__name__}; pass bytes or str. Tie keys are "
+                    "opaque and are never interpreted, but they must be byte-comparable."
+                )
+
     if len(tie_keys) != len(flats):
         raise AcfaAggregationError("tie_keys length does not match the number of updates")
     if len(set(tie_keys)) != len(tie_keys):

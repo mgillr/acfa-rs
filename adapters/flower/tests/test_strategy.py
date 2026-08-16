@@ -330,3 +330,31 @@ def test_byte_identical_updates_are_refused_rather_than_ordered_by_arrival():
     same = [np.array([1.0, 2.0])]
     with pytest.raises(AcfaAggregationError, match="BYTE-IDENTICAL|distinct"):
         aggregate([same, same, same, same, same], rule=Rule.KRUM, f=1)
+
+
+def test_string_tie_keys_are_accepted_and_match_their_bytes():
+    """The docs say "client ids work", and a Flower client id is a str.
+
+    Passing str went into bytes(key) and raised "string argument without an encoding"
+    from inside the payload builder -- an error naming neither tie keys nor the mistake.
+    str and bytes forms of the same key must also produce the SAME aggregate, or the
+    result would depend on how the caller happened to spell the key.
+    """
+    ups = [[np.array([1.0, 2.0])], [np.array([1.0, 2.0])], [np.array([1.5, 2.5])]]
+    as_str = aggregate(ups, rule=Rule.MEAN, f=0, tie_keys=["a", "b", "c"])
+    as_bytes = aggregate(ups, rule=Rule.MEAN, f=0, tie_keys=[b"a", b"b", b"c"])
+    for x, y in zip(as_str, as_bytes):
+        assert np.array_equal(x, y)
+
+
+def test_str_and_bytes_spelling_of_one_key_is_a_duplicate():
+    """Normalising after the duplicate check would let "a" and b"a" pass as distinct."""
+    ups = [[np.array([1.0, 2.0])], [np.array([3.0, 4.0])]]
+    with pytest.raises(AcfaAggregationError, match="distinct"):
+        aggregate(ups, rule=Rule.MEAN, f=0, tie_keys=["a", b"a"])
+
+
+def test_non_bytes_tie_key_is_refused_by_name():
+    ups = [[np.array([1.0, 2.0])], [np.array([3.0, 4.0])]]
+    with pytest.raises(AcfaAggregationError, match="tie_keys\\[1\\] is int"):
+        aggregate(ups, rule=Rule.MEAN, f=0, tie_keys=[b"a", 7])

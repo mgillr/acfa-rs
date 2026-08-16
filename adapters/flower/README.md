@@ -45,8 +45,10 @@ disagree, which is the failure the fixed-point kernel exists to remove.
 
 ## Tie keys
 
-Pass stable per-client `tie_keys` (client ids work). They break exact score ties and are
-never interpreted. `AcfaStrategy` uses the Flower client id automatically.
+Pass stable per-client `tie_keys`, as `str` or `bytes` -- client ids work, and a `str` is
+encoded as UTF-8. They break exact score ties and are never interpreted. `AcfaStrategy`
+uses the Flower client id automatically, so this only matters when calling `aggregate()`
+yourself.
 
 Calling `aggregate()` directly without `tie_keys` derives them from update content, which is
 still a function of the set. Two clients sending byte-identical updates are then
