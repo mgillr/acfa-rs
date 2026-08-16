@@ -1,6 +1,7 @@
 # ACFA
 
-Deterministic Byzantine-robust aggregation for distributed systems, with verifiable receipts.
+Deterministic Byzantine-robust aggregation for federated learning and distributed systems,
+with verifiable receipts.
 
 [![ci](https://github.com/mgillr/acfa-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/mgillr/acfa-rs/actions/workflows/ci.yml)
 [![arXiv](https://img.shields.io/badge/arXiv-2607.10305-b31b1b.svg)](https://arxiv.org/abs/2607.10305)
@@ -17,7 +18,8 @@ let agg = krum_aggregate(&contributions, 1)?;  // f = 1 tolerated adversaries
 ## What it solves
 
 Robust aggregation rules (multi-Krum, Bulyan, coordinate median, trimmed mean) already exist
-in most FL frameworks. They bound how far a minority of adversaries can move your result.
+in most federated learning frameworks. They bound how far a minority of adversaries can
+move your result.
 They do not tell you **who** moved it.
 
 That gap is arithmetic, not cryptography. Float aggregation is order-dependent: sum the same
@@ -25,7 +27,7 @@ updates in a different order and you get different bytes. So when two servers re
 different aggregates, you cannot distinguish a faulty server from a lying participant. The
 honest case is already ambiguous, so no accountability layer can sit on top of it.
 
-ACFA computes the aggregate in integer fixed point, making it an exact function of the input
+ACFA computes the aggregate in integer fixed point (Q16.16), making it an exact function of the input
 *set*. After that, any disagreement is a difference in inputs or in conduct.
 
 Identical glibc 2.41, x86_64 vs aarch64, 600,000 samples:
@@ -192,8 +194,8 @@ duplicates, compute identical bytes. No agreement protocol needed to get agreeme
 result.
 
 **Content-addressed state.** Contributions and equivocation proofs are a grow-only product
-CRDT, merging by union. Merge is commutative, associative and idempotent, so the state
-converges without ordering.
+CRDT -- an OR-Set crossed with a G-Set -- merging by union over Merkle-addressed leaves.
+Merge is commutative, associative and idempotent, so the state converges without ordering.
 
 **Attribution.** An identity that signs two different values for the same round produces a
 self-authenticating proof. Any node holding the PKI verifies it offline, with no quorum and
