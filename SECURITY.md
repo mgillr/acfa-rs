@@ -3,7 +3,7 @@
 ## Please attack this
 
 This project makes a security claim, so an unexamined implementation is worth very little.
-Three soundness bugs have already been found and fixed **by the authors, in their own code**:
+Four soundness bugs have already been found and fixed **by the authors, in their own code**:
 
 1. **A self-certifying receipt.** A receipt carries its own identity set, and verification
    originally checked it against that set. Anyone could mint keys, sign contributions, and
@@ -18,6 +18,18 @@ Three soundness bugs have already been found and fixed **by the authors, in thei
    tie differently and produce different aggregates. That defeats the whole point: the
    result has to be a function of the set. Tie keys are now caller-supplied and stable, and
    a call that cannot obtain one refuses rather than guessing.
+
+4. **An integer overflow reachable from untrusted wire bytes.** `encode()` bounds values to
+   the Q16.16 range, but a contribution built directly from raw `i64` -- which is what
+   decoding a receipt does -- reached the aggregator's `i128` accumulators unbounded. The
+   failure had two stages, and the first one hid the second: at `+/-2^62` each squared
+   coordinate difference still fits, so the distance function returned cleanly, and the
+   *score* accumulator then summed four of them past `i128::MAX`. Guarding the distance
+   function alone would have moved the fault one line down. Fixed by bounding raw values at
+   both entry points -- the wire decoder and the aggregator's own validation -- which makes
+   every accumulator on the path safe by construction rather than by audit. A panic here is
+   a denial of service; under a consumer build with overflow checks disabled it would
+   instead have been a silently wrong selection, which is worse.
 
 Finding your own bugs is not the same as being audited. **There has been no independent
 security review.** If you are considering this for anything that matters, please assume
