@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+title: "ACFA: deterministic Byzantine-robust aggregation with re-executable receipts"
+message: "If you use this software, please cite the paper below."
+type: software
+authors:
+  - family-names: Gillespie
+    given-names: Ryan
+repository-code: "https://github.com/mgillr/acfa-rs"
+version: "0.1.0"
+date-released: "2026-08-16"
+license: Apache-2.0
+preferred-citation:
+  type: article
+  title: "Byzantine Accountability Without Consensus: Strong Eventual Consistency for Non-Associative, Stochastic, Robust Aggregation"
+  authors:
+    - family-names: Gillespie
+      given-names: Ryan
+  year: 2026
+  month: 7
+  journal: arXiv
+  url: "https://arxiv.org/abs/2607.10305"
+  identifiers:
+    - type: other
+      value: "arXiv:2607.10305"

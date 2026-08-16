@@ -1,0 +1,275 @@
+name: ci
+
+# The central claim is that the aggregate and the receipt are byte-identical on every
+# target. A single-target test cannot check that -- it proves self-consistency on one
+# machine. The fingerprint gate below is the claim's actual test surface.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false          # a divergence on ONE target is the finding; see them all
+      matrix:
+        include:
+          - { os: ubuntu-latest,    crate: layer1-aggregate, profile: debug }
+          - { os: ubuntu-latest,    crate: layer1-aggregate, profile: release }
+          - { os: ubuntu-24.04-arm, crate: layer1-aggregate, profile: debug }
+          - { os: macos-latest,     crate: layer1-aggregate, profile: release }
+          - { os: windows-latest,   crate: layer1-aggregate, profile: debug }
+          - { os: ubuntu-latest,    crate: layer2-receipt,   profile: debug }
+          - { os: ubuntu-24.04-arm, crate: layer2-receipt,   profile: debug }
+          - { os: macos-latest,     crate: layer2-receipt,   profile: release }
+          - { os: windows-latest,   crate: layer2-receipt,   profile: debug }
+          - { os: ubuntu-latest,    crate: layer2-finality,  profile: debug }
+          - { os: ubuntu-24.04-arm, crate: layer2-finality,  profile: debug }
+          - { os: macos-latest,     crate: layer2-finality,  profile: release }
+          - { os: windows-latest,   crate: layer2-finality,  profile: debug }
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.crate }} / ${{ matrix.os }} / ${{ matrix.profile }}
+    defaults:
+      run:
+        working-directory: build/${{ matrix.crate }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - run: cargo test ${{ matrix.profile == 'release' && '--release' || '' }}
+
+  lint:
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [layer1-aggregate, layer2-receipt, layer2-finality]
+    runs-on: ubuntu-latest
+    name: lint / ${{ matrix.crate }}
+    defaults:
+      run:
+        working-directory: build/${{ matrix.crate }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal --component clippy --component rustfmt
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+
+  # The verifier is what a third party actually runs, so exercise it as a BINARY on real
+  # inputs. Exit codes are the contract, and the forged-PKI case is the one that matters:
+  # a tool that green-ticks a forged receipt is worse than no tool.
+  verifier:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: build/layer2-receipt
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - name: exercise the verifier
+        run: |
+          set -euo pipefail
+          cargo build --release --example issue --bin acfa-verify
+          cargo run -q --release --example issue -- --pki        > /tmp/real.pki
+          cargo run -q --release --example issue                 > /tmp/honest.acfa
+          cargo run -q --release --example issue -- --equivocate > /tmp/equiv.acfa
+          cargo run -q --release --example issue -- --tamper     > /tmp/tampered.acfa
+          cargo run -q --release --example issue -- --forged-pki > /tmp/forged.acfa
+          V=target/release/acfa-verify
+
+          "$V" /tmp/honest.acfa --pki /tmp/real.pki --f 1
+
+          for bad in /tmp/forged.acfa /tmp/tampered.acfa; do
+            if "$V" "$bad" --pki /tmp/real.pki --f 1; then
+              echo "::error::$bad VERIFIED and must not have"
+              exit 1
+            fi
+          done
+
+          set +e; "$V" /tmp/honest.acfa > /tmp/nopki.out 2>&1; rc=$?; set -e
+          test "$rc" -eq 3
+          grep -q 'NOT A SECURITY VERDICT' /tmp/nopki.out
+
+          "$V" /tmp/equiv.acfa --pki /tmp/real.pki --f 1 | tee /tmp/e.out
+          grep -q 'convicted    \[1\]' /tmp/e.out
+          # Asserts the UNDEFENDED branch. The verifier used to print 'defended  NO';
+          # it now prints the bound with its arithmetic. Match the branch, not the
+          # old phrasing.
+          grep -q 'bound n>=req NOT MET' /tmp/e.out
+
+          head -c 64 /dev/urandom > /tmp/garbage
+          set +e; "$V" /tmp/garbage --pki /tmp/real.pki; rc=$?; set -e
+          test "$rc" -eq 2
+
+          cargo run -q --release --example issue > /tmp/honest2.acfa
+          cmp /tmp/honest.acfa /tmp/honest2.acfa
+      - name: measured cost
+        run: cargo run -q --release --example scale
+
+  flower:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    name: flower / ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - working-directory: build/layer1-aggregate
+        run: cargo build --release --bin acfa-agg
+      - working-directory: adapters/flower
+        env:
+          ACFA_AGG_BIN: ${{ github.workspace }}/build/layer1-aggregate/target/release/acfa-agg
+        run: |
+          python -m pip install --quiet --upgrade pip
+          python -m pip install --quiet flwr numpy pytest
+          python -m pytest tests/ -q
+
+  # THE CLAIM. Each target emits the receipt fingerprint; the final job diffs them.
+  fingerprint:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    name: fingerprint / ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: build/layer2-receipt
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal
+      - shell: bash
+        run: |
+          cargo run -q --release --example digest > fingerprint.txt
+          grep -v -E '^(arch|pointer-width|endian) ' fingerprint.txt > comparable.txt
+          cat comparable.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fingerprint-${{ matrix.os }}
+          path: build/layer2-receipt/comparable.txt
+
+  fingerprints-agree:
+    # Must wait for BOTH producers: the four hosted rows and the four emulated
+    # rows. With `needs: fingerprint` alone the compare job runs before QEMU
+    # finishes and the eight-architecture claim is only enforced for four.
+    needs: [fingerprint, emulated-arch]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: fps }
+      - name: every architecture must produce the identical receipt
+        run: |
+          set -euo pipefail
+          # A count assertion, because the loop below is vacuously green on one file.
+          # If artifacts fail to upload, or the compare job stops waiting on a producer,
+          # the diff loop never executes and prints "all targets agree" having compared
+          # nothing. That is exactly how the eight-architecture gate ran as four.
+          want=8
+          got=$(ls -1 fps/*/comparable.txt 2>/dev/null | wc -l | tr -d ' ')
+          if [ "$got" -ne "$want" ]; then
+            echo "::error::expected $want fingerprints, found $got -- the gate is not covering what it claims"
+            ls -R fps || true
+            exit 1
+          fi
+          echo "comparing $got fingerprints"
+          first=""
+          for f in fps/*/comparable.txt; do
+            if [ -z "$first" ]; then first="$f"; continue; fi
+            if ! diff -u "$first" "$f"; then
+              echo "::error::RECEIPT DIVERGED between $first and $f -- this refutes the core claim"
+              exit 1
+            fi
+          done
+          echo "all targets agree byte-for-byte:"
+          sha256sum "$first"
+          cat "$first"
+
+  # A golden nobody can rebuild is a number with no provenance. This regenerates BOTH
+  # layers' vectors from the vendored reference and requires byte-identity. It is a hard
+  # gate: it used to skip with a warning because the reference lived outside the repo,
+  # and a load-bearing check that never runs gets read as noise.
+  golden-is-reproducible:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: verify the vendored reference is unmodified
+        working-directory: reference
+        run: shasum -a 256 -c SHA256SUMS
+      - name: install the reference's one dependency
+        run: python -m pip install --quiet cryptography
+      - name: regenerate both goldens and require byte-identity
+        run: |
+          set -euo pipefail
+          fail=0
+          check () {
+            dir="$1"; gen="$2"; committed="$3"
+            echo "::group::$dir/$committed"
+            python3 "$dir/$gen" > /tmp/regen.json
+            if cmp -s "$dir/$committed" /tmp/regen.json; then
+              echo "reproduces byte-identically"
+            else
+              echo "::error::$dir/$committed is NOT reproducible from $gen"
+              diff <(python3 -m json.tool "$dir/$committed") \
+                   <(python3 -m json.tool /tmp/regen.json) | head -40 || true
+              fail=1
+            fi
+            echo "::endgroup::"
+          }
+          check build/layer1-aggregate/tests/golden generate.py    vectors.json
+          check build/layer2-receipt/tests/golden  generate_l2.py  vectors_l2.json
+          exit $fail
+
+  emulated-arch:
+    strategy:
+      fail-fast: false          # a divergence on ONE target is the finding; see them all
+      matrix:
+        # The multi-arch rust image publishes 386, amd64, arm/v7, arm64 and ppc64le but
+        # NOT s390x, so big-endian comes from the arch-specific namespace instead. Using
+        # the wrong image here fails with "no matching manifest", not a test failure.
+        include:
+          - { platform: linux/386,     image: "rust:1-slim-bookworm", name: i386-32bit-le }
+          - { platform: linux/arm/v7,  image: "rust:1-slim-bookworm", name: armv7-32bit-le }
+          - { platform: linux/ppc64le, image: "rust:1-slim-bookworm", name: ppc64le-64bit-le }
+          - { platform: linux/s390x,   image: "s390x/rust:slim",      name: s390x-64bit-BIGENDIAN }
+    runs-on: ubuntu-latest
+    name: emulated / ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - name: test and fingerprint under ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          docker run --rm --platform ${{ matrix.platform }} \
+            -v "$PWD":/w -w /w ${{ matrix.image }} bash -c '
+              set -e
+              echo "arch: $(uname -m)"
+              cd build/layer1-aggregate && cargo test --release
+              cd ../layer2-receipt && cargo test --release
+              cargo run --release --example digest > /w/fp-raw.txt
+            '
+          grep -v -E "^(arch|pointer-width|endian) " fp-raw.txt > comparable.txt
+          cat comparable.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fingerprint-${{ matrix.name }}
+          path: comparable.txt
+
+  readme-commands:
+    name: README commands actually run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Install what the doc checks need
+        run: python3 -m pip install --quiet pyyaml
+      - name: Run every command the README documents
+        run: python3 tools/readme-commands.py
+      - name: Coverage table must match what CI enforces
+        run: python3 tools/coverage-claim-check.py

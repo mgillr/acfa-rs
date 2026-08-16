@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "acfa-flower"
+version = "0.1.0"
+description = "Byzantine-robust, bit-reproducible aggregation for Flower federated learning"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Ryan Gillespie" }]
+keywords = ["federated-learning", "flower", "byzantine", "aggregation", "determinism"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: Apache Software License",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = ["numpy>=1.21"]
+
+[project.optional-dependencies]
+flower = ["flwr>=1.0"]
+dev = ["pytest>=7", "flwr>=1.0"]
+
+[project.urls]
+Homepage = "https://github.com/mgillr/acfa-rs"
+Paper = "https://arxiv.org/abs/2607.10305"
+
+[tool.setuptools.packages.find]
+include = ["acfa_flower*"]

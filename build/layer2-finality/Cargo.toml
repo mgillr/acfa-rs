@@ -1,0 +1,28 @@
+[package]
+name = "acfa-finality"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"          # is_multiple_of (1.87), is_none_or (1.82)
+authors = ["Ryan Gillespie"]
+repository = "https://github.com/mgillr/acfa-rs"
+homepage = "https://github.com/mgillr/acfa-rs"
+readme = "README.md"
+keywords = ["byzantine", "consensus", "distributed-systems", "finality", "accountability"]
+categories = ["algorithms", "science", "network-programming"]
+description = "Round certificates, the ERC deadline cut, certificate-level equivocation, and halt-and-reconcile: fail-visible finality for consensus-free aggregation."
+license = "Apache-2.0"
+
+[dependencies]
+acfa-receipt = { path = "../layer2-receipt" }
+acfa-aggregate = { path = "../layer1-aggregate" }
+sha2 = "0.10"
+ed25519-dalek = "2"
+
+# Test-only. The cross-implementation vectors are JSON produced by an independent
+# Python encoder; parsing them is not a runtime concern and adds nothing for consumers.
+# Same choice, and same crate, as layer2-receipt makes for its own golden vectors.
+[dev-dependencies]
+serde_json = "1"
+
+[profile.release]
+overflow-checks = true

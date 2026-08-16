@@ -1,0 +1,29 @@
+[package]
+name = "acfa-receipt"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"          # is_multiple_of (1.87), is_none_or (1.82)
+authors = ["Ryan Gillespie"]
+repository = "https://github.com/mgillr/acfa-rs"
+homepage = "https://github.com/mgillr/acfa-rs"
+readme = "README.md"
+keywords = ["byzantine", "accountability", "cryptography", "federated-learning", "audit"]
+categories = ["cryptography", "algorithms", "science"]
+description = "ACFA Layer 2 receipt: signed contributions, a self-authenticating equivocation proof, a Merkle commitment trace, and a re-executable aggregate that any third party can recheck offline."
+license = "Apache-2.0"
+
+[dependencies]
+acfa-aggregate = { path = "../layer1-aggregate" }
+sha2 = "0.10"
+ed25519-dalek = "2"
+
+[dev-dependencies]
+hex = "0.4"
+serde_json = "1"
+
+[profile.release]
+overflow-checks = true
+
+[[bin]]
+name = "acfa-verify"
+path = "src/bin/acfa-verify.rs"

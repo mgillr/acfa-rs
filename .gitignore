@@ -1,0 +1,10 @@
+target/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.env
+*.key
+*.pki
+*.acfa
+.DS_Store

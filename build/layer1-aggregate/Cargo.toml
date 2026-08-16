@@ -1,0 +1,20 @@
+[package]
+name = "acfa-aggregate"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"          # is_multiple_of (1.87), is_none_or (1.82)
+authors = ["Ryan Gillespie"]
+repository = "https://github.com/mgillr/acfa-rs"
+homepage = "https://github.com/mgillr/acfa-rs"
+readme = "README.md"
+keywords = ["byzantine", "aggregation", "federated-learning", "determinism", "krum"]
+categories = ["algorithms", "science", "no-std"]
+description = "Deterministic robust aggregation over fixed-point vectors: bit-identical output regardless of input order, accumulation order, or target architecture."
+license = "Apache-2.0"
+
+[dependencies]
+
+[dev-dependencies]
+
+[profile.release]
+overflow-checks = true
