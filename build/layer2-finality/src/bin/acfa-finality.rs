@@ -72,7 +72,58 @@ fn bad(line_no: usize, why: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
+const USAGE: &str = "\
+acfa-finality -- observe certificates, detect forks, report halt state
+
+USAGE:
+    acfa-finality < input     reads directives on stdin, writes a report to stdout
+
+INPUT (line-oriented, LF; # comments and blank lines ignored):
+    f <usize>                    fault bound; required before any cert
+    pki <node_id> <pubkey_hex>   repeatable; 32 bytes hex
+    cert <hex>                   wire-encoded certificate (ACFA-C1)
+    fork <hex>                   wire-encoded fork evidence (ACFA-K1)
+
+OUTPUT:
+    status running|halted, plus certified/rejected rounds, and `evidence <hex>` for
+    each observed fork -- canonical bytes another node can verify without trusting
+    this one.
+
+EXIT CODES:
+    0 running, no fork observed
+    1 HALTED, a fork was observed; nothing past reconcile_from is final
+    2 malformed input; says nothing about finality
+
+    A halt is a result, not a crash: the construction exists so a synchrony violation
+    is never silent.
+
+Full documentation: https://github.com/mgillr/acfa-rs
+";
+
 fn main() -> ExitCode {
+    // Same treatment as acfa-agg, for the same reason and found the same way. This
+    // program also reads stdin unconditionally, so `acfa-finality --help` blocked
+    // forever and printed nothing. Three binaries ship; acfa-verify handled --help and
+    // the other two hung, which meant the convention was inconsistent across a single
+    // release. Fixing one and not the others would have left the same trap one command
+    // further along.
+    use std::io::IsTerminal;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    if let Some(a) = args.first() {
+        eprintln!("acfa-finality: unexpected argument {a:?}; input is read from stdin\n");
+        eprint!("{USAGE}");
+        return ExitCode::from(2);
+    }
+    if std::io::stdin().is_terminal() {
+        eprintln!("acfa-finality: no input on stdin. Pipe directives in, or --help.\n");
+        eprint!("{USAGE}");
+        return ExitCode::from(2);
+    }
+
     let mut input = String::new();
     if std::io::stdin().read_to_string(&mut input).is_err() {
         eprintln!("acfa-finality: could not read stdin");
