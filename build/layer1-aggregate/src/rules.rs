@@ -40,6 +40,27 @@ pub enum AggError {
     /// it. Refusing is the only honest answer -- the same discipline as refusing an
     /// out-of-range encode rather than saturating it.
     BulyanTooFewContributions,
+    /// A raw value lies outside the Q16.16 representable range `[fixed::MIN, fixed::MAX]`
+    /// (`+/-2^31`).
+    ///
+    /// THIS IS THE LOAD-BEARING VALIDATION, NOT A COURTESY CHECK. `encode()` enforces the
+    /// range on the float path, but a `Contribution` can be built directly from raw `i64`
+    /// -- which is exactly what decoding a wire receipt does -- and that path reached the
+    /// distance and score accumulators unbounded.
+    ///
+    /// The arithmetic is why this is the only structurally sufficient place to check.
+    /// Bounded at `+/-2^31`: a coordinate difference is at most `2^32`, its square at most
+    /// `2^64`, and a score summing `m` of those is at most `m * 2^64`, which cannot reach
+    /// `i128::MAX = 2^127 - 1` for any realistic `m`. Every accumulator on the path is then
+    /// safe BY CONSTRUCTION, and no internal audit is needed to keep it that way.
+    ///
+    /// Unbounded, the same arithmetic breaks in two stages: at `+/-2^62` each squared
+    /// difference is `2^125` and still fits, so `sq_dist` returns cleanly, and then the
+    /// SCORE accumulator sums four of them to `2^127` and overflows. Measured: `sq_dist`
+    /// returned Ok while `multi_krum` and `bulyan_select` both panicked. Guarding
+    /// `sq_dist` alone would have moved the fault one line down and left it looking like a
+    /// different bug.
+    ValueOutOfRange,
 }
 
 /// Floor division: rounds toward NEGATIVE INFINITY, matching the reference kernel.
@@ -70,6 +91,17 @@ fn check(cs: &[Contribution]) -> Result<usize, AggError> {
     keys.sort_unstable();
     if keys.windows(2).any(|w| w[0] == w[1]) {
         return Err(AggError::DuplicateTieKey);
+    }
+    // Range validation, and it belongs HERE rather than deeper in the arithmetic. Every
+    // rule in this module funnels through `check`, so bounding raw values once at entry
+    // makes all five i128 accumulators on the path -- the three coordinate-wise sums, the
+    // squared-distance accumulator, and the score sum -- safe by construction. See
+    // `AggError::ValueOutOfRange` for the arithmetic.
+    if cs
+        .iter()
+        .any(|c| c.v.iter().any(|&x| !(crate::fixed::MIN..=crate::fixed::MAX).contains(&x)))
+    {
+        return Err(AggError::ValueOutOfRange);
     }
     Ok(d)
 }
@@ -140,6 +172,42 @@ pub fn coord_median_trim(cs: &[Contribution], f: usize) -> Result<Vec<i64>, AggE
         .collect())
 }
 
+/// A scored contribution: (score, tie_key, index), ordered lexicographically so the
+/// outcome depends on the contribution set and not on arrival order.
+type Scored<'a> = (i128, &'a [u8], usize);
+
+/// Krum scores, shared by `multi_krum` and `bulyan_select`.
+///
+/// EXTRACTED BECAUSE IT WAS DUPLICATED BYTE-FOR-BYTE. This block previously appeared twice,
+/// once in each selection path. Both copies summed into an unguarded `i128`, so a hand
+/// patch to one of them produced a guard covering Krum and not Bulyan -- with every test
+/// still green, because no test exercised the second copy at the overflowing magnitude.
+/// A false green is worse than no fix, so the duplicate is removed rather than patched
+/// twice: there is now one place for this arithmetic to be wrong.
+///
+/// `checked_add` is DEFENCE IN DEPTH, not the fix. `check()` bounds raw values so the sum
+/// cannot reach `i128::MAX`; this makes the guarantee independent of whether the crate that
+/// compiles us has `overflow-checks` on, which is a downstream caller's choice and not ours.
+fn krum_scores<'a>(
+    cs: &'a [Contribution],
+    d2: &[Vec<i128>],
+    n: usize,
+    m: usize,
+) -> Result<Vec<Scored<'a>>, AggError> {
+    let mut scored: Vec<Scored<'a>> = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut ds: Vec<i128> = (0..n).filter(|&j| j != i).map(|j| d2[i][j]).collect();
+        ds.sort_unstable();
+        let mut score: i128 = 0;
+        for &x in &ds[..m.min(ds.len())] {
+            score = score.checked_add(x).ok_or(AggError::ValueOutOfRange)?;
+        }
+        scored.push((score, cs[i].tie_key.as_slice(), i));
+    }
+    scored.sort_unstable();
+    Ok(scored)
+}
+
 /// Multi-Krum selection. Score of i is the sum of the `m = n-f-2` smallest squared
 /// distances from i to the others; the `m` lowest-scoring indices are selected.
 ///
@@ -175,15 +243,7 @@ pub fn multi_krum(cs: &[Contribution], f: usize) -> Result<Vec<usize>, AggError>
     // (score, tie_key, index) ordered lexicographically, exactly as the reference.
     // tie_key precedes index so the outcome depends on the contribution set and not
     // on the order it happened to arrive in.
-    let mut scored: Vec<(i128, &[u8], usize)> = (0..n)
-        .map(|i| {
-            let mut ds: Vec<i128> = (0..n).filter(|&j| j != i).map(|j| d2[i][j]).collect();
-            ds.sort_unstable();
-            let score: i128 = ds[..m.min(ds.len())].iter().sum();
-            (score, cs[i].tie_key.as_slice(), i)
-        })
-        .collect();
-    scored.sort_unstable();
+    let scored = krum_scores(cs, &d2, n, m)?;
 
     let mut out: Vec<usize> = scored[..m].iter().map(|&(_, _, i)| i).collect();
     out.sort_unstable();
@@ -231,15 +291,7 @@ pub fn multi_krum_ranked(cs: &[Contribution], f: usize) -> Result<Vec<usize>, Ag
             d2[j][i] = s;
         }
     }
-    let mut scored: Vec<(i128, &[u8], usize)> = (0..n)
-        .map(|i| {
-            let mut ds: Vec<i128> = (0..n).filter(|&j| j != i).map(|j| d2[i][j]).collect();
-            ds.sort_unstable();
-            let score: i128 = ds[..m.min(ds.len())].iter().sum();
-            (score, cs[i].tie_key.as_slice(), i)
-        })
-        .collect();
-    scored.sort_unstable();
+    let scored = krum_scores(cs, &d2, n, m)?;
     Ok(scored.into_iter().map(|(_, _, i)| i).collect())
 }
 

@@ -147,6 +147,10 @@ fn main() -> ExitCode {
                 WireError::TrailingBytes => "trailing bytes after the receipt".into(),
                 WireError::UnknownRule(b) => format!("unknown aggregation rule {b}"),
                 WireError::NotCanonical(w) => format!("not canonically encoded: {w}"),
+                WireError::ValueOutOfRange => "a tensor value is outside the Q16.16 range \
+(+/-2^31); refusing rather than saturating, because saturating would admit the receipt and \
+silently change the aggregate"
+                    .to_string(),
             };
             eprintln!("acfa-verify: UNPARSEABLE -- {why}");
             return ExitCode::from(2);

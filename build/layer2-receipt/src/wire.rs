@@ -34,6 +34,16 @@ pub enum WireError {
     TrailingBytes,
     UnknownRule(u8),
     NotCanonical(&'static str),
+    /// A tensor value on the wire lies outside the Q16.16 representable range
+    /// (`+/-2^31`).
+    ///
+    /// This is the UNTRUSTED entry point, so the bound belongs here as well as in the
+    /// aggregator's own `check`. Both, not either: this one stops a hostile receipt at the
+    /// door, and the aggregator's stops a `Contribution` assembled by any other route. The
+    /// aggregator's i128 accumulators are safe by construction only while every value that
+    /// reaches them is bounded, and an unbounded value reaching them overflowed the score
+    /// accumulator -- a panic reachable from bytes an attacker chooses.
+    ValueOutOfRange,
 }
 
 // ------------------------------------------------------------------ encoding
@@ -219,7 +229,14 @@ pub fn decode(bytes: &[u8]) -> Result<Receipt, WireError> {
         let d = r.count(d_raw, 8)?;
         let mut tensor = Vec::with_capacity(d);
         for _ in 0..d {
-            tensor.push(r.i64()?);
+            let v = r.i64()?;
+            // Refuse at the door rather than saturate. Saturating would admit the receipt
+            // and silently change the aggregate, which is the value-error-becoming-an-
+            // order-error failure the fixed-point contract exists to exclude.
+            if !(-(1i64 << 31)..=(1i64 << 31) - 1).contains(&v) {
+                return Err(WireError::ValueOutOfRange);
+            }
+            tensor.push(v);
         }
         let sig = r.arr64()?;
         contributions.push(Contribution {
