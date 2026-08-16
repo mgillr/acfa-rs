@@ -234,7 +234,7 @@ pub fn multi_krum(cs: &[Contribution], f: usize) -> Result<Vec<usize>, AggError>
     let mut d2 = vec![vec![0i128; n]; n];
     for i in 0..n {
         for j in (i + 1)..n {
-            let s = sq_dist(&cs[i].v, &cs[j].v);
+            let s = sq_dist(&cs[i].v, &cs[j].v).ok_or(AggError::ValueOutOfRange)?;
             d2[i][j] = s;
             d2[j][i] = s;
         }
@@ -286,7 +286,7 @@ pub fn multi_krum_ranked(cs: &[Contribution], f: usize) -> Result<Vec<usize>, Ag
     let mut d2 = vec![vec![0i128; n]; n];
     for i in 0..n {
         for j in (i + 1)..n {
-            let s = sq_dist(&cs[i].v, &cs[j].v);
+            let s = sq_dist(&cs[i].v, &cs[j].v).ok_or(AggError::ValueOutOfRange)?;
             d2[i][j] = s;
             d2[j][i] = s;
         }

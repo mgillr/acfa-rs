@@ -89,7 +89,7 @@ There are **two** accumulators on this path, not one, and the second binds first
 | accumulator | overflows at |
 |---|---|
 | `sq_dist`, per-coordinate sum of `d^2` | `d >= 1` when `f >= 2` (adversary supplies both `i64::MAX` and `i64::MIN`, overflowing on the *multiply*); `d >= 2` at `f = 1` against a worst-case legal peer at `-2^31`; `d >= 3` against a zero peer |
-| the Krum score, summing the `m` smallest distances | **sooner than any of those** — each distance is already up to 1.7e38, so it overflows at `m = 2` and panics where `sq_dist` alone returns `Ok` |
+| the Krum score, summing the `m` smallest distances | **sooner than any of those** -- each distance is already up to 1.7e38, so it overflows at `m = 2` and panics where `sq_dist` alone returns `Ok` |
 
 With `overflow-checks = true` (as this crate pins) these panic; without it, which is what
 a downstream consumer gets by default, they **wrap silently** and selection proceeds on
@@ -97,8 +97,8 @@ garbage.
 
 ### Current state
 
-Fixed. The Q16.16 range is now enforced wherever a raw `i64` enters — `rules::check` for
-a `Contribution` assembled by any route, and `wire::decode` at the untrusted door — so
+Fixed. The Q16.16 range is now enforced wherever a raw `i64` enters -- `rules::check` for
+a `Contribution` assembled by any route, and `wire::decode` at the untrusted door -- so
 values are bounded to `+/-2^31`, `d <= 2^32`, `d^2 <= 2^64`, and the score to `m * 2^64`.
 Every accumulator is then unreachable **by construction** rather than by an argument
 about realistic inputs. The score sum also carries a `checked_add`, so behaviour cannot

@@ -78,6 +78,25 @@ pub fn decode_vec(vs: &[i64]) -> Vec<f64> {
 
 /// Squared Euclidean distance between two fixed-point vectors, in RAW UNITS.
 ///
+/// `pub(crate)`, and fallible, for one measured reason. While this was `pub` inside a
+/// `pub mod`, it was reachable by any dependent crate, and `acc += d * d` is only safe
+/// under the Q16.16 range invariant that `rules::check` and `wire::decode` enforce at
+/// their doors -- an invariant a direct caller bypasses entirely. A consumer crate
+/// depending on this one from git, calling `acfa_aggregate::fixed::sq_dist` on raw
+/// `i64::MAX`/`i64::MIN` vectors, got a panic in a debug build and, in a RELEASE build,
+/// `-110680464442257309693`: a NEGATIVE squared distance, silently, exit 0. Release is
+/// the dangerous half because `[profile.release] overflow-checks = true` in this manifest
+/// governs only builds rooted HERE; a dependent's own profile governs their build of this
+/// code, and release defaults to overflow-checks off. The wrapped value is worse than a
+/// wrong number: a squared distance is non-negative by definition, `multi_krum` ranks by
+/// ASCENDING score, so a negative distance sorts FIRST and the overflowing contribution is
+/// preferentially SELECTED -- a selection inversion, which is the exact failure this crate
+/// exists to exclude.
+///
+/// `None` on overflow rather than a saturated value: a saturated distance is a wrong but
+/// plausible number, and a plausible wrong answer is worse than a refusal in a kernel whose
+/// product is meant to be re-executable. Callers map it to `AggError::ValueOutOfRange`.
+///
 /// Returns i128 and never rescales. Two reasons, both load-bearing:
 ///   1. A Q16.16 difference squared is Q32.32, and summing d of those overflows i64
 ///      for realistic d. i128 holds it exactly for any d that fits in memory.
@@ -86,14 +105,15 @@ pub fn decode_vec(vs: &[i64]) -> Vec<f64> {
 ///      determinism argument is built to exclude. Comparisons are done on exact
 ///      raw-unit values and the scale is never needed, because ranking is
 ///      invariant under the positive scale factor.
-pub fn sq_dist(a: &[i64], b: &[i64]) -> i128 {
+pub(crate) fn sq_dist(a: &[i64], b: &[i64]) -> Option<i128> {
     debug_assert_eq!(a.len(), b.len(), "dimension mismatch");
     let mut acc: i128 = 0;
     for (x, y) in a.iter().zip(b.iter()) {
+        // The difference of two i64 always fits i128; the SQUARE of it does not.
         let d = (*x as i128) - (*y as i128);
-        acc += d * d;
+        acc = acc.checked_add(d.checked_mul(d)?)?;
     }
-    acc
+    Some(acc)
 }
 
 #[cfg(test)]
@@ -128,16 +148,46 @@ mod tests {
     fn sq_dist_is_order_independent_and_exact() {
         let a = vec![1000i64, -2000, 3000];
         let b = vec![-500i64, 700, 900];
-        let fwd = sq_dist(&a, &b);
+        let fwd = sq_dist(&a, &b).unwrap();
         let rev: i128 = {
             let mut ra = a.clone();
             let mut rb = b.clone();
             ra.reverse();
             rb.reverse();
-            sq_dist(&ra, &rb)
+            sq_dist(&ra, &rb).unwrap()
         };
         assert_eq!(fwd, rev, "distance must not depend on coordinate order");
         assert_eq!(fwd, 1500i128 * 1500 + 2700 * 2700 + 2100 * 2100);
+    }
+
+    #[test]
+    fn sq_dist_refuses_rather_than_wrapping_outside_the_range() {
+        // The measured regression. Before this was fallible, a dependent crate calling
+        // `acfa_aggregate::fixed::sq_dist` on raw i64 extremes got `-110680464442257309693`
+        // in a release build: a NEGATIVE squared distance, which sorts FIRST under Krum's
+        // ascending rank and selects the offender. Assert refusal SPECIFICALLY, not merely
+        // "did not panic" -- a saturating implementation would pass the weaker assertion
+        // while silently changing which contribution wins.
+        assert_eq!(
+            sq_dist(&[i64::MAX], &[i64::MIN]),
+            None,
+            "one coordinate, opposite extremes"
+        );
+        assert_eq!(
+            sq_dist(&[i64::MAX, i64::MAX], &[MIN, MIN]),
+            None,
+            "two coordinates"
+        );
+        // Non-negativity is the invariant Krum's ranking depends on: whatever it returns,
+        // it is never negative.
+        for (a, b) in [(i64::MAX, i64::MIN), (i64::MIN, i64::MAX), (MAX, MIN)] {
+            if let Some(v) = sq_dist(&[a], &[b]) {
+                assert!(
+                    v >= 0,
+                    "sq_dist({a}, {b}) returned a negative squared distance"
+                );
+            }
+        }
     }
 
     #[test]
@@ -146,7 +196,7 @@ mod tests {
         let d = 100_000;
         let a = vec![MAX; d];
         let b = vec![MIN; d];
-        let got = sq_dist(&a, &b);
+        let got = sq_dist(&a, &b).unwrap();
         let per = (MAX as i128 - MIN as i128).pow(2);
         assert_eq!(got, per * d as i128);
     }
