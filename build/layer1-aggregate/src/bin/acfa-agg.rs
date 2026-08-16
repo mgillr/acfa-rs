@@ -75,7 +75,57 @@ fn bulyan_estimate_secs(n: usize, d: usize) -> f64 {
     REF_SECS * (n as f64 / REF_N).powf(EXP_N) * (d as f64 / REF_D)
 }
 
+const USAGE: &str = "\
+acfa-agg -- deterministic robust aggregation, stdin to stdout
+
+USAGE:
+    acfa-agg < input          reads the request on stdin, writes the aggregate to stdout
+
+INPUT (line-oriented, LF):
+    rule krum|bulyan|mean|median|trimmed
+    f <usize>
+    [beta <num> <den>]           trimmed only
+    <tie_key_hex> <bits_hex>...  one line per contribution
+
+    bits_hex is 16 hex chars per f64, big-endian IEEE-754. tie_key_hex is opaque and is
+    used only to break exact ties.
+
+EXAMPLE:
+    printf 'rule mean\\nf 0\\n01 3ff0000000000000\\n02 4000000000000000\\n' | acfa-agg
+
+EXIT CODES:
+    0 ok    1 refused (bound not met, bad input values)    2 unreadable input
+
+Full documentation: https://github.com/mgillr/acfa-rs
+";
+
 fn main() -> ExitCode {
+    // Answer --help, and refuse an interactive terminal rather than blocking on it.
+    //
+    // This program's entire interface is stdin, so with no redirect it sat in a blocking
+    // read forever. `acfa-agg --help` -- the first thing anyone types, and the first
+    // binary the README tells them to install -- produced no output and never returned,
+    // which reads as a hang rather than as a program waiting for input. `acfa-verify`
+    // already handled --help, so the two CLIs disagreed about the same convention.
+    //
+    // IsTerminal is std, so this costs the crate's zero-dependency property nothing.
+    use std::io::IsTerminal;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+    if let Some(a) = args.first() {
+        eprintln!("acfa-agg: unexpected argument {a:?}; input is read from stdin\n");
+        eprint!("{USAGE}");
+        return ExitCode::from(2);
+    }
+    if std::io::stdin().is_terminal() {
+        eprintln!("acfa-agg: no input on stdin. Pipe a request in, or --help.\n");
+        eprint!("{USAGE}");
+        return ExitCode::from(2);
+    }
+
     let mut input = String::new();
     if std::io::stdin().read_to_string(&mut input).is_err() {
         return die(2, "cannot read stdin");
