@@ -112,6 +112,50 @@ If your updates are smaller, rescale upstream by a factor both parties already h
 multiplying by a fixed power of two is exact and reversible -- rather than lowering the
 threshold.
 
+## The aggregate is biased DOWNWARD, and it accumulates
+
+fl-03. The kernel floor-divides when it averages, so every round loses a fraction of an LSB
+and **always in the same direction**. Round-to-nearest would cancel over many rounds; floor
+does not. The size is `(n-1)/2n` LSB per round -- measured against the closed form at
+400 trials per row, and it is the aggregation kernel that is being measured, not a model of
+it:
+
+| clients | predicted | measured |
+|---|---|---|
+| 2 | -0.250 | -0.231 |
+| 3 | -0.333 | -0.333 |
+| 5 | -0.400 | -0.396 |
+| 8 | -0.438 | -0.432 |
+| 16 | -0.469 | -0.472 |
+
+**It accumulates linearly over training**, because it never cancels. At `n=5`:
+
+| rounds | drift |
+|---|---|
+| 100 | 6.1e-4 |
+| 600 | 3.7e-3 |
+| 5000 | 3.1e-2 |
+
+Against a typical post-clipping gradient scale of `1e-3`, **600 rounds of drift is about 3.7x
+one gradient** -- larger than the signal being aggregated, and in one direction. This is not
+rounding noise and you should not treat it as such.
+
+**What you can do about it, and it is the same lever as the resolution trade above.** The
+bias is a constant number of LSBs, so it is a property of the grid rather than of your data
+-- measured at gradient scales `1e-3` through `1.0`, the absolute bias stays at about -0.4
+LSB while the relative bias falls from `6.3e-3` to `6.1e-6`. **Scaling your updates up before
+aggregation shrinks the bias relative to the signal**, exactly as it lifts coordinates off
+the resolution floor.
+
+**What is NOT available**, so nobody proposes it as an easy fix: error feedback (carrying the
+discarded remainder into the next round) cancels this completely and is the textbook remedy,
+and it is **barred** -- it makes the aggregate a function of the delivery *history*, so two
+replicas given the same set in a different order produce different bytes. That is the exact
+property this stack exists to provide. Stochastic or dithered rounding is out for the same
+reason. Round-half-to-even would be both deterministic and unbiased, but the rounding rule is
+a **wire contract**: the vendored reference implementation floors, and changing it costs the
+reference pin and an erratum against a published artifact.
+
 ## Limits
 
 `n >= 2f+3` is a population bound, not a safety guarantee. See the limitations section of

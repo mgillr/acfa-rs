@@ -1062,3 +1062,36 @@ def test_a_float32_round_that_cannot_hold_the_grid_is_reported():
 
     assert small["acfa_output_dtype_holds_q16_16"] is True
     assert large["acfa_output_dtype_holds_q16_16"] is False
+
+
+def test_the_documented_downward_bias_is_the_measured_one():
+    """fl-03. The aggregate is biased DOWNWARD by `(n-1)/2n` LSB per round because the kernel
+    floor-divides, and it never cancels, so it accumulates linearly over training.
+
+    This is a CHARACTERISATION test, not a guard: the behaviour is a deliberate wire contract
+    (the vendored reference floors) and the two textbook remedies are barred -- error feedback
+    and dithering both make the aggregate a function of delivery HISTORY, which is the exact
+    property this stack exists to provide. Nothing here is being fixed.
+
+    What it does is stop the adapter README's numbers drifting from the kernel's behaviour
+    without something failing. fl-05 and fl-14 both put measured tables in front of users; a
+    table nothing re-derives is a claim, not a measurement.
+    """
+    scale = 1 << 16
+    rng = np.random.default_rng(11)
+    for n, predicted in ((3, -1 / 3), (5, -0.4)):
+        errors = []
+        for _ in range(120):
+            vals = [float(rng.uniform(-0.5, 0.5)) for _ in range(n)]
+            ups = [[np.array([v])] for v in vals]
+            keys = [bytes([i]) for i in range(n)]
+            got = float(aggregate(ups, rule=Rule.MEAN, f=1, tie_keys=keys)[0][0])
+            # Compare against the mean of the ENCODED values, so this measures the DIVISION
+            # and not the encoding -- otherwise it would be re-testing fl-02's rounding.
+            exact = float(np.mean([round(v * scale) / scale for v in vals]))
+            errors.append((got - exact) * scale)
+        measured = float(np.mean(errors))
+        assert abs(measured - predicted) < 0.1, (n, measured, predicted)
+        # Direction is the part that matters: a downward bias accumulates, a symmetric one
+        # cancels. Asserted separately so a sign flip cannot hide inside the tolerance.
+        assert measured < 0, (n, measured, "the bias must be DOWNWARD")
