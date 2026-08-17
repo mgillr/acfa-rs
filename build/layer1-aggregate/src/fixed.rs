@@ -47,13 +47,16 @@ pub fn encode(x: f64) -> Result<i64, FixedError> {
     if scaled > MAX as f64 || scaled < MIN as f64 {
         return Err(FixedError::OutOfRange);
     }
-    // Round half away from zero, explicitly, rather than inheriting a platform default.
-    let v = if scaled >= 0.0 {
-        (scaled + 0.5).floor() as i64
-    } else {
-        (scaled - 0.5).ceil() as i64
-    };
-    Ok(v)
+    // Round half away from zero. `f64::round` IS half-away-from-zero and is correctly
+    // rounded, so it is a single operation with no intermediate value to misround.
+    //
+    // The previous form, `(scaled + 0.5).floor()`, was NOT equivalent: the addition is
+    // itself a rounded operation. At the largest double strictly below 0.5, the true sum
+    // `1 - 2^-54` is a binary64 midpoint, ties-to-even carries it to exactly `1.0`, and
+    // the floor then returned 1 where half-away requires 0. Exactly one double per sign
+    // in the whole Q16.16 range hit it, which is why a boundary test probing 0.5 itself
+    // never caught it. See `encode_is_half_away_from_zero_at_the_largest_double_below_a_half`.
+    Ok(scaled.round() as i64)
 }
 
 /// Decode Q16.16 back to a float. Exact: every Q16.16 value is a dyadic rational
@@ -118,6 +121,66 @@ pub(crate) fn sq_dist(a: &[i64], b: &[i64]) -> Option<i128> {
 
 #[cfg(test)]
 mod tests {
+    /// num-06. `(scaled + 0.5).floor()` is NOT half-away-from-zero: when `scaled` is the
+    /// largest double strictly below 0.5, the addition itself rounds to exactly 1.0
+    /// (the true sum 1 - 2^-54 is a binary64 midpoint and ties-to-even picks 1.0), so
+    /// the floor returns 1 where half-away must return 0.
+    ///
+    /// An exhaustive scan of the 3 doubles below and 3 at/above every half-integer
+    /// boundary across the whole Q16.16 range finds exactly ONE such double per sign,
+    /// so this is a single-point defect -- which is precisely why no existing test
+    /// caught it: `rounds_half_away_from_zero_symmetrically` probes exactly 0.5 LSB.
+    ///
+    /// It reaches the wire: acfa-agg on this value emits `ok 1` where `ok 0` is correct.
+    #[test]
+    fn encode_is_half_away_from_zero_at_the_largest_double_below_a_half() {
+        // x * SCALE == 0.49999999999999994, the largest double < 0.5.
+        let x = f64::from_bits(0x3EDF_FFFF_FFFF_FFFF);
+        assert_eq!(
+            x * (SCALE as f64),
+            0.499_999_999_999_999_94_f64,
+            "precondition"
+        );
+        assert_eq!(
+            encode(x),
+            Ok(0),
+            "positive side must round toward zero, not up"
+        );
+        assert_eq!(encode(-x), Ok(0), "negative side likewise");
+    }
+
+    /// Guard the guard: agreement with `f64::round`, which IS correctly-rounded
+    /// half-away-from-zero, at every half-integer boundary and its neighbours.
+    #[test]
+    fn encode_agrees_with_correctly_rounded_half_away_at_every_boundary() {
+        let mut checked = 0u32;
+        for n in 0..2048i64 {
+            let mid = n as f64 + 0.5;
+            for step in -2i64..=2 {
+                let scaled = if step == 0 {
+                    mid
+                } else if step < 0 {
+                    (0..-step).fold(mid, |a, _| f64::from_bits(a.to_bits() - 1))
+                } else {
+                    (0..step).fold(mid, |a, _| f64::from_bits(a.to_bits() + 1))
+                };
+                let x = scaled / (SCALE as f64);
+                if let Ok(got) = encode(x) {
+                    assert_eq!(
+                        got as f64,
+                        (x * (SCALE as f64)).round(),
+                        "encode disagreed with half-away at scaled={scaled:?}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(
+            checked > 8000,
+            "scan too small to be meaningful ({checked})"
+        );
+    }
+
     use super::*;
 
     #[test]

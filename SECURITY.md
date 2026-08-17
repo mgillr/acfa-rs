@@ -35,6 +35,12 @@ Finding your own bugs is not the same as being audited. **There has been no inde
 security review.** If you are considering this for anything that matters, please assume
 there are more and go looking.
 
+An independent adversarial review across six lenses produced sixty findings. The fixed ones
+are recorded in [AUDIT.md](AUDIT.md) with the commit that closed each. Open findings are
+tracked as issues; a small number are held back until they are closed, because publishing an
+unfixed weakness in a system people may be running hands an attacker a recipe. That set is
+not enumerated, and saying so is the honest half of the decision.
+
 ## Reporting
 
 Open a GitHub security advisory, or a public issue if the finding is not sensitive. There
