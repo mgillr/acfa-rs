@@ -233,8 +233,21 @@ def test_float_inputs_still_aggregate_after_the_dtype_guard():
 # touch flwr -- in any environment without it. CI installs flwr so this was never a
 # CI-integrity problem (pytest exits 5 on "no tests collected", so a missing flwr
 # turns CI RED, verified), but it made every local run vacuous.
+# The REASON STRING NAMES THE LOST COVERAGE AND THE REMEDY, because a skip is silent by
+# design and this suite exits 0 with 13 of 52 tests not run. Those 13 are the only guards
+# for fl-09 (three of them) and fl-11 (one), so a validator who clones, runs pytest without
+# installing, and reads the green line concludes the guards pass when they never executed --
+# and reverting either fix leaves the suite green, so a fails-without-the-fix check cannot
+# fire either. `pip install -e ".[dev]"` pulls flwr and is what the README already says; the
+# hazard is running pytest WITHOUT the documented install, not a gap in the project.
 requires_flwr = pytest.mark.skipif(
-    importlib.util.find_spec("flwr") is None, reason="flwr is not installed"
+    importlib.util.find_spec("flwr") is None,
+    reason=(
+        "flwr is not installed, so this test DID NOT RUN -- it is not passing. "
+        "13 of 52 tests are gated this way, including the only guards for fl-09 and "
+        'fl-11. Run `pip install -e ".[dev]"` (the documented install, which pulls flwr) '
+        "before treating this suite as coverage."
+    ),
 )
 
 
