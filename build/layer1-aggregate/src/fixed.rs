@@ -36,6 +36,19 @@ pub enum FixedError {
 
 /// `Display` and `Error`. See the note on `rules::AggError`: a refusal the caller cannot
 /// print or propagate with `?` is a refusal that reaches the operator as a type name.
+///
+/// `core::error::Error`, not `std::`, so these impls need nothing if the no-std question
+/// recorded on `encode` is ever resolved. CORRECTING A CLAIM MADE IN THE COMMIT THAT
+/// INTRODUCED THEM: that message said "layer1's production code now contains zero explicit
+/// `std::` paths". That is true of the LIBRARY and false of the CRATE -- `src/bin/acfa-agg.rs`
+/// is a bin target of this same package and carries six (`io::Read`, `process::ExitCode`,
+/// `io::IsTerminal`, `env::args`, `io::stdin` twice), all outside its test module. The probe
+/// behind the claim scanned three library files; the claim was stated over the crate.
+///
+/// The underlying reasoning is unaffected, which is why this is a scope correction and not a
+/// retraction: a bin is a separate crate root, so a no-std LIBRARY can ship a std BINARY, and
+/// a CLI that reads stdin necessarily has std. The library's single blocker remains
+/// `f64::round`.
 impl core::fmt::Display for FixedError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
