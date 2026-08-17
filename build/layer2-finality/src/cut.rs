@@ -31,7 +31,6 @@
 //!   barrier does not bind. That is what makes the `2f+3` resilience honest rather than
 //!   a trick.
 
-use acfa_receipt::hash::h;
 use acfa_receipt::identity::{verify, Identity, Pki, Sig};
 use std::collections::BTreeSet;
 
@@ -41,6 +40,19 @@ use std::collections::BTreeSet;
 /// already on the chain. Binding to the prefix is what stops a chain being reassembled
 /// from signatures harvested out of other chains: a signature is only valid at the exact
 /// depth and in the exact company it was produced for.
+///
+/// crypto-06: THE `ACFA-RELAY|` TAG IS IN THE SIGNED BYTES, NOT ONLY IN A PRE-HASH. This
+/// returns the tagged preimage itself and lets the signer's Ed25519 hash it, exactly as
+/// `contrib_msg` and `CertTuple::msg` do. The previous form returned `h(preimage)` and signed
+/// that bare 32-byte digest, so the domain tag lived inside the hash and NOT inside what the
+/// signature covered -- making relay the one signing context in the crate whose signed message
+/// carried no visible domain separation. No live cross-protocol replay existed (a 32-byte
+/// relay digest cannot equal a `ACFA-CONTRIB|`/`ACFA-CERT|` preimage, which are longer and
+/// tag-prefixed), but a future context that signed a bare hash would have had no separation
+/// from this one. Signing the tagged preimage makes the invariant uniform: every signature in
+/// the crate is over bytes that begin with their own `ACFA-*|` tag. Not a wire-format change --
+/// the chain still carries `(id, sig)` pairs -- and no golden or fingerprint covers relay
+/// signatures, so nothing downstream moves.
 pub fn relay_msg(anchor: &[u8; 32], leaf: &[u8; 32], prefix: &[(u32, Sig)]) -> Vec<u8> {
     let mut m = Vec::with_capacity(12 + 32 + 32 + prefix.len() * 68);
     m.extend_from_slice(b"ACFA-RELAY|");
@@ -50,7 +62,7 @@ pub fn relay_msg(anchor: &[u8; 32], leaf: &[u8; 32], prefix: &[(u32, Sig)]) -> V
         m.extend_from_slice(&id.to_be_bytes());
         m.extend_from_slice(s);
     }
-    h(&m).to_vec()
+    m
 }
 
 /// A Dolev-Strong relay chain carrying one contribution toward admission.
@@ -259,5 +271,37 @@ impl DeadlineCut {
     /// Merkle root of the admitted set -- the `A_r` component of the certificate tuple.
     pub fn root(&self) -> [u8; 32] {
         acfa_receipt::hash::merkle_root(&self.admitted)
+    }
+}
+
+#[cfg(test)]
+mod crypto06_tests {
+    use super::relay_msg;
+
+    /// crypto-06: the relay signing message must carry the `ACFA-RELAY|` domain tag IN the
+    /// signed bytes, and must not be a bare 32-byte digest.
+    ///
+    /// GUARD-DELETION: revert `relay_msg` to `h(&m).to_vec()` and this fails on both counts --
+    /// the output becomes 32 bytes and no longer starts with the tag. The relay-chain
+    /// integration tests in `tests/finality.rs` (which sign and verify through this same
+    /// function) stay green either way, so they cannot see the difference; this unit test is
+    /// the only thing that pins the domain tag into the signature.
+    #[test]
+    fn the_signed_relay_message_carries_the_domain_tag() {
+        let anchor = [7u8; 32];
+        let leaf = [9u8; 32];
+        let msg = relay_msg(&anchor, &leaf, &[]);
+        assert!(
+            msg.starts_with(b"ACFA-RELAY|"),
+            "the signed bytes must begin with the domain tag, not hide it inside a pre-hash"
+        );
+        assert_ne!(
+            msg.len(),
+            32,
+            "a 32-byte message is a bare digest -- the tag would be inside the hash, not signed"
+        );
+        // And it genuinely binds the anchor and leaf (they appear after the tag).
+        assert!(msg.windows(32).any(|w| w == anchor));
+        assert!(msg.windows(32).any(|w| w == leaf));
     }
 }
