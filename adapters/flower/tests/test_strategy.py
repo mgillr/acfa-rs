@@ -867,3 +867,39 @@ def test_agreeing_clients_are_untouched_by_the_structural_check():
     out = aggregate(honest_set(), rule=Rule.KRUM, f=1)
     assert [o.shape for o in out] == [(2,), (1, 2)]
     assert all(o.dtype == np.float64 for o in out)
+
+
+# ---------------------------------------------------------------- fl-13
+
+def test_a_mismatch_names_the_minority_not_whoever_arrived_second():
+    """fl-13. The checks compared everyone against `flats[0]` and named whoever differed
+    from it, so an adversary at index 0 was never named and an honest client was -- with the
+    adversary's own value reported as the reference the majority failed to match.
+
+    Six honest 4-element updates, one adversarial 2-element update, adversary at each of the
+    seven positions. The adversary must be named in ALL seven.
+
+    FAILS ON THE UNFIXED CODE at position 0: names client 1, an honest node.
+    """
+    honest = [np.array([1.0, 2.0, 3.0, 4.0])]
+    adversary = [np.array([1.0, 2.0])]
+    keys = [bytes([i]) for i in range(7)]
+    for pos in range(7):
+        ups = [honest] * 7
+        ups[pos] = adversary
+        with pytest.raises(AcfaAggregationError) as ei:
+            aggregate(ups, rule=Rule.MEAN, f=1, tie_keys=keys)
+        assert f"client(s) [{pos}]" in str(ei.value), (pos, str(ei.value))
+
+
+def test_with_no_strict_plurality_nobody_is_named():
+    """Attribution is an accusation, so where there is no honest majority to attribute
+    against -- an even split, or n=2 -- it must refuse WITHOUT naming anyone rather than
+    guess. The arrival-order rule guessed confidently in both cases.
+    """
+    a = [np.array([1.0, 2.0, 3.0, 4.0])]
+    b = [np.array([1.0, 2.0])]
+    keys = [bytes([i]) for i in range(4)]
+    for ups in ([a, a, b, b], [a, b]):
+        with pytest.raises(AcfaAggregationError, match="no strict plurality"):
+            aggregate(ups, rule=Rule.MEAN, f=1, tie_keys=keys[: len(ups)])

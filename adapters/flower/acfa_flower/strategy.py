@@ -226,51 +226,92 @@ def aggregate(
     # three remains undisclosed at runtime and is documented only here.
 
     flats = [_flatten(u) for u in updates]
+
+    # fl-13. ATTRIBUTE A MISMATCH BY PLURALITY, NEVER BY ARRIVAL POSITION.
+    #
+    # These checks compared every client against `flats[0]` and named whoever DIFFERED FROM
+    # IT. An adversary sitting at index 0 is therefore never named, an honest client is, and
+    # the adversary's own value is reported as the reference the majority failed to match.
+    #
+    # MEASURED: six honest 4-element updates, one adversarial 2-element update, adversary
+    # moved to each of seven positions. The message named the ADVERSARY in six placements and
+    # an HONEST CLIENT in the one the adversary gets to choose. Milder than the same defect in
+    # `rules::check`, which named every honest node in six of seven, only because this loop
+    # stopped at the first mismatch. The vector is the same.
+    #
+    # Attribution is an accusation, so it is read from the PLURALITY, which is sound under the
+    # fault budget this adapter assumes: with f < n/2 the honest clients are the strict
+    # plurality by counting. With NO strict plurality there is no honest majority to attribute
+    # against, and it refuses without naming anyone rather than guess.
+    def _minority(key):
+        """(indices differing from the plurality, the plurality value).
+
+        `(None, None)` when no value holds a strict plurality -- an even split, or n=2 --
+        because then there is nobody who can be held responsible.
+        """
+        vals = [key(fl) for fl in flats]
+        counts: dict = {}
+        for v in vals:
+            counts[v] = counts.get(v, 0) + 1
+        top = max(counts.values())
+        winners = [v for v, c in counts.items() if c == top]
+        if len(winners) != 1 or top * 2 <= len(vals):
+            return None, None
+        return [i for i, v in enumerate(vals) if v != winners[0]], winners[0]
+
+    def _check(key, what, tail, show=str):
+        odd, agreed = _minority(key)
+        if odd is None:
+            seen = sorted({show(key(fl)) for fl in flats})
+            raise AcfaAggregationError(
+                f"clients disagree on {what} with no strict plurality, so no client can be "
+                f"held responsible: values present are {seen}. Refusing without naming "
+                "anyone -- attribution is an accusation, and there is no honest majority "
+                "here to attribute against."
+            )
+        if odd:
+            raise AcfaAggregationError(
+                f"client(s) {odd} sent {what} "
+                f"{sorted({show(key(flats[i])) for i in odd})}; the plurality sent "
+                f"{show(agreed)}. {tail}"
+            )
+
+    _check(
+        lambda fl: fl.values.size, "value counts",
+        "and padding one would let a short update shift the result.",
+    )
+    # fl-12. THE FLATTENED LENGTH USED TO BE THE ONLY THING COMPARED, AND THE RESULT IS
+    # REBUILT FROM ONE CLIENT -- SO THE OUTPUT DEPENDED ON ARRIVAL ORDER.
+    #
+    # `_unflatten` rebuilds with one client's `shapes` and `dtypes`. Two clients can flatten
+    # to the same LENGTH while disagreeing on STRUCTURE or DTYPE, and that passed.
+    #
+    # MEASURED, same five updates permuted, one client differing:
+    #   structure: [array([1.]), array([2.])] vs [array([1., 2.])]
+    #       that client first -> shapes [(1,), (1,)];  last -> [(2,)]
+    #   dtype: one float32 among float64
+    #       float32 first -> dtype float32, bytes 0000c03f00002040
+    #       float32 last  -> dtype float64, bytes 000000000000f83f0000000000000440
+    #
+    # THE SAME SET IN A DIFFERENT ORDER PRODUCED DIFFERENT BYTES -- the property this adapter
+    # exists to provide, contradicted by the RECONSTRUCTION rather than by the aggregation.
+    # The kernel's answer was identical both times.
+    _check(
+        lambda fl: fl.shapes, "parameter shapes",
+        "They flatten to the same length, so the aggregate is well defined -- but the result "
+        "is rebuilt with one client's structure, which would make the OUTPUT SHAPE depend on "
+        "arrival order. Refusing rather than picking one.",
+    )
+    _check(
+        lambda fl: fl.dtypes, "dtypes",
+        "The result is cast back to one client's dtypes, so a lower-precision client arriving "
+        "first silently downcasts the aggregate -- the same set in a different order returns "
+        "different BYTES.",
+        show=lambda d: tuple(str(x) for x in d),
+    )
+
     ref = flats[0]
-    for i, fl in enumerate(flats[1:], start=1):
-        if fl.values.shape != ref.values.shape:
-            raise AcfaAggregationError(
-                f"client {i} sent {fl.values.size} values, client 0 sent {ref.values.size}; "
-                "padding one would let a short update shift the result"
-            )
-        # fl-12. THE FLATTENED LENGTH WAS THE ONLY THING COMPARED, AND THE RESULT IS
-        # RECONSTRUCTED FROM CLIENT ZERO -- SO THE OUTPUT DEPENDED ON ARRIVAL ORDER.
-        #
-        # `_unflatten` rebuilds using `ref.shapes` and `ref.dtypes`, and `ref` is `flats[0]`,
-        # i.e. whichever client happened to arrive first. Two clients can flatten to the same
-        # LENGTH while disagreeing on STRUCTURE or DTYPE, and that passed the check above.
-        #
-        # MEASURED, same five updates, one client differing, permuted:
-        #   structure: [array([1.]), array([2.])] vs [array([1., 2.])]
-        #       that client first -> shapes [(1,), (1,)]
-        #       that client last  -> shapes [(2,)]
-        #   dtype: one float32 client among float64
-        #       float32 first -> dtype float32, bytes 0000c03f00002040
-        #       float32 last  -> dtype float64, bytes 000000000000f83f0000000000000440
-        #
-        # THE SAME SET IN A DIFFERENT ORDER PRODUCED DIFFERENT BYTES. That is the exact
-        # property this adapter exists to provide, contradicted by the reconstruction step
-        # rather than by the aggregation -- the kernel's answer was identical both times.
-        # `test_aggregate_is_a_function_of_the_set_not_the_order` cannot see it because every
-        # client there shares one structure.
-        #
-        # Refusing rather than picking a canonical structure: with clients disagreeing there
-        # is no principled choice, and any rule for choosing (majority, first, smallest) is a
-        # policy the caller should set upstream where the model definition lives.
-        if fl.shapes != ref.shapes:
-            raise AcfaAggregationError(
-                f"client {i} sent parameter shapes {fl.shapes}, client 0 sent {ref.shapes}. "
-                "They flatten to the same length, so the aggregate is well defined -- but the "
-                "result is rebuilt with client 0's structure, which would make the OUTPUT "
-                "SHAPE depend on arrival order. Refusing rather than picking one."
-            )
-        if fl.dtypes != ref.dtypes:
-            raise AcfaAggregationError(
-                f"client {i} sent dtypes {tuple(str(d) for d in fl.dtypes)}, client 0 sent "
-                f"{tuple(str(d) for d in ref.dtypes)}. The result is cast back to client 0's "
-                "dtypes, so a lower-precision client arriving first silently downcasts the "
-                "aggregate -- the same set in a different order returns different BYTES."
-            )
+
 
     # adv-02. REFUSE integer dtypes rather than truncating the aggregate to fit them.
     #
