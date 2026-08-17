@@ -2,11 +2,26 @@
 
 An independent adversarial review of this codebase was run across six lenses -- distributed
 systems, Rust robustness, cryptography, Byzantine ML, numerics, and an adversarial engineer
-reading it as an attacker. It produced sixty findings.
+reading it as an attacker. It produced **fifty-nine** findings: 2 critical, 5 high, 14 medium,
+36 low, and 2 rated none. By lens: crdt 11, rust 13, crypto 9, fl 9, num 7, adv 10.
+
+That count was previously given here as "sixty", and the correction is worth stating rather
+than quietly applying. The number was carried from memory instead of read off the list, and it
+travelled into this file, the issue tracker and the working notes before anyone reconciled it
+against the source. Four of the findings below are about a claim in a shipped document being
+wrong; this file was making a fifth.
+
+The real total is 59 identifiers, contiguous with no gaps and no duplicates, which collapses to
+**55 distinct defects** once four confirmed alias pairs are merged -- crypto-01 = crdt-06,
+crypto-05 = crdt-04, adv-03 = rust-07, adv-04 = rust-06. The last of those is recorded by the
+source itself, at `build/layer1-aggregate/tests/value_range.rs`.
 
 This file records the ones that are **fixed**, with the commit that fixed each so the claim
-is checkable rather than asserted. Two of the sixty were refuted outright; several more were
-partly confirmed and are recorded here at their real scope rather than as reported.
+is checkable rather than asserted. **Three** of the fifty-nine were refuted outright -- crdt-10,
+adv-07 and num-07 -- and a refuted finding is kept rather than deleted, because a report that
+was investigated and found wrong is a result, and the next person to notice the same thing
+deserves to find the answer instead of repeating the work. Several more were partly confirmed
+and are recorded here at their real scope rather than as reported.
 
 Findings that are still open are tracked as GitHub issues, labelled `audit`. A small number are held back
 until they are closed, because publishing an unfixed weakness in a system people may be
@@ -134,7 +149,7 @@ construction.
 ## How these were fixed, since the method is the part worth copying
 
 Every fix in this file was **reproduced before being written**. Two findings were already
-stale by the time they were reached and one was refuted outright, so patching on the report
+stale by the time they were reached and three were refuted outright, so patching on the report
 would have produced changes with nothing behind them.
 
 Every regression test was verified to **fail on the unfixed code** before it was kept. A test
