@@ -217,8 +217,9 @@ def aggregate(
     # NOT REFUSED HERE. `test_strategy_reports_bound_unmet_without_failing` constructs
     # exactly this case -- n=3, f=1 -- and asserts it works and reports. That is a deliberate
     # design decision with a test behind it, and the docstring argument (refuse, and callers
-    # patch the check out) is the room's, not mine to overturn from the adapter. What was
-    # missing was not a refusal but VISIBILITY: band two and band three were reported
+    # patch the check out) states a project position that an adapter-level guard should not
+    # silently reverse. What was missing was not a refusal but VISIBILITY: band two and
+    # band three were reported
     # identically, as `acfa_population_bound_met: False`, and they are not the same event.
     # `AcfaStrategy.aggregate_fit` now distinguishes them. The open question I am NOT
     # deciding: the direct `aggregate()` path has no metrics channel, so on that path band

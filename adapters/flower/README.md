@@ -60,7 +60,7 @@ d=64`, 40 trials per row, Gaussian honest updates:
 | 1.00 | 0.50709 | 50.7% |
 | 5.00 | 2.68790 | 53.8% |
 
-About **half the honest spread at every scale** — it grows with heterogeneity rather than
+About **half the honest spread at every scale** -- it grows with heterogeneity rather than
 washing out. Federated data is heterogeneous by definition, so this rule diverges from a
 median most where you would reach for one, and behaves well in the IID toy case you would
 try first.
