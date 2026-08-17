@@ -318,37 +318,43 @@ fn check(cs: &[Contribution]) -> Result<usize, AggError> {
     // crdt-08, accountability half. The plurality length -- NOT `cs[0].v.len()`, which
     // hands the adversary the choice of who gets accused. See `AggError::DimensionMismatch`
     // for the measurement behind that sentence and for why naive attribution is worse than
-    // none. `n` is bounded by `MAX_CONTRIBUTIONS` above, so the quadratic count is bounded
-    // work by construction; it also only runs on the refusal path's precondition.
+    // none.
     //
-    // THE PLURALITY SCAN IS QUADRATIC AND IT RUNS ONLY ON THE PATH THAT IS ALREADY
-    // REFUSING. Unanimity -- every accepted round -- is settled by the linear `all` below
-    // and returns before reaching it, so the happy path costs exactly what it cost before
-    // this fix. Putting an O(n^2) length scan in front of every aggregate to improve an
-    // error message would have been the day's own mistake committed a third time.
+    // THE SCAN IS SORT-BASED, O(n log n), AND THE FIRST VERSION OF IT WAS QUADRATIC. That
+    // version counted each length by filtering the whole slice per contribution, and
+    // carried a comment claiming `n` was bounded by `MAX_CONTRIBUTIONS` "above". IT IS NOT:
+    // that cap is enforced inside the Krum/Bulyan pool guard, not in `check`, so `mean`
+    // takes any `n` the caller can send. Measured on the shipped binary with one short
+    // vector among n: 0.024s at n=4000 rising ~4x per doubling to 1.394s at n=32000 --
+    // linear input, quadratic work, chosen by the attacker. That is rust-02's shape, and it
+    // was introduced HERE, today, by a bound asserted in a comment and enforced nowhere.
+    //
+    // Unanimity -- every accepted round -- is still settled by the linear `all` below and
+    // returns before reaching the scan at all, so the happy path is untouched either way.
     let d = cs[0].v.len();
     if !cs.iter().all(|c| c.v.len() == d) {
-        let mut best_len = d;
-        let mut best_count = 0usize;
-        let mut strict = true;
-        for c in cs {
-            let count = cs.iter().filter(|o| o.v.len() == c.v.len()).count();
-            if count > best_count {
-                best_len = c.v.len();
-                best_count = count;
-                // A tie recorded below the new maximum was never a tie FOR the maximum.
-                strict = true;
-            } else if count == best_count && c.v.len() != best_len {
-                strict = false;
+        let mut lens: Vec<usize> = cs.iter().map(|c| c.v.len()).collect();
+        lens.sort_unstable();
+        let (mut best_len, mut best_count, mut distinct, mut tied) =
+            (lens[0], 0usize, 0usize, false);
+        let mut i = 0;
+        while i < lens.len() {
+            let mut j = i;
+            while j < lens.len() && lens[j] == lens[i] {
+                j += 1;
             }
+            let count = j - i;
+            distinct += 1;
+            if count > best_count {
+                // A tie recorded below the new maximum was never a tie FOR the maximum.
+                (best_len, best_count, tied) = (lens[i], count, false);
+            } else if count == best_count {
+                tied = true;
+            }
+            i = j;
         }
-        if !strict {
-            let mut lens: Vec<usize> = cs.iter().map(|c| c.v.len()).collect();
-            lens.sort_unstable();
-            lens.dedup();
-            return Err(AggError::DimensionMismatchUnattributable {
-                lengths: lens.len(),
-            });
+        if tied {
+            return Err(AggError::DimensionMismatchUnattributable { lengths: distinct });
         }
         // `best_count < cs.len()` here because the lengths are not unanimous, so a
         // contribution off the plurality exists and this cannot be `None`.

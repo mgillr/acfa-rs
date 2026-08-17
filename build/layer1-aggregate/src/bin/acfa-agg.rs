@@ -35,7 +35,8 @@
 //! `refused`, 2 on malformed input.
 
 use acfa_aggregate::{
-    bulyan_aggregate, coord_median_trim, encode, krum_aggregate, mean, trimmed_mean, Contribution,
+    bulyan_aggregate, coord_median_trim, encode, krum_aggregate, mean, trimmed_mean, AggError,
+    Contribution,
 };
 use std::io::Read;
 use std::process::ExitCode;
@@ -146,7 +147,11 @@ fn main() -> ExitCode {
     let mut beta = (1u32, 4u32);
     let (mut saw_rule, mut saw_f, mut saw_beta) = (false, false, false);
     let mut cs: Vec<Contribution> = Vec::new();
-    let mut dim: Option<usize> = None;
+    // Source line of each contribution, parallel to `cs`. crdt-08: the library refusal
+    // names an INDEX into `cs`, and an operator holding a file needs a LINE. Keeping the
+    // map here is what lets the CLI report the library's attribution without recomputing
+    // it -- and recomputing it is exactly what went wrong, see below.
+    let mut cs_lines: Vec<usize> = Vec::new();
 
     for (n, line) in input.lines().enumerate() {
         let line = line.trim();
@@ -250,16 +255,25 @@ fn main() -> ExitCode {
                 if v.is_empty() {
                     return die(2, &format!("line {}: contribution has no values", n + 1));
                 }
-                match dim {
-                    None => dim = Some(v.len()),
-                    Some(d) if d != v.len() => {
-                        return die(
-                            2,
-                            &format!("line {}: dimension {} differs from {d}", n + 1, v.len()),
-                        )
-                    }
-                    _ => {}
-                }
+                // crdt-08, SECOND SITE. THERE WAS A DIMENSION CHECK HERE AND IT WAS THE
+                // FRAMING VECTOR THE LIBRARY WAS JUST FIXED FOR.
+                //
+                // It compared every contribution against the FIRST one and reported
+                // "line N: dimension X differs from d" -- so an adversary sending a short
+                // vector as contribution ONE had every honest line named instead, and its
+                // own length was reported as the reference. Measured on six honest dim-4
+                // and one adversarial dim-1: with the adversary first the message read
+                // "line 4: dimension 4 differs from 1", accusing an honest node.
+                //
+                // It also exited 2, "unreadable input", for a request that parses
+                // perfectly. The contract reserves 1 for "refused -- bad input values",
+                // and `ee7d221`/`efc785c` already made exactly this correction for
+                // out-of-range and non-finite values while leaving this sibling behind.
+                //
+                // So the check is GONE rather than repaired. `rules::check` already does
+                // this correctly, by plurality, on input the CLI is about to hand it -- a
+                // second implementation of a security-relevant rule is how the two drift.
+                cs_lines.push(n + 1);
                 cs.push(Contribution { tie_key, v });
             }
         }
@@ -330,7 +344,30 @@ fn main() -> ExitCode {
         // Layer 1 refuses rather than guessing. Surfacing the refusal as a distinct exit
         // code keeps a caller from reading "no output" as "zero vector".
         Err(e) => {
-            println!("refused {e:?}");
+            // THE REASON MUST BE ONE WHITESPACE-FREE TOKEN AND `{e:?}` NO LONGER IS.
+            //
+            // Callers split on whitespace and read the reason, so a reason containing a
+            // space truncates for every one of them. That held while every variant was a
+            // unit, and crdt-08 made `DimensionMismatch` a struct variant whose Debug form
+            // is `DimensionMismatch { offender: 0, expected: 4, got: 1 }` -- NINE tokens.
+            // I shipped that break in the library commit and the contract test could not
+            // see it, because it only ever exercised a unit variant.
+            //
+            // So the token is the variant NAME, cut at the first space or brace. The values
+            // are not lost: they go to stderr on the next line, where a human reads them and
+            // no parser does.
+            let dbg = format!("{e:?}");
+            let token = dbg.split([' ', '{']).next().unwrap_or(&dbg);
+            println!("refused {token}");
+            eprintln!("acfa-agg: {e}");
+            // crdt-08: translate the library's contribution INDEX into the operator's LINE.
+            // Without this the refusal names "contribution 0" against a file whose first
+            // contribution is on line 3.
+            if let AggError::DimensionMismatch { offender, .. } = e {
+                if let Some(line) = cs_lines.get(offender) {
+                    eprintln!("acfa-agg: that is line {line} of this request.");
+                }
+            }
             ExitCode::from(1)
         }
     }
