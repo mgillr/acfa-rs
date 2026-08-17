@@ -300,12 +300,24 @@ impl Finality {
     /// Identities attributed by any observed fork -- the Byzantine-bridging signers.
     /// Excluded from round `r+1` onward.
     pub fn attributed(&self) -> std::collections::BTreeSet<u32> {
-        self.forks.values().flat_map(|f| f.attributable()).collect()
+        // READ THE PERMANENT RECORD, NOT THE BLOCKING SET. `forks` holds only the forks
+        // currently halting the node; `resume` CLEARS it. Reading `forks` here meant that the
+        // moment an operator resumed, `attributed()` returned empty -- so a proven
+        // double-signer's conviction vanished on the normal recovery path, with no adversary
+        // involved. Measured: {3} before resume, {} after. `history` retains every fork across
+        // a resume, and both `record` call sites store the PRUNED fork, so membership in a
+        // history fork's `sigs` already means verified -- reading it cannot re-introduce the
+        // accuse-an-innocent path that pruning closed.
+        self.history.iter().flat_map(|f| f.attributable()).collect()
     }
 
     /// The published evidence. Every observed fork, for onward gossip.
     pub fn evidence(&self) -> Vec<&CertFork> {
-        self.forks.values().collect()
+        // Also the permanent record. A resumed node must keep gossiping the fork proofs it
+        // holds -- the module's whole argument is that evidence unions into every honest node
+        // so a violation cannot be suppressed. Reading `forks` meant a resumed node published
+        // NOTHING, quietly withdrawing the proof from the network on the recovery path.
+        self.history.iter().collect()
     }
 
     /// Re-establish the timing assumption and resume from the reconcile point.

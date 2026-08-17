@@ -184,3 +184,49 @@ fn two_honest_nodes_do_not_finalise_conflicting_states_after_resume() {
     assert!(!x.is_final(1), "a forked round must not be final on X");
     assert!(!y.is_final(1), "a forked round must not be final on Y");
 }
+
+/// crdt-05 attribution, the resume path: a proven double-signer's conviction must SURVIVE a
+/// resume, and a resumed node must keep publishing the evidence.
+///
+/// `attributed()` and `evidence()` read the permanent `history`, not the transient `forks`
+/// that `resume` clears. Before the fix, node 3 -- which signed BOTH halves -- was attributed
+/// {3} before resume and {} after, so the recovery path silently un-convicted a guilty node
+/// and withdrew the proof from gossip, with no adversary involved.
+///
+/// GUARD-DELETION: point `attributed()` back at `self.forks` and this goes RED after resume,
+/// while the pre-resume assertion and every other test stay green.
+#[test]
+fn a_double_signer_conviction_and_its_evidence_survive_a_resume() {
+    let (ids, pki) = room(5);
+    let mut fin = Finality::new(1);
+    // node 3 (index 2) signs BOTH halves -> a genuine equivocation, must stay attributed.
+    fin.observe(
+        cert_signed_by(tuple(1, "A", "a"), &[&ids[0], &ids[1], &ids[2]]),
+        &pki,
+    )
+    .ok();
+    let _ = fin.observe(
+        cert_signed_by(tuple(1, "B", "b"), &[&ids[2], &ids[3], &ids[4]]),
+        &pki,
+    );
+
+    assert!(
+        fin.attributed().contains(&3),
+        "node 3 double-signed; it must be attributed before resume"
+    );
+    assert!(
+        !fin.evidence().is_empty(),
+        "the fork proof exists before resume"
+    );
+
+    fin.resume(RoundBudget::new(200)).unwrap();
+
+    assert!(
+        fin.attributed().contains(&3),
+        "resume LOST the conviction of a proven double-signer"
+    );
+    assert!(
+        !fin.evidence().is_empty(),
+        "resume withdrew the fork proof from gossip"
+    );
+}
