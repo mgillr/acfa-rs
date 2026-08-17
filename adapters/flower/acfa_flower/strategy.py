@@ -27,7 +27,33 @@ class Rule(str, Enum):
 
     KRUM = "krum"        # needs n >= 2f + 3
     BULYAN = "bulyan"    # needs n >= 4f + 3, defends coordinate-concentrated attacks
-    MEDIAN = "median"    # coordinate-wise, trimmed toward the median
+
+    # fl-05. NOT the coordinate-wise median of Yin et al., which is what someone selecting
+    # a rule called "median" will believe they are getting. The kernel's `coord_median_trim`
+    # keeps the `max(n - 2f, 1)` values CLOSEST TO each coordinate's median and then
+    # floor-averages them -- a median-CENTRED TRIMMED MEAN. At n=7, f=1 that averages 5 of
+    # 7 values; a median would take 1.
+    #
+    # The difference is not a rounding artefact. Measured against a true coordinate-wise
+    # median, n=7, f=1, d=64, 40 trials per row, Gaussian honest updates:
+    #
+    #   honest spread    mean max|difference|    as a fraction of the spread
+    #   0.01             0.00495                 49.5%
+    #   0.10             0.05377                 53.8%
+    #   1.00             0.50709                 50.7%
+    #   5.00             2.68790                 53.8%
+    #
+    # It is ~50% of the honest spread at EVERY scale -- it grows with heterogeneity rather
+    # than washing out. Federated data is heterogeneous by definition, so the rule labelled
+    # "median" diverges most from a median exactly where a practitioner reaches for one, and
+    # is well behaved in the IID toy case they would test first. See fl-06, same root cause.
+    #
+    # MEDIAN_TRIMMED is the accurate name and is canonical. MEDIAN is kept as an ALIAS so no
+    # caller breaks: same wire value, `Rule("median")` still resolves, `Rule.MEDIAN` still
+    # works. What changes is that `.name` and `repr` now say what the rule does.
+    MEDIAN_TRIMMED = "median"
+    MEDIAN = "median"    # alias of MEDIAN_TRIMMED, kept for compatibility
+
     TRIMMED = "trimmed"  # coordinate-wise trimmed mean
     MEAN = "mean"        # NO robustness; present for A/B against FedAvg only
 

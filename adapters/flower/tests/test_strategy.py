@@ -581,3 +581,48 @@ def test_a_caller_metric_colliding_with_the_reserved_prefix_is_refused():
     )
     with pytest.raises(AcfaAggregationError, match="reserved key"):
         strat.aggregate_fit(1, _fit_results([{} for _ in range(5)]), [])
+
+
+# ---------------------------------------------------------------- fl-05
+
+def test_median_is_named_for_what_it_does_and_the_old_name_still_works():
+    """fl-05. `Rule.MEDIAN` selected a median-CENTRED TRIMMED MEAN, not the coordinate-wise
+    median of Yin et al. The behaviour is a legitimate rule; the identifier was the defect,
+    and an identifier is what a practitioner picks a rule by.
+
+    FAILS ON THE UNFIXED CODE: `Rule.MEDIAN.name` was "MEDIAN".
+
+    The rest pins that renaming broke nothing: same wire value, `Rule("median")` still
+    resolves, and the alias is the same object.
+    """
+    assert Rule.MEDIAN_TRIMMED.value == "median"
+    assert Rule.MEDIAN is Rule.MEDIAN_TRIMMED
+    assert Rule.MEDIAN.name == "MEDIAN_TRIMMED"
+    assert Rule("median") is Rule.MEDIAN_TRIMMED
+    assert Rule.MEDIAN == "median"
+
+
+def test_median_trimmed_differs_from_a_true_coordinate_wise_median_by_half_the_spread():
+    """CHARACTERISATION, not a guard -- it pins the divergence rather than claiming a fix.
+
+    The kernel keeps the max(n-2f, 1) values closest to each coordinate's median and
+    AVERAGES them: at n=7, f=1 that is 5 of 7, where a median takes 1. The gap is ~50% of
+    the honest spread and does NOT shrink as the spread shrinks, so it is structural rather
+    than numerical. Federated data is heterogeneous by construction, which is exactly the
+    wide-spread case.
+
+    The behaviour lives in the kernel's `coord_median_trim`, outside this adapter. This test
+    exists so the adapter's documentation of it cannot drift without something failing.
+    """
+    rng = np.random.default_rng(3)
+    for spread in (0.01, 1.0):
+        gaps = []
+        for _ in range(20):
+            ups = [[rng.normal(0.0, spread, 64)] for _ in range(7)]
+            keys = [bytes([i]) for i in range(7)]
+            got = aggregate(ups, rule=Rule.MEDIAN_TRIMMED, f=1, tie_keys=keys)[0]
+            want = np.median(np.array([u[0] for u in ups]), axis=0)
+            gaps.append(float(np.max(np.abs(got - want))))
+        relative = float(np.mean(gaps)) / spread
+        # Wide band: the claim is "about half the spread, at every scale", not a constant.
+        assert 0.3 < relative < 0.8, (spread, relative)

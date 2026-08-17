@@ -39,9 +39,35 @@ disagree, which is the failure the fixed-point kernel exists to remove.
 |---|---|---|
 | `Rule.KRUM` | `n >= 2f+3` | default |
 | `Rule.BULYAN` | `n >= 4f+3` | defends coordinate-concentrated attacks; refuses below the bound |
-| `Rule.MEDIAN` | - | coordinate-wise, trimmed toward the median |
+| `Rule.MEDIAN_TRIMMED` | - | median-**centred trimmed mean** -- see below. `Rule.MEDIAN` is an alias |
 | `Rule.TRIMMED` | - | coordinate-wise trimmed mean |
 | `Rule.MEAN` | - | no robustness; for A/B against FedAvg |
+
+### `MEDIAN_TRIMMED` is not the coordinate-wise median
+
+It keeps the `max(n - 2f, 1)` values closest to each coordinate's median and **averages
+them**. At `n=7, f=1` that averages 5 of 7 values; a median would take 1. It is a
+median-centred trimmed mean, not the coordinate-wise median of Yin et al., which is what
+selecting a rule called "median" would normally get you.
+
+The gap is not a rounding artefact. Against a true coordinate-wise median, `n=7, f=1,
+d=64`, 40 trials per row, Gaussian honest updates:
+
+| honest spread | mean max abs difference | as a fraction of the spread |
+|---|---|---|
+| 0.01 | 0.00495 | 49.5% |
+| 0.10 | 0.05377 | 53.8% |
+| 1.00 | 0.50709 | 50.7% |
+| 5.00 | 2.68790 | 53.8% |
+
+About **half the honest spread at every scale** — it grows with heterogeneity rather than
+washing out. Federated data is heterogeneous by definition, so this rule diverges from a
+median most where you would reach for one, and behaves well in the IID toy case you would
+try first.
+
+`MEDIAN_TRIMMED` is the accurate name and is canonical; `Rule.MEDIAN` is kept as an alias,
+so the wire value, `Rule("median")` and `Rule.MEDIAN` all still work. Only `.name` and
+`repr` change.
 
 ## Tie keys
 
