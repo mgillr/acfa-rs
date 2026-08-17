@@ -62,6 +62,36 @@ The closing comment carries, at minimum:
 Closing with "fixed in abc1234" and nothing else is not acceptable, because it moves the
 work of understanding onto everyone who reads the issue later.
 
+## Recording a finding at all
+
+**Every finding gets its own issue, whatever its status.** Not the interesting ones, not the
+open ones -- every one, including the ones that were fixed the same hour they were found and
+the ones that turned out to be wrong.
+
+This is the rule the section above depends on, and it was added because the project broke it
+first: an audit that reported **sixty** findings shipped with **ten** issues. The other fifty
+were real, most were fixed, and several were fixed well -- but they existed only in prose in
+`AUDIT.md`, with no identifier and no table, which means nobody could count them. **Fixed and
+unrecorded is indistinguishable from never found**, and from outside it reads as fifty findings
+quietly dropped, which is a worse position than never having claimed sixty.
+
+So:
+
+- **One issue per finding identifier**, titled with the identifier, labelled `audit`.
+- **Fixed** closes with the full detail above.
+- **Open** states the mechanism and who owns it. An open finding on a public repo is not an
+  embarrassment; an invisible one is.
+- **Refuted** closes as refuted, carrying the evidence that refuted it. It is never deleted --
+  a report that was investigated and found wrong is a result, and the next person to notice
+  the same thing deserves to find the answer rather than repeat the work.
+- **A ledger table** in `AUDIT.md` maps every identifier to its severity, status, issue and
+  commit, so the count reconciles at a glance instead of by reading prose.
+
+The one exception is stated rather than hidden: an **unfixed security finding** is held back
+until it is fixed, because publishing a live weakness in software people may be running hands
+an attacker a recipe. Its existence and the count are recorded; its content is not. Once it is
+fixed it is published in full like everything else.
+
 ## Changes that need extra care
 
 - **Anything touching the wire format or a hash preimage** is a compatibility break: old
