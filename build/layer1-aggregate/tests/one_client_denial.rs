@@ -52,11 +52,15 @@ fn honest(n: u8) -> Vec<Contribution> {
         .collect()
 }
 
-/// fl-01. **CHARACTERISATION TEST -- IT PINS A DEFECT, IT IS NOT A GUARD.**
+/// fl-01, ATTRIBUTION HALF LANDED; THE DENIAL ITSELF REMAINS AND REMAINS PINNED.
 ///
-/// When this goes red, a single out-of-range client no longer denies the round -- the
-/// exclusion policy landed. Invert or delete it; do not repair it back to green, because
-/// that would restore the denial and add a test defending it.
+/// This began as a characterisation of two defects sharing one symptom: the round is
+/// denied, and the refusal names nobody. The ATTRIBUTION half is now fixed -- every arm
+/// below asserts the exact offender, coordinate and value -- so this is a GUARD for that
+/// half. The DENIAL half is unchanged and deliberate (SECURITY.md: refuse, never
+/// saturate); whether a layer above should EXCLUDE the named offender and retry is the
+/// refuse-or-exclude policy question, still open, and the offender field is what makes
+/// that a one-line filter when it is ruled on.
 #[test]
 fn one_out_of_range_client_denies_the_round_for_every_rule() {
     let mut cs = honest(7);
@@ -65,30 +69,58 @@ fn one_out_of_range_client_denies_the_round_for_every_rule() {
         v: vec![10, 20, 30, fixed::MAX + 1],
     });
 
-    assert_eq!(mean(&cs), Err(AggError::ValueOutOfRange), "mean");
+    assert_eq!(
+        mean(&cs),
+        Err(AggError::ValueOutOfRange {
+            offender: 7,
+            coord: 3,
+            value: fixed::MAX + 1,
+        }),
+        "mean"
+    );
     assert_eq!(
         krum_aggregate(&cs, 1),
-        Err(AggError::ValueOutOfRange),
+        Err(AggError::ValueOutOfRange {
+            offender: 7,
+            coord: 3,
+            value: fixed::MAX + 1,
+        }),
         "krum_aggregate"
     );
     assert_eq!(
         multi_krum(&cs, 1).map(|_| ()),
-        Err(AggError::ValueOutOfRange),
+        Err(AggError::ValueOutOfRange {
+            offender: 7,
+            coord: 3,
+            value: fixed::MAX + 1,
+        }),
         "multi_krum"
     );
     assert_eq!(
         coord_median_trim(&cs, 1),
-        Err(AggError::ValueOutOfRange),
+        Err(AggError::ValueOutOfRange {
+            offender: 7,
+            coord: 3,
+            value: fixed::MAX + 1,
+        }),
         "coord_median_trim"
     );
     assert_eq!(
         trimmed_mean(&cs, 1, 4),
-        Err(AggError::ValueOutOfRange),
+        Err(AggError::ValueOutOfRange {
+            offender: 7,
+            coord: 3,
+            value: fixed::MAX + 1,
+        }),
         "trimmed_mean"
     );
     assert_eq!(
         bulyan_select(&cs, 1).map(|_| ()),
-        Err(AggError::ValueOutOfRange),
+        Err(AggError::ValueOutOfRange {
+            offender: 7,
+            coord: 3,
+            value: fixed::MAX + 1,
+        }),
         "bulyan_select"
     );
 
@@ -101,29 +133,68 @@ fn one_out_of_range_client_denies_the_round_for_every_rule() {
     );
 }
 
-/// fl-01, the half that is actually fixable without a policy decision.
+/// fl-01, ACCOUNTABILITY HALF -- **INVERTED, NOT REPAIRED.**
 ///
-/// **CHARACTERISATION TEST.** When this goes red the refusal started naming its offender
-/// and fl-01's accountability half is closed -- which is the crdt-08 fix applied here.
+/// This was a characterisation test asserting the refusal named NOBODY, and its own
+/// docstring said that red meant the fix had arrived and to invert it rather than patch it
+/// back to green. The fix arrived. So it is inverted: it now asserts the refusal DOES name
+/// its offender, which makes it a GUARD.
+///
+/// Recording the transition rather than silently rewriting it, because the failure mode
+/// this repo keeps hitting is a characterisation test meeting a later editor as a broken
+/// guard and being "fixed" -- restoring the defect and adding a test that defends it. The
+/// opposite happened here and it should be visible: red was correct, and red was the
+/// signal to delete the old assertion.
 #[test]
-fn the_out_of_range_refusal_names_nobody() {
+fn the_out_of_range_refusal_names_its_offender() {
     let mut cs = honest(3);
     cs.push(Contribution {
         tie_key: vec![0xAB],
         v: vec![10, 20, 30, fixed::MAX + 1],
     });
 
-    let e = mean(&cs).expect_err("must refuse");
-    let rendered = format!("{e:?} {e}");
+    // The offender is the fourth contribution, index 3, at coordinate 3.
+    assert_eq!(
+        mean(&cs),
+        Err(AggError::ValueOutOfRange {
+            offender: 3,
+            coord: 3,
+            value: fixed::MAX + 1,
+        }),
+        "the refusal must identify which contribution and which coordinate"
+    );
 
-    // The offender is at index 3 and carries tie key 0xAB. Neither appears anywhere in the
-    // refusal, so a caller cannot exclude it and retry.
-    assert!(
-        !rendered.contains("171") && !rendered.contains("ab") && !rendered.contains("AB"),
-        "the refusal now identifies the offending contribution: {rendered}"
-    );
-    assert!(
-        !rendered.contains(" 3 ") && !rendered.ends_with(" 3"),
-        "the refusal now carries an offender index: {rendered}"
-    );
+    // And the operator-facing message must carry the values, not just the variant: a
+    // refusal a caller cannot act on is the whole of fl-01.
+    let rendered = mean(&cs).unwrap_err().to_string();
+    for needle in ["3", &(fixed::MAX + 1).to_string()] {
+        assert!(
+            rendered.contains(needle),
+            "the message drops {needle}, so it cannot be acted on: {rendered}"
+        );
+    }
+
+    // ATTRIBUTION MUST NOT DEPEND ON ARRIVAL ORDER. Out of range is a property of the value
+    // against a constant bound, so unlike the short-vector case there is no plurality to
+    // compute and no framing vector -- but that is worth pinning rather than assuming.
+    for position in 0..4usize {
+        let mut set = honest(3);
+        set.insert(
+            position,
+            Contribution {
+                tie_key: vec![0xAB],
+                v: vec![10, 20, 30, fixed::MAX + 1],
+            },
+        );
+        assert_eq!(
+            mean(&set),
+            Err(AggError::ValueOutOfRange {
+                offender: position,
+                coord: 3,
+                value: fixed::MAX + 1,
+            }),
+            "the accused must be the out-of-range client wherever it arrives (position \
+             {position})"
+        );
+    }
 }

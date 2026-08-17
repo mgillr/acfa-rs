@@ -403,10 +403,16 @@ fn main() -> ExitCode {
             // crdt-08: translate the library's contribution INDEX into the operator's LINE.
             // Without this the refusal names "contribution 0" against a file whose first
             // contribution is on line 3.
-            if let AggError::DimensionMismatch { offender, .. } = e {
-                if let Some(line) = cs_lines.get(offender) {
-                    eprintln!("acfa-agg: that is line {line} of this request.");
+            // fl-01 extends the same translation to the range refusal: both now carry an
+            // offender INDEX, and an index is only actionable once it is a LINE.
+            match e {
+                AggError::DimensionMismatch { offender, .. }
+                | AggError::ValueOutOfRange { offender, .. } => {
+                    if let Some(line) = cs_lines.get(offender) {
+                        eprintln!("acfa-agg: that is line {line} of this request.");
+                    }
                 }
+                _ => {}
             }
             ExitCode::from(1)
         }

@@ -69,23 +69,39 @@ fn out_of_range_is_refused_by_krum_and_bulyan_alike() {
 
         assert_eq!(
             multi_krum(&cs, 2),
-            Err(AggError::ValueOutOfRange),
+            Err(AggError::ValueOutOfRange {
+                offender: 0,
+                coord: 0,
+                value: mag,
+            }),
             "multi_krum accepted an out-of-range value at {label}"
         );
         assert_eq!(
             bulyan_select(&cs, 2),
-            Err(AggError::ValueOutOfRange),
+            Err(AggError::ValueOutOfRange {
+                offender: 0,
+                coord: 0,
+                value: mag,
+            }),
             "bulyan_select accepted an out-of-range value at {label} \
              -- the duplicated score block is unguarded"
         );
         assert_eq!(
             krum_aggregate(&cs, 2),
-            Err(AggError::ValueOutOfRange),
+            Err(AggError::ValueOutOfRange {
+                offender: 0,
+                coord: 0,
+                value: mag,
+            }),
             "krum_aggregate accepted an out-of-range value at {label}"
         );
         assert_eq!(
             bulyan_aggregate(&cs, 2),
-            Err(AggError::ValueOutOfRange),
+            Err(AggError::ValueOutOfRange {
+                offender: 0,
+                coord: 0,
+                value: mag,
+            }),
             "bulyan_aggregate accepted an out-of-range value at {label}"
         );
     }
@@ -97,15 +113,31 @@ fn every_coordinate_wise_rule_refuses_too() {
     // than the score sum, but "later" is not "never".
     for (label, mag) in cases() {
         let cs = spread(11, mag);
-        assert_eq!(mean(&cs), Err(AggError::ValueOutOfRange), "mean at {label}");
+        assert_eq!(
+            mean(&cs),
+            Err(AggError::ValueOutOfRange {
+                offender: 0,
+                coord: 0,
+                value: mag,
+            }),
+            "mean at {label}"
+        );
         assert_eq!(
             trimmed_mean(&cs, 1, 4),
-            Err(AggError::ValueOutOfRange),
+            Err(AggError::ValueOutOfRange {
+                offender: 0,
+                coord: 0,
+                value: mag,
+            }),
             "trimmed_mean at {label}"
         );
         assert_eq!(
             coord_median_trim(&cs, 2),
-            Err(AggError::ValueOutOfRange),
+            Err(AggError::ValueOutOfRange {
+                offender: 0,
+                coord: 0,
+                value: mag,
+            }),
             "coord_median_trim at {label}"
         );
     }
@@ -117,8 +149,15 @@ fn a_single_out_of_range_coordinate_anywhere_is_enough() {
     // an otherwise ordinary contribution is the realistic wire case.
     let mut cs = spread(11, 1000);
     cs[7].v[3] = i64::MAX;
-    assert_eq!(multi_krum(&cs, 2), Err(AggError::ValueOutOfRange));
-    assert_eq!(bulyan_select(&cs, 2), Err(AggError::ValueOutOfRange));
+    // fl-01: the refusal now says WHICH contribution and WHICH coordinate -- the buried
+    // realistic wire case is exactly where an operator needs the name.
+    let expected = AggError::ValueOutOfRange {
+        offender: 7,
+        coord: 3,
+        value: i64::MAX,
+    };
+    assert_eq!(multi_krum(&cs, 2), Err(expected));
+    assert_eq!(bulyan_select(&cs, 2), Err(expected));
 }
 
 #[test]

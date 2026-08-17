@@ -129,7 +129,28 @@ pub enum AggError {
     /// returned Ok while `multi_krum` and `bulyan_select` both panicked. Guarding
     /// `sq_dist` alone would have moved the fault one line down and left it looking like a
     /// different bug.
-    ValueOutOfRange,
+    ValueOutOfRange {
+        /// Index of the first contribution carrying an out-of-range value. A witness, as in
+        /// `DimensionMismatch`: the full offender set is recovered by re-scanning, and
+        /// UNLIKE the length case no plurality rule is needed -- out of range is a property
+        /// of the value against a constant bound, so the adversary cannot choose who is
+        /// accused by choosing where it arrives.
+        offender: usize,
+        /// Which coordinate of that contribution.
+        coord: usize,
+        /// The offending raw value.
+        value: i64,
+    },
+    /// Internal accumulator arithmetic exceeded its width.
+    ///
+    /// fl-01 split this out of `ValueOutOfRange`, which had been doing two jobs: the ENTRY
+    /// refusal above, which names an offender, and these totality arms, which cannot --
+    /// an overflow in a score sum has no single offending contribution. Conflating them
+    /// forced the attributable case to stay anonymous. On every path inside this module
+    /// this variant is UNREACHABLE by construction (`check` bounds every value at entry,
+    /// which is what makes the five i128 accumulators safe); it exists because the type
+    /// system cannot see that proof, exactly as documented at the `floor_div` call sites.
+    ArithmeticOverflow,
     /// `beta_den` is zero, so the trim fraction `beta_num / beta_den` is undefined.
     ///
     /// This was an `assert!` in library code, which aborts the process. A library reached
@@ -213,11 +234,21 @@ impl core::fmt::Display for AggError {
                 "too few contributions for Bulyan's precondition n >= 4f + 3; running anyway \
                  would return an aggregate with no Byzantine guarantee behind it"
             ),
-            AggError::ValueOutOfRange => write!(
+            AggError::ValueOutOfRange {
+                offender,
+                coord,
+                value,
+            } => write!(
                 f,
-                "a raw value lies outside the Q16.16 range [{}, {}]",
+                "contribution {offender} coordinate {coord} is {value}, outside the Q16.16 \
+                 range [{}, {}]; drop that contribution and the round can proceed",
                 crate::fixed::MIN,
                 crate::fixed::MAX
+            ),
+            AggError::ArithmeticOverflow => write!(
+                f,
+                "internal accumulator arithmetic exceeded its width; unreachable when every \
+                 input passed the entry range check"
             ),
             AggError::BetaDenominatorZero => {
                 write!(
@@ -321,7 +352,7 @@ pub const MAX_CONTRIBUTIONS_BULYAN: usize = 512;
 /// aggregate coordinate that goes on the wire, and a plausible wrong coordinate is worse
 /// than a refusal in a kernel whose whole claim is that the result is re-executable.
 ///
-/// Callers map `None` to `AggError::ValueOutOfRange`. On every path inside this module
+/// Callers map `None` to `AggError::ArithmeticOverflow`. On every path inside this module
 /// that arm is UNREACHABLE and is a totality requirement, not a live check: `check`
 /// rejects the empty set, so `n >= 1` at each call site and each `kept` slice is
 /// non-empty; and `check` bounds every raw value to `+/-2^31`, so a coordinate sum over
@@ -409,11 +440,21 @@ fn check(cs: &[Contribution]) -> Result<usize, AggError> {
     // makes all five i128 accumulators on the path -- the three coordinate-wise sums, the
     // squared-distance accumulator, and the score sum -- safe by construction. See
     // `AggError::ValueOutOfRange` for the arithmetic.
-    if cs.iter().any(|c| {
-        c.v.iter()
-            .any(|&x| !(crate::fixed::MIN..=crate::fixed::MAX).contains(&x))
-    }) {
-        return Err(AggError::ValueOutOfRange);
+    for (i, c) in cs.iter().enumerate() {
+        for (k, &x) in c.v.iter().enumerate() {
+            if !(crate::fixed::MIN..=crate::fixed::MAX).contains(&x) {
+                // fl-01. One client's one coordinate denies the round for everyone, and the
+                // refusal used to name NOBODY -- an operator could not exclude the offender
+                // and retry. The refusal itself is correct (SECURITY.md: never saturate);
+                // what was missing was attribution, and range is OBJECTIVE so the first
+                // offender is named directly with no framing vector to defend against.
+                return Err(AggError::ValueOutOfRange {
+                    offender: i,
+                    coord: k,
+                    value: x,
+                });
+            }
+        }
     }
     Ok(d)
 }
@@ -428,7 +469,7 @@ pub fn mean(cs: &[Contribution]) -> Result<Vec<i64>, AggError> {
             floor_div(s, n)
         })
         .collect::<Option<Vec<i64>>>()
-        .ok_or(AggError::ValueOutOfRange)
+        .ok_or(AggError::ArithmeticOverflow)
 }
 
 /// Coordinate-wise trimmed mean. Drops `t = floor(n * beta_num / beta_den)` values
@@ -473,7 +514,7 @@ pub fn trimmed_mean(
             floor_div(s, kept.len() as i128)
         })
         .collect::<Option<Vec<i64>>>()
-        .ok_or(AggError::ValueOutOfRange)
+        .ok_or(AggError::ArithmeticOverflow)
 }
 
 /// Coordinate-wise median-trim: per coordinate keep the `theta - 2f` values closest
@@ -503,7 +544,7 @@ pub fn coord_median_trim(cs: &[Contribution], f: usize) -> Result<Vec<i64>, AggE
             floor_div(s, kept.len() as i128)
         })
         .collect::<Option<Vec<i64>>>()
-        .ok_or(AggError::ValueOutOfRange)
+        .ok_or(AggError::ArithmeticOverflow)
 }
 
 /// A scored contribution: (score, tie_key, index), ordered lexicographically so the
@@ -534,7 +575,7 @@ fn krum_scores<'a>(
         ds.sort_unstable();
         let mut score: i128 = 0;
         for &x in &ds[..m.min(ds.len())] {
-            score = score.checked_add(x).ok_or(AggError::ValueOutOfRange)?;
+            score = score.checked_add(x).ok_or(AggError::ArithmeticOverflow)?;
         }
         scored.push((score, cs[i].tie_key.as_slice(), i));
     }
@@ -581,7 +622,7 @@ pub fn multi_krum(cs: &[Contribution], f: usize) -> Result<Vec<usize>, AggError>
     let mut d2 = vec![vec![0i128; n]; n];
     for i in 0..n {
         for j in (i + 1)..n {
-            let s = sq_dist(&cs[i].v, &cs[j].v).ok_or(AggError::ValueOutOfRange)?;
+            let s = sq_dist(&cs[i].v, &cs[j].v).ok_or(AggError::ArithmeticOverflow)?;
             d2[i][j] = s;
             d2[j][i] = s;
         }
@@ -657,7 +698,7 @@ pub fn multi_krum_ranked(cs: &[Contribution], f: usize) -> Result<Vec<usize>, Ag
     let mut d2 = vec![vec![0i128; n]; n];
     for i in 0..n {
         for j in (i + 1)..n {
-            let s = sq_dist(&cs[i].v, &cs[j].v).ok_or(AggError::ValueOutOfRange)?;
+            let s = sq_dist(&cs[i].v, &cs[j].v).ok_or(AggError::ArithmeticOverflow)?;
             d2[i][j] = s;
             d2[j][i] = s;
         }
@@ -971,7 +1012,12 @@ mod tests {
             AggError::EmptyVectors,
             AggError::DuplicateTieKey,
             AggError::BulyanTooFewContributions,
-            AggError::ValueOutOfRange,
+            AggError::ValueOutOfRange {
+                offender: 0,
+                coord: 0,
+                value: i64::MAX,
+            },
+            AggError::ArithmeticOverflow,
             AggError::BetaDenominatorZero,
             AggError::TooManyContributions { n: 4097, max: 4096 },
         ];
@@ -1003,7 +1049,12 @@ mod tests {
         );
 
         // And the range refusal names the range rather than asserting one exists.
-        let r = AggError::ValueOutOfRange.to_string();
+        let r = AggError::ValueOutOfRange {
+            offender: 3,
+            coord: 1,
+            value: 1i64 << 31,
+        }
+        .to_string();
         assert!(
             r.contains(&crate::fixed::MAX.to_string()),
             "range refusal should name the bound: {r:?}"
