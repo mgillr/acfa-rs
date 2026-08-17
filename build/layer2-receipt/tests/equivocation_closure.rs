@@ -95,3 +95,48 @@ fn an_honest_round_derives_nothing() {
     s.deliver(clean, &pki);
     assert!(s.convicted(&pki).is_empty());
 }
+
+/// crdt-02: the MERGE path must converge with the DELIVER path. `State::merge` used to
+/// `insert` other's contributions without running detection, so a replica that learned of an
+/// equivocation by gossip-merge never derived the proof, while one that learned by direct
+/// delivery did -- identical contribution sets, different convicted sets, different roots.
+/// merge() now `deliver`s each contribution so E is a deterministic closure of C on both paths.
+///
+/// GUARD-DELETION: change merge's `self.deliver(c.clone(), pki)` back to a blind insert and
+/// this goes RED (merge convicts {} where deliver convicts {1}); delivery-order tests stay green.
+#[test]
+fn the_merge_path_and_the_deliver_path_convict_and_root_identically() {
+    let (a, b, pki) = room();
+    let e1 = contrib(&a, 1, &[10, 0]);
+    let e2 = contrib(&a, 1, &[20, 0]); // node 1 equivocates
+    let honest = contrib(&b, 1, &[5, 5]);
+
+    let mut delivered = State::new();
+    for c in [e1.clone(), e2.clone(), honest.clone()] {
+        delivered.deliver(c, &pki);
+    }
+
+    let mut part1 = State::new();
+    part1.deliver(e1.clone(), &pki);
+    part1.deliver(honest.clone(), &pki);
+    let mut part2 = State::new();
+    part2.deliver(e2.clone(), &pki);
+    let mut merged = State::new();
+    merged.merge(&part1, &pki).unwrap();
+    merged.merge(&part2, &pki).unwrap();
+
+    assert_eq!(
+        delivered.convicted(&pki),
+        merged.convicted(&pki),
+        "merge path and deliver path convicted different sets from identical contributions"
+    );
+    assert_eq!(
+        delivered.root(),
+        merged.root(),
+        "merge path and deliver path produced different state roots"
+    );
+    assert!(
+        merged.convicted(&pki).contains(&1),
+        "the equivocator must be convicted on the merge path too"
+    );
+}
