@@ -92,13 +92,34 @@ impl State {
             .collect()
     }
 
-    /// Automatically derive an equivocation proof if `new` conflicts with something
-    /// already held. Any honest replica that observes both halves forms the proof
-    /// itself -- nobody has to report misbehaviour for it to be recorded.
-    pub fn detect_equivocation(&self, new: &Contribution, pki: &Pki) -> Option<EquivProof> {
+    /// Derive EVERY equivocation proof `new` exposes against what is already held.
+    ///
+    /// This returns all conflicting pairs, not the first one found. Returning on the first
+    /// match made the proof set a SAMPLE of the conflicts rather than their closure, and
+    /// which sample you got depended on map iteration against what had already arrived. At
+    /// two halves that is invisible -- there is only one pair -- but an identity that
+    /// equivocates THREE ways gives three pairs, and two replicas that saw the same
+    /// contributions in a different order recorded different ones, so they disagreed on the
+    /// state root and on the receipt bytes. That is the strong-eventual-consistency claim
+    /// failing: same updates delivered, permanently different observable state.
+    ///
+    /// The CLOSURE is what makes this order-independent, and it is what the incremental
+    /// path actually builds: when the third half arrives it pairs with both halves already
+    /// held, and the pair those two formed on their own arrival is already recorded, so
+    /// every order ends at the same three proofs. A "star" shape -- pairing the canonical
+    /// smallest half with each other half -- is smaller but CANNOT be built incrementally,
+    /// because a smaller half arriving later would invalidate the stars already recorded.
+    pub fn detect_equivocations(&self, new: &Contribution, pki: &Pki) -> Vec<EquivProof> {
         let nh = new.tensor_hash();
+        let nl = new.leaf();
+        let mut out = Vec::new();
         for c in self.c.values() {
-            if c.rnd == new.rnd && c.node_id == new.node_id && c.tensor_hash() != nh {
+            // Keyed on the LEAF, which covers the signature, because that is what
+            // `admit` excludes on. Keying detection on the tensor hash while admission
+            // keys on the leaf left a gap exactly the width of the difference: two
+            // distinct valid signatures over the SAME content are two leaves, so the
+            // identity was excluded, and were one content, so no proof was formed.
+            if c.rnd == new.rnd && c.node_id == new.node_id && c.leaf() != nl {
                 let p = EquivProof::canonical(
                     new.rnd,
                     new.node_id,
@@ -106,16 +127,16 @@ impl State {
                     (nh, new.sig),
                 );
                 if p.valid(pki) {
-                    return Some(p);
+                    out.push(p);
                 }
             }
         }
-        None
+        out
     }
 
-    /// Deliver a contribution and record any equivocation it exposes, in one step.
+    /// Deliver a contribution and record every equivocation it exposes, in one step.
     pub fn deliver(&mut self, c: Contribution, pki: &Pki) {
-        if let Some(p) = self.detect_equivocation(&c, pki) {
+        for p in self.detect_equivocations(&c, pki) {
             self.add_proof(p);
         }
         self.add_contribution(c);

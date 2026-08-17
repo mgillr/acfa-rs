@@ -60,6 +60,29 @@ pub fn merkle_root(leaves: &[[u8; 32]]) -> [u8; 32] {
         })
         .collect();
     level.sort_unstable();
+    // Odd levels pad by duplicating the LAST element, and the level is sorted, so the
+    // element duplicated is the MAXIMUM. That makes the padded tree over S byte-identical
+    // to the honest tree over S + {argmax(S)}: for any three leaves,
+    // merkle_root([a,b,c]) == merkle_root([a,b,c,m]) where m is whichever hashes largest.
+    // The root does not commit to its own leaf count.
+    //
+    // REFUSE the ambiguous input rather than resolve it. Silently deduplicating would
+    // return a root for a SET while the caller committed to a MULTISET, turning a
+    // cardinality error into a well-formed but wrong commitment, and a commitment that is
+    // wrong in a plausible way is worse than one that is refused. Padding with a distinct
+    // sentinel would also close it, and MOVES THE FINGERPRINT (measured: bd13ba32... ->
+    // 26183e8a...), so it is a wire break on a released crate and is not taken here.
+    //
+    // Both live call sites derive their leaves from set-keyed collections: `State::root`
+    // from two `BTreeMap` key sets, domain-separated from each other by the `C|` / `P|`
+    // leaf prefixes, and `DeadlineCut::close` through a `BTreeSet`. `DeadlineCut.admitted`
+    // is a public `Vec` and the type is never decoded from the wire, so the only way to
+    // reach this is for a caller in-process to build one by hand. It is an input contract,
+    // asserted where it binds.
+    assert!(
+        level.windows(2).all(|w| w[0] != w[1]),
+        "merkle_root: duplicate leaves make the root ambiguous with a padded tree"
+    );
 
     while level.len() > 1 {
         if level.len() % 2 == 1 {
@@ -154,15 +177,38 @@ mod tests {
         );
     }
 
+    /// The padding collision, and why the test that used to live here proved nothing.
+    ///
+    /// Odd levels pad by duplicating the LAST element of a SORTED level, i.e. the maximum.
+    /// So `merkle_root(S)` collides with `merkle_root(S + {argmax(S)})`, and ONLY with
+    /// that leaf. The previous test asserted the roots differ for `[a,b,c]` vs `[a,b,c,c]`
+    /// and passed -- because with these three leaves the argmax of the 0x00-prefixed
+    /// hashes is `a`, not `c`. It duplicated the wrong leaf, so it exercised a case that
+    /// was never at risk and reported the property as held. Measured before the guard:
+    ///   root([a,b,c]) == root([a,b,c,a])   COLLIDES   (a is argmax)
+    ///   root([a,b,c]) != root([a,b,c,c])   no collision
+    ///
+    /// The guard refuses duplicate leaves outright rather than resolving them, so the
+    /// ambiguity is now unrepresentable rather than merely unlikely.
     #[test]
-    fn duplicated_odd_element_does_not_collide_with_the_honest_even_tree() {
+    #[should_panic(expected = "duplicate leaves")]
+    fn a_duplicated_argmax_leaf_is_refused_rather_than_silently_colliding() {
         let a = h(b"a");
         let b = h(b"b");
         let c = h(b"c");
-        // Three leaves duplicates the last at the first level. An honest four-leaf
-        // tree whose fourth leaf equals the third must NOT produce the same root,
-        // or padding becomes a forgery vector.
-        assert_ne!(merkle_root(&[a, b, c]), merkle_root(&[a, b, c, c]));
+        // `a` is the argmax of the prefixed hashes: this is the input that used to collide.
+        let _ = merkle_root(&[a, b, c, a]);
+    }
+
+    /// The accepting side, so the refusal above is not passed by a function that refuses
+    /// everything: distinct leaves still produce a root, and order still does not matter.
+    #[test]
+    fn distinct_leaves_still_commit_and_stay_order_independent() {
+        let a = h(b"a");
+        let b = h(b"b");
+        let c = h(b"c");
+        assert_eq!(merkle_root(&[a, b, c]), merkle_root(&[c, b, a]));
+        assert_ne!(merkle_root(&[a, b, c]), merkle_root(&[a, b]));
     }
 
     #[test]

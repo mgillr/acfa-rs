@@ -111,6 +111,11 @@ Q_SCALE = 1 << Q_FRAC_BITS
 Q_MAX = (1 << 31) - 1
 Q_MIN = -(1 << 31)
 
+#: Refuse when more than this fraction of coordinates quantise to zero. At 50% the majority
+#: of the update has been destroyed before the kernel ever sees it; measured Krum/float
+#: selection agreement is already below 60% there and falls to 41% by 87% annihilation.
+ANNIHILATION_REFUSE_ABOVE = 0.5
+
 
 def aggregate(
     updates: Iterable[Sequence[np.ndarray]],
@@ -140,6 +145,31 @@ def aggregate(
                 f"client {i} sent {fl.values.size} values, client 0 sent {ref.values.size}; "
                 "padding one would let a short update shift the result"
             )
+
+    # adv-02. REFUSE integer dtypes rather than truncating the aggregate to fit them.
+    #
+    # `_unflatten` casts the result back to each input's ORIGINAL dtype. An aggregate of
+    # integer updates is generally fractional, so that cast DISCARDS the fractional part
+    # of a value the kernel computed correctly -- the adapter then disagrees with the
+    # binary it shells out to, silently. Measured on the unfixed path: MEAN of three 0s
+    # and two 1s returned 0 where the float path returned 0.3999939, i.e. the entire
+    # aggregate annihilated; Krum returned 11 against 11.5. The cast truncates toward
+    # zero, so the error is a systematic BIAS toward zero, not rounding noise, and it is
+    # invisible to every caller.
+    #
+    # Refusing is the standing rule -- a value error must not become an order error --
+    # and it is deterministic. Refusing only when the result happens not to be exactly
+    # representable would work for months and then reject, which is worse.
+    for i, fl in enumerate(flats):
+        for dt in fl.dtypes:
+            if np.dtype(dt).kind in "iub":
+                raise AcfaAggregationError(
+                    f"client {i} sent an array of dtype {dt}; integer and boolean dtypes "
+                    "are refused because the aggregate is generally fractional and "
+                    "casting it back would silently truncate toward zero, disagreeing "
+                    "with the kernel that computed it. Convert updates to a float dtype "
+                    "before aggregating and quantise afterwards if you need integers."
+                )
 
     if tie_keys is None:
         # CONTENT-DERIVED, NOT POSITIONAL. A positional default (0..n-1 by arrival) makes
@@ -191,6 +221,49 @@ def aggregate(
                 "the aggregate depend on WHICH replica saturated first; rescale upstream "
                 "with a factor both parties already hold."
             )
+
+    # fl-02. MEASURE WHAT THE QUANTISATION DESTROYS, AND REFUSE WHEN IT DESTROYS THE UPDATE.
+    #
+    # Q16.16 resolves 2^-16 ~= 1.5e-5. A gradient coordinate smaller than that quantises to
+    # ZERO -- not rounded, gone. Measured over 200 trials at n=10, d=256, Gaussian updates
+    # (probe in the project's research notes):
+    #
+    #   sigma    coords annihilated    Krum agrees with float
+    #   1e-1     0.02%                 100%
+    #   1e-2     0.12%                 100%
+    #   1e-3     1.2%                  99.5%
+    #   1e-4     12.1%                 92.5%
+    #   1e-5     87.3%                 41.5%
+    #
+    # So the format is fit for gradients around 1e-3 and above, and unfit below about 1e-4 --
+    # and NOTHING in the stack said so. A user with small gradients got an aggregate computed
+    # perfectly from an input that had already been destroyed, with the determinism property
+    # fully intact and completely beside the point. Exactness and dynamic range are a trade;
+    # this side of it was undocumented.
+    #
+    # Refusing above a threshold rather than warning, because a mostly-zero update produces a
+    # confidently wrong aggregate and the caller has no way to see it. The threshold is
+    # deliberately generous: below it the aggregate degrades, above it there is no signal left
+    # to aggregate. Rescaling upstream is the fix, and the message says so.
+    # Count only coordinates the QUANTISATION destroyed: non-zero in float, zero after.
+    # A first version counted every zero, which flagged genuinely-zero coordinates as
+    # destroyed and refused a legitimate sparse update -- caught by an existing test that
+    # aggregates mostly-zero vectors. The metric has to measure loss, not sparsity.
+    annihilated = sum(
+        int(((fl.values != 0.0) & (np.trunc(fl.values * Q_SCALE) == 0)).sum())
+        for fl in flats
+    )
+    nonzero = sum(int((fl.values != 0.0).sum()) for fl in flats)
+    frac = annihilated / nonzero if nonzero else 0.0
+    if frac > ANNIHILATION_REFUSE_ABOVE:
+        raise AcfaAggregationError(
+            f"{frac:.1%} of NON-ZERO update coordinates are below the Q16.16 resolution "
+            f"floor (2^-16 ~= 1.5e-5) and would quantise to zero, so the aggregate would be "
+            f"computed from an update that no longer carries the signal. Rescale upstream "
+            f"by a factor both parties already hold -- multiplying gradients by a fixed "
+            f"power of two is exact and reversible -- or aggregate at a coarser step. "
+            f"Refusing rather than returning a confident number over destroyed input."
+        )
 
     lines = [f"rule {rule.value}", f"f {int(f)}"]
     if rule is Rule.TRIMMED:

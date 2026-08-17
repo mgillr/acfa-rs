@@ -163,9 +163,31 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     }
 
+    // CHECK THE MAGIC BEFORE READING THE REST. `fs::read` pulled the whole file into memory
+    // and only then asked whether it was a receipt at all, so pointing this at a 200 MB file
+    // that is not an ACFA receipt cost 200 MB of resident memory to reach "bad magic".
+    // Anyone can hand a verifier a file, so the cost of REJECTING one should be bounded by
+    // the header, not by the attacker's choice of length.
+    //
+    // Eight bytes is the whole check: it is a fixed-size constant at a fixed offset.
     let mut bytes = Vec::new();
     let read = match &path {
-        Some(p) => std::fs::read(p).map(|b| bytes = b),
+        Some(p) => (|| -> std::io::Result<()> {
+            let mut f = std::fs::File::open(p)?;
+            let mut head = [0u8; 8];
+            match f.read_exact(&mut head) {
+                Ok(()) if &head == acfa_receipt::wire::MAGIC => {}
+                // Too short to carry a magic, or the magic is wrong. Either way this is not
+                // a receipt and there is nothing to gain by reading the remainder.
+                _ => {
+                    bytes = head.to_vec();
+                    return Ok(());
+                }
+            }
+            bytes.extend_from_slice(&head);
+            f.read_to_end(&mut bytes)?;
+            Ok(())
+        })(),
         None => std::io::stdin().read_to_end(&mut bytes).map(|_| ()),
     };
     if let Err(e) = read {

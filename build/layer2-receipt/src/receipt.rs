@@ -58,6 +58,15 @@ pub struct Policy {
 }
 
 impl Policy {
+    /// THIS DEFAULT IS FAIL-OPEN ON THE RULE, and it is the constructor everyone reaches
+    /// for. `rule: None` accepts EITHER aggregation rule, so a checker built this way has
+    /// not pinned the robustness argument it believes it is checking. See
+    /// `SelfConsistent::population_bound_met` for the measured consequence: a Krum receipt
+    /// at n = 5 verifies Ok with the bound flag TRUE against an operator who assumes
+    /// Bulyan and needs n = 7.
+    ///
+    /// Use `.expecting(rule)` unless you genuinely accept both. Making that mandatory is a
+    /// public API change and is with B (crypto-08).
     pub fn new(pki: Pki, f: usize) -> Policy {
         Policy { pki, f, rule: None }
     }
@@ -133,12 +142,32 @@ pub struct Verified {
     /// the per-round uniqueness clause already excludes an identity with two visible
     /// entries. What is wrong is the accountability record, and that is worth naming.
     pub convictable_but_unconvicted: Vec<u32>,
-    /// False when the admitted population was below the rule's robustness bound.
+    /// False when the admitted population was below the robustness bound OF THE RECEIPT'S
+    /// OWN RULE -- which is NOT necessarily the rule the checker's robustness argument
+    /// assumes. READ THE NEXT PARAGRAPH BEFORE TREATING `true` AS REASSURANCE.
     ///
-    /// A receipt can be perfectly valid and unpopulation_bound_met at the same time: the arithmetic
-    /// is right, the signatures are right, and the result still carries no Byzantine
-    /// guarantee because too few identities took part. Surfacing that separately is the
-    /// difference between an honest receipt and a reassuring one.
+    /// crypto-08, MEASURED. `Policy::new` leaves `rule: None`, meaning "accepts either",
+    /// so a checker who never calls `.expecting()` has not told the receipt which rule it
+    /// wanted, and this flag can only answer for the rule the receipt used. At n = 5,
+    /// f = 1, a Krum receipt against a default policy gives:
+    ///
+    ///   verify              -> Ok
+    ///   population_bound_met -> TRUE   (Krum requires 2f+3 = 5, and 5 were admitted)
+    ///
+    /// An operator whose own argument assumes BULYAN needs 4f+3 = 7. They get a fully
+    /// green verdict, including this flag, for a deployment that does not meet their
+    /// assumption -- because the flag answers the RECEIPT's question, not theirs. The
+    /// permissive default is spelled `new`, so it is reached by anyone who never thought
+    /// about the rule at all.
+    ///
+    /// `Policy::new(pki, f).expecting(rule)` closes it and returns `RuleMismatch`. Making
+    /// that the DEFAULT means changing `Policy::new`'s signature, which is a public API
+    /// break and therefore a ruling rather than a tidy-up; it is with B.
+    ///
+    /// A receipt can be perfectly valid and short of the bound at the same time: the
+    /// arithmetic is right, the signatures are right, and the result still carries no
+    /// Byzantine guarantee because too few identities took part. Surfacing that separately
+    /// is the difference between an honest receipt and a reassuring one.
     pub population_bound_met: bool,
 }
 
@@ -190,6 +219,26 @@ impl Receipt {
     /// certifying itself. A receipt whose PKI the checker does not recognise is rejected
     /// before any signature is examined, because every signature in it would verify
     /// perfectly against the keys the forger chose.
+    ///
+    /// THE EQUALITY BELOW IS LOAD-BEARING FOR TWO SEPARATE FINDINGS, and relaxing it
+    /// reopens both. It compares the WHOLE map -- ids AND keys -- so an operator's trust
+    /// file can only be USED if it is identical to the one the receipt carries, and the
+    /// carried one has already been through `wire::decode`. That is what extends two
+    /// decode-time guards to the CLI, which reads its PKI from a text file that never
+    /// touches the decoder:
+    ///
+    ///   crypto-03  `decode` refuses a PKI that reuses one public key for two identities.
+    ///              Without that extension, a cloned trust file would let an attacker
+    ///              replay one node's signed bytes under extra identities -- the clones sit
+    ///              at distance zero and multi-Krum selects the tightest cluster, moving a
+    ///              measured aggregate from [10, 9] to [750002, 750001].
+    ///   crypto-02  `decode` refuses a PKI containing a small-order key, for which
+    ///              `R = identity, S = 0` verifies without any secret.
+    ///
+    /// The dangerous edit is the plausible local one: accepting a SUPERSET trust file, or
+    /// comparing only the id sets to support a rekeying story. Either silently detaches the
+    /// CLI from both guards while every test still passes. See
+    /// `tests/crypto02_key_strength.rs` and `tests/key_binding.rs`.
     pub fn verify(&self, policy: &Policy) -> Result<Verified, Invalid> {
         if self.pki != policy.pki {
             return Err(Invalid::PkiMismatch);

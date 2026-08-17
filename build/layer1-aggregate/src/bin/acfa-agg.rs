@@ -135,9 +135,16 @@ fn main() -> ExitCode {
         return die(2, "cannot read stdin");
     }
 
+    // SEEN-FLAGS, BECAUSE A DUPLICATE DIRECTIVE SILENTLY CHANGED THE ANSWER. `rule mean`
+    // followed by `rule krum` took the last one and exited 0, as did a repeated `f`. The
+    // caller believed one thing and the tool did another with no diagnostic -- the same
+    // shape as saturating an out-of-range value, which this program already refuses to do.
+    // `f` is unbracketed in USAGE, so it is required; defaulting it to 0 silently ran an
+    // undefended aggregation for anyone who forgot the line.
     let mut rule = String::new();
     let mut f: usize = 0;
     let mut beta = (1u32, 4u32);
+    let (mut saw_rule, mut saw_f, mut saw_beta) = (false, false, false);
     let mut cs: Vec<Contribution> = Vec::new();
     let mut dim: Option<usize> = None;
 
@@ -149,20 +156,36 @@ fn main() -> ExitCode {
         let mut it = line.split_whitespace();
         let head = it.next().unwrap();
         match head {
-            "rule" => match it.next() {
-                Some(r) => rule = r.to_string(),
-                None => return die(2, &format!("line {}: rule needs a value", n + 1)),
-            },
-            "f" => match it.next().and_then(|v| v.parse().ok()) {
-                Some(v) => f = v,
-                None => {
-                    return die(
-                        2,
-                        &format!("line {}: f needs a non-negative integer", n + 1),
-                    )
+            "rule" => {
+                if saw_rule {
+                    return die(2, &format!("line {}: duplicate `rule` directive", n + 1));
                 }
-            },
+                saw_rule = true;
+                match it.next() {
+                    Some(r) => rule = r.to_string(),
+                    None => return die(2, &format!("line {}: rule needs a value", n + 1)),
+                }
+            }
+            "f" => {
+                if saw_f {
+                    return die(2, &format!("line {}: duplicate `f` directive", n + 1));
+                }
+                saw_f = true;
+                match it.next().and_then(|v| v.parse().ok()) {
+                    Some(v) => f = v,
+                    None => {
+                        return die(
+                            2,
+                            &format!("line {}: f needs a non-negative integer", n + 1),
+                        )
+                    }
+                }
+            }
             "beta" => {
+                if saw_beta {
+                    return die(2, &format!("line {}: duplicate `beta` directive", n + 1));
+                }
+                saw_beta = true;
                 let (a, b) = (
                     it.next().and_then(|v| v.parse().ok()),
                     it.next().and_then(|v| v.parse().ok()),
@@ -189,6 +212,16 @@ fn main() -> ExitCode {
                         Some(x) => match encode(x) {
                             Ok(q) => v.push(q),
                             Err(e) => {
+                                // BOTH HALVES OF THE CONTRACT, NOT ONE. An earlier fix
+                                // corrected the exit code here from 2 to 1 and left the
+                                // stdout token behind, so this binary's two exit-1 paths
+                                // disagreed: the rule path prints `refused <reason>` and
+                                // this one printed nothing. A machine caller switches on
+                                // that leading token, and an empty stdout with exit 1 reads
+                                // as an unclassified failure rather than the typed refusal
+                                // it is. stderr keeps the line number for a human; stdout
+                                // carries the reason for a program.
+                                println!("refused {e:?}");
                                 // EXIT 1, NOT 2. The documented contract is
                                 // "1 refused (bound not met, bad input values)" against
                                 // "2 unreadable input". An out-of-range or non-finite value
@@ -268,6 +301,14 @@ fn main() -> ExitCode {
             );
             eprintln!("acfa-agg: estimate extrapolated from one measured point, not a promise.");
         }
+    }
+    // `f` is unbracketed in USAGE, so it is REQUIRED. Defaulting it to 0 silently ran an
+    // undefended aggregation for anyone who omitted the line, and reported success.
+    if !saw_f {
+        return die(
+            2,
+            "no `f` directive: the fault bound is required, not optional",
+        );
     }
 
     let out = match rule.as_str() {

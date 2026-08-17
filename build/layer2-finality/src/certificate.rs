@@ -60,11 +60,21 @@ impl CertTuple {
         h(&self.msg())
     }
 
-    /// Do two tuples conflict? Conflict is on `(A_r, rho_r)` per the definition -- the
-    /// membership and the committed aggregate. Two certificates for *different rounds*
-    /// do not conflict; they are simply different rounds.
+    /// Do two tuples conflict? Two certificates for *different rounds* do not conflict;
+    /// they are simply different rounds. Within one round, ANY difference in the signed
+    /// tuple is a conflict.
+    ///
+    /// The comparison covers `e_cut_root`, not merely `(A_r, rho_r)`, because `msg()` SIGNS
+    /// the cut and `id()` -- the anchor round r+1 chains against -- commits to it. Comparing
+    /// a strict subset of what the signature covers left two valid round-r certificates that
+    /// agreed on membership and aggregate while committing to different equivocation cuts
+    /// *neither equal nor conflicting*: `observe` fell through to `Rejected::Invalid` and
+    /// silently kept whichever arrived first, so two honest nodes finalised different
+    /// certificates for the same round with no fork recorded and nobody halted, and the
+    /// divergence then propagated through the anchor. A conflict predicate must cover
+    /// everything the signature covers.
     pub fn conflicts_with(&self, other: &CertTuple) -> bool {
-        self.round == other.round && (self.a_root != other.a_root || self.rho != other.rho)
+        self.round == other.round && self != other
     }
 }
 
@@ -130,23 +140,57 @@ impl Certificate {
         self.sigs.insert(by.node_id, by.sign(&self.tuple.msg()));
     }
 
-    /// Valid iff at least `f+1` distinct known identities signed this exact tuple.
-    pub fn check(&self, pki: &Pki, f: usize) -> Result<(), CertError> {
+    /// The signers whose signature over THIS tuple actually verifies against the PKI.
+    ///
+    /// Anyone can append entries to a carried signature map, so membership of `sigs` means
+    /// nothing on its own. Every question about "who signed this" must be asked of this
+    /// set, never of `sigs.keys()`.
+    pub fn verified_signers(&self, pki: &Pki) -> BTreeSet<u32> {
         let msg = self.tuple.msg();
-        for (id, sig) in &self.sigs {
-            let Some(pk) = pki.get(id) else {
-                return Err(CertError::UnknownSigner(*id));
-            };
-            if !verify(pk, &msg, sig) {
-                return Err(CertError::BadSignature(*id));
-            }
+        self.sigs
+            .iter()
+            .filter(|(id, sig)| pki.get(id).is_some_and(|pk| verify(pk, &msg, sig)))
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// This certificate with every unverifiable signature entry removed.
+    ///
+    /// Pruning at ingest is what makes the counting `check` safe. `Finality` stores forks
+    /// and later reads `sigs` for MEANING (who is attributable), and those readers do not
+    /// hold the PKI, so the invariant has to be established when the evidence enters rather
+    /// than re-checked at every use. After pruning, membership of `sigs` IS proof.
+    pub fn pruned(&self, pki: &Pki) -> Certificate {
+        let keep = self.verified_signers(pki);
+        Certificate {
+            tuple: self.tuple,
+            sigs: self
+                .sigs
+                .iter()
+                .filter(|(id, _)| keep.contains(id))
+                .map(|(id, sig)| (*id, *sig))
+                .collect(),
         }
-        let need = f + 1;
-        if self.sigs.len() < need {
-            return Err(CertError::Insufficient {
-                have: self.sigs.len(),
-                need,
-            });
+    }
+
+    /// Valid iff at least `f+1` distinct known identities signed this exact tuple.
+    ///
+    /// COUNTS the valid signatures rather than requiring every carried one to verify.
+    /// Requiring all of them made valid evidence REFUSABLE BY A BYSTANDER: the wire format
+    /// accepts any strictly-ascending signer list, so a relay could append one junk entry
+    /// to a genuine fork and an honest node would decline to halt on real evidence. A
+    /// threshold is a lower bound on honest signers; a spurious extra entry cannot lower it.
+    pub fn check(&self, pki: &Pki, f: usize) -> Result<(), CertError> {
+        // SATURATES. `f` reaches here from an untrusted receipt, and `f + 1` in `usize`
+        // WRAPS TO ZERO at `usize::MAX` -- making the threshold comparison below vacuously
+        // false, so the check returned Ok on ZERO valid signatures. A threshold that gets
+        // easier as the claimed adversary budget grows is the guard failing open, in the
+        // one direction an attacker chooses. `usize::MAX` is unreachable, which is the
+        // honest answer for a fault bound nobody can satisfy.
+        let need = f.saturating_add(1);
+        let have = self.verified_signers(pki).len();
+        if have < need {
+            return Err(CertError::Insufficient { have, need });
         }
         Ok(())
     }
@@ -216,6 +260,36 @@ impl CertFork {
             .filter(|k| self.b.sigs.contains_key(k))
             .copied()
             .collect()
+    }
+
+    /// Who signed BOTH halves, counting only signatures that verify.
+    ///
+    /// PART TWO OF THE crdt-07 FIX, AND IT IS NOT OPTIONAL. Once `check` counts valid
+    /// signatures instead of requiring all of them, junk entries survive into the carried
+    /// map -- and [`CertFork::attributable`] reads `sigs.keys()`, which is membership and
+    /// not proof. Counting alone would therefore have closed a denial of service and opened
+    /// a FRAMING vector: an attacker appends entries naming honest nodes to both halves of
+    /// a real fork, and those nodes are reported as having double-signed. Attribution is an
+    /// accusation, so it must be read from verified signatures only.
+    pub fn attributable_verified(&self, pki: &Pki) -> BTreeSet<u32> {
+        let a = self.a.verified_signers(pki);
+        let b = self.b.verified_signers(pki);
+        a.intersection(&b).copied().collect()
+    }
+
+    /// Both halves pruned to their verified signatures. Canonical orientation is decided by
+    /// `tuple.id()`, which pruning does not touch, so a pruned fork keeps its orientation.
+    pub fn pruned(&self, pki: &Pki) -> CertFork {
+        CertFork {
+            a: self.a.pruned(pki),
+            b: self.b.pruned(pki),
+        }
+    }
+
+    /// True when the fork proves a violation but names nobody, judged on verified
+    /// signatures. Prefer this to [`CertFork::is_unattributable`].
+    pub fn is_unattributable_verified(&self, pki: &Pki) -> bool {
+        self.attributable_verified(pki).is_empty()
     }
 
     /// True when the fork proves a violation but names nobody.

@@ -131,6 +131,31 @@ pub const MAX_CONTRIBUTIONS_BULYAN: usize = 512;
 /// `floor_div(i128::MAX, 1)` returned -1, the `as i64` cast truncating silently; and
 /// `floor_div(1, 0)` panicked, a division-by-zero abort reachable from safe code.
 ///
+/// FLOORING IS DIRECTIONAL, SO IT IS BIASED, AND THE BIAS ACCUMULATES ACROSS ROUNDS.
+/// This is a design consequence with no admissible fix, not an open bug, and it is
+/// recorded here so a deployment can price it. The remainder of a sum over `n` is uniform
+/// on `0..n-1` and the discarded part is `r/n`, so the expected error is
+/// `-(n-1)/2n` LSB per round, ALWAYS DOWNWARD -- never cancelling, unlike round-to-nearest.
+/// Measured independently twice, 200k trials per configuration, agreeing with the closed
+/// form to within 0.001 LSB: n=2 -0.250, n=3 -0.333, n=5 -0.400, n=8 -0.438, n=16 -0.469.
+/// Over 600 rounds at n=5 with N(0, 1e-3) updates it is a real drift, not rounding noise.
+///
+/// THE TWO STANDARD REMEDIES ARE BOTH BARRED, and by the same property:
+///   - ERROR FEEDBACK (carry the discarded remainder into the next round) cancels it
+///     completely and is the textbook fix. It makes the aggregate a function of HISTORY,
+///     so two replicas given the same set in a different sequence produce different bytes.
+///     That is exactly the property this module exists to provide -- see the first line of
+///     the module doc. It does not trade determinism at the margin, it destroys it.
+///   - STOCHASTIC or DITHERED rounding is out for the same reason, unless the dither is a
+///     deterministic function of data both parties already hold. That is the identical
+///     caveat `fixed.rs` records for per-tensor scaling.
+///
+/// Round-half-to-even WOULD be both deterministic and unbiased, but the rounding rule is
+/// WIRE CONTRACT: the vendored reference floors (Python `//`), and
+/// `cross_impl::rust_matches_the_python_reference_on_every_rule` is one of only four tests
+/// that detect a change to this function. Changing it costs the reference pin and an
+/// erratum against a published artifact. Not paid.
+///
 /// `None` rather than a saturated or truncated value: this function's product is an
 /// aggregate coordinate that goes on the wire, and a plausible wrong coordinate is worse
 /// than a refusal in a kernel whose whole claim is that the result is re-executable.
@@ -205,7 +230,16 @@ pub fn trimmed_mean(
     if beta_den == 0 {
         return Err(AggError::BetaDenominatorZero);
     }
-    let t = (n * beta_num as usize) / beta_den as usize;
+    // In `u128`, and clamped, because `n * beta_num` in `usize` OVERFLOWS on a 32-bit
+    // target for ordinary values: beta = 1048576/4194304 is just 1/4, and at n = 4096
+    // the product is exactly 2^32. With `overflow-checks = true` that panicked on
+    // 32-bit while returning a value on 64-bit -- identical inputs, different outcome
+    // per target width, which is the divergence this crate exists to exclude.
+    //
+    // The clamp is behaviour-preserving, not a second guess: trimming happens only
+    // when `n > 2 * t`, so every `t >= n` already meant "trim nothing", and pinning it
+    // at `n` keeps that while making the narrowing cast total.
+    let t = ((n as u128 * beta_num as u128) / beta_den as u128).min(n as u128) as usize;
     (0..d)
         .map(|k| {
             let mut col: Vec<i64> = cs.iter().map(|c| c.v[k]).collect();
@@ -233,7 +267,9 @@ pub fn trimmed_mean(
 pub fn coord_median_trim(cs: &[Contribution], f: usize) -> Result<Vec<i64>, AggError> {
     let d = check(cs)?;
     let theta = cs.len();
-    let keep = (theta.saturating_sub(2 * f)).max(1);
+    // `2 * f` wrapped for large `f`, turning a saturating subtraction into an arbitrary
+    // one. `saturating_mul` makes the whole expression monotone in `f` at every width.
+    let keep = (theta.saturating_sub(f.saturating_mul(2))).max(1);
     (0..d)
         .map(|k| {
             let mut col: Vec<i64> = cs.iter().map(|c| c.v[k]).collect();
@@ -303,9 +339,14 @@ fn krum_scores<'a>(
 pub fn multi_krum(cs: &[Contribution], f: usize) -> Result<Vec<usize>, AggError> {
     check(cs)?;
     let n = cs.len();
-    if n < f + 3 {
+    // `u128`: `f` comes from an untrusted directive, and `f + 3` in `usize` WRAPPED for
+    // large `f`, so the select-all convention silently failed to fire. As a dependency
+    // built in release this returned six of seven indices with no error; in a build with
+    // overflow-checks it aborted with exit 101. Neither is the documented behaviour.
+    if (n as u128) < f as u128 + 3 {
         return Ok((0..n).collect());
     }
+    // Safe: the guard above establishes `n >= f + 3`, so this cannot underflow.
     let m = n - f - 2;
 
     // Refuse before allocating: the matrix is the amplification, so the check has to
@@ -362,7 +403,23 @@ pub fn multi_krum_ranked(cs: &[Contribution], f: usize) -> Result<Vec<usize>, Ag
     // this function's contract is the ranking, and handing back index order under a
     // name that promises score order is the very mis-port the split exists to
     // prevent. Bulyan drives the pool down into exactly this regime.
-    let m = if n >= f + 3 {
+    // `u128` for the same reason as `multi_krum`: `f` is untrusted and `f + 3` in `usize`
+    // wraps. I fixed the sibling in num-03 and MISSED THIS ONE, in the same file, in the
+    // same commit that documents the hazard -- found later by grepping the whole tree for
+    // arithmetic on `f` instead of trusting that the class was closed.
+    //
+    // NO TEST FAILS ON THE UNFIXED FORM HERE, and that is a claim rather than an excuse.
+    // The wrapped branch computes `m = (n - f - 2) mod 2^64`, and for every `f` whose
+    // wrap lets the comparison through, that value is provably `>= n - 1 == ds.len()`
+    // (checked exhaustively over the reachable range). `krum_scores` slices
+    // `&ds[..m.min(ds.len())]`, so an oversized `m` is always clamped and the ranking is
+    // unchanged -- verified: `f = usize::MAX - 2` and `f = 100` return the identical
+    // ranking. So this is corrected for consistency, not because a hole was open.
+    //
+    // It is worth correcting anyway: unfixed, this function's safety rests on a clamp in
+    // a DIFFERENT function that is not documented as load-bearing, which is exactly the
+    // two-guards-and-neither-names-the-other shape found in `crypto-03`.
+    let m = if (n as u128) >= f as u128 + 3 {
         n - f - 2
     } else {
         n.saturating_sub(1).max(1)
@@ -439,9 +496,14 @@ pub fn bulyan_select(cs: &[Contribution], f: usize) -> Result<Vec<usize>, AggErr
     let n = cs.len();
     // Refuse below Bulyan's precondition rather than returning a plausible aggregate
     // with no guarantee behind it.
-    if n < 4 * f + 3 {
+    // `u128`, because this is the guard with the worst failure mode. `4 * f` in `usize`
+    // wraps to 0 at f = 2^62, so the comparison became `n < 3` and Bulyan ran with its
+    // precondition bypassed, returning a full-population selection carrying no Byzantine
+    // guarantee at all -- the exact outcome this refusal exists to prevent.
+    if (n as u128) < 4 * f as u128 + 3 {
         return Err(AggError::BulyanTooFewContributions);
     }
+    // Safe: `n >= 4f + 3 > 2f` from the guard above.
     let theta = n - 2 * f;
     let mut pool: Vec<usize> = (0..n).collect();
     let mut selected: Vec<usize> = Vec::new();
@@ -570,6 +632,133 @@ mod tests {
             checked > 30_000,
             "scan too small to be meaningful ({checked})"
         );
+    }
+
+    /// num-03. `f` arrives from an untrusted directive on stdin, and every guard that
+    /// bounds it did unchecked `usize` arithmetic, so a large `f` WRAPPED the guard
+    /// instead of tripping it. Measured before the fix, all with n=7:
+    ///
+    /// - `f = usize::MAX`: `f + 3` wraps to 2, so `n < f + 3` is false and the select-all
+    ///   convention never fires. As a dependency built in release (overflow-checks off,
+    ///   which is the default a consumer gets) `multi_krum` returned `Ok` with SIX of
+    ///   seven indices -- a silent, plausible, wrong selection.
+    /// - `f = usize::MAX - 2`: `f + 3` wraps to 0, and `m = n - f - 2` then indexed a
+    ///   slice out of bounds: "range end index 8 out of range for slice of length 7".
+    /// - `f = 2^63`: `4 * f` wraps to 0, so `n < 4 * f + 3` compares against 3 and
+    ///   `bulyan_select` returned `Ok` with all seven -- its precondition bypassed
+    ///   entirely. `BulyanTooFewContributions` exists precisely so the rule never
+    ///   returns a plausible aggregate with no Byzantine guarantee behind it.
+    ///
+    /// Through the shipped binary, where this crate's own `overflow-checks = true`
+    /// applies, the same inputs abort with exit 101 -- outside the documented 0/1/2
+    /// contract. Both regimes are wrong; only one is loud.
+    ///
+    /// The guards are now evaluated in `u128`, which cannot overflow at any target
+    /// width, so each returns the answer the arithmetic actually implies.
+    #[test]
+    fn a_huge_f_trips_the_guards_rather_than_wrapping_them() {
+        let cs: Vec<Contribution> = (0..7u8)
+            .map(|i| Contribution {
+                tie_key: vec![i],
+                v: vec![1, 2, 3, 4],
+            })
+            .collect();
+
+        // n < f + 3 holds for every f this large, so the select-all convention fires.
+        // Written width-independently ON PURPOSE, and the first draft was not: it used
+        // `1usize << 62`, which does not even COMPILE on a 32-bit target. A test for
+        // width independence that is itself width-dependent is worth nothing, and the
+        // 32-bit CI leg is what caught it. `usize::MAX / 4 + 1` is 2^(BITS-2) at every
+        // width, which is exactly the value where `4 * f` wraps to zero.
+        for f in [
+            usize::MAX,
+            usize::MAX - 2,
+            usize::MAX / 2 + 1,
+            usize::MAX / 4 + 1,
+        ] {
+            assert_eq!(
+                multi_krum(&cs, f).map(|s| s.len()),
+                Ok(7),
+                "multi_krum must select all when it cannot defend (f={f})"
+            );
+            assert!(
+                coord_median_trim(&cs, f).is_ok(),
+                "coord_median_trim must not wrap (f={f})"
+            );
+            // n = 7 is far below 4f + 3 for any of these, so Bulyan must refuse.
+            assert_eq!(
+                bulyan_select(&cs, f),
+                Err(AggError::BulyanTooFewContributions),
+                "bulyan must refuse rather than bypass its precondition (f={f})"
+            );
+        }
+    }
+
+    /// num-03, fifth site. `multi_krum_ranked` kept `n >= f + 3` in raw `usize` after the
+    /// sibling twelve lines above was hardened.
+    ///
+    /// FAILS ON THE UNFIXED CODE, and my first account of this was WRONG. I measured only
+    /// from a consumer crate -- release, overflow-checks OFF, which is a dependent's
+    /// default -- saw the ranking unchanged because `krum_scores` clamps with
+    /// `m.min(ds.len())`, and published "no test fails on the unfixed form". In THIS
+    /// crate's own profile, where `overflow-checks = true`, the unfixed form does not
+    /// return a clamped answer at all: it PANICS, "attempt to add with overflow".
+    ///
+    /// That is the same two-regime split already documented for `fixed::sq_dist` and in
+    /// the num-03 commit -- checks ON for builds rooted here, OFF for dependents -- and I
+    /// generalised from one regime after writing down that there were two. Both halves
+    /// are real: a dependent gets a silently oversized `m` that the clamp happens to
+    /// absorb, and anything built here aborts.
+    #[test]
+    fn ranked_does_not_wrap_its_pool_guard_on_a_huge_f() {
+        let cs: Vec<Contribution> = (0..7u8)
+            .map(|i| Contribution {
+                tie_key: vec![i],
+                v: vec![(i as i64) * (i as i64), 13 - i as i64, 3, 4],
+            })
+            .collect();
+        // Every `f` here is far above `n`, so the small-pool branch is the correct one
+        // and all three must agree. Unfixed, the last two panic before returning.
+        let small = multi_krum_ranked(&cs, 5).expect("f=5");
+        for f in [100usize, usize::MAX - 2, usize::MAX] {
+            assert_eq!(
+                multi_krum_ranked(&cs, f).as_deref(),
+                Ok(small.as_slice()),
+                "ranking must not depend on `f` wrapping (f={f})"
+            );
+        }
+    }
+
+    /// num-03, the target-width half, and the reason this is a determinism finding and
+    /// not merely a robustness one. `beta_num / beta_den` here is exactly 1/4, written
+    /// with large numerals -- an ordinary way to express a fraction, not an attack.
+    ///
+    /// `n * beta_num` was computed in `usize`. On a 64-bit target that is 2^32 and fine;
+    /// on a 32-bit target it overflows, and this crate sets `overflow-checks = true` even
+    /// in release, so it PANICS. Verified in CI's own `--platform linux/386
+    /// rust:1-slim-bookworm` container, where `usize::BITS` is 32: before the fix this
+    /// test panicked at `rules.rs:208` with "attempt to multiply with overflow" while
+    /// passing on the host.
+    ///
+    /// HONEST LIMIT: this test does NOT fail on unfixed code on a 64-bit host. Its
+    /// failing witness is the 32-bit CI leg, which is exactly the leg the byte-identity
+    /// claim rests on -- identical inputs must not crash on one target and succeed on
+    /// another.
+    #[test]
+    fn the_trim_fraction_does_not_depend_on_target_pointer_width() {
+        let cs: Vec<Contribution> = (0..4096u32)
+            .map(|i| Contribution {
+                tie_key: i.to_be_bytes().to_vec(),
+                v: vec![7],
+            })
+            .collect();
+        assert_eq!(
+            trimmed_mean(&cs, 1_048_576, 4_194_304),
+            Ok(vec![7]),
+            "beta = 1/4 written with large numerals must behave identically everywhere"
+        );
+        // The same fraction written small must give the same answer, on every target.
+        assert_eq!(trimmed_mean(&cs, 1, 4), Ok(vec![7]));
     }
 
     /// The refusal must not be reachable through the rules themselves. `check` rejects

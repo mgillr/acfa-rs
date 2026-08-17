@@ -25,7 +25,7 @@
 
 use crate::certificate::{CertFork, Certificate};
 use acfa_receipt::identity::Pki;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// What the node is doing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,7 +68,14 @@ pub struct Finality {
     /// and have it ignored permanently, which converts a fix for a denial of service into
     /// a way to hide a violation. Matching on the fork itself keeps the resume working and
     /// leaves genuinely new evidence able to halt.
-    reconciled: Vec<CertFork>,
+    /// Keyed on the CONFLICT, not on the certificates carrying it. `CertFork` holds two
+    /// `Certificate`s and `PartialEq` covers their signature maps, so an adversary who
+    /// re-signs the SAME pair of tuples with a different valid `f+1` quorum produces a fork
+    /// that is byte-different and semantically identical -- and byte-matching let exactly
+    /// that re-halt a resumed node, which is the denial of service this record exists to
+    /// close. `CertTuple::id()` covers the whole signed tuple and `canonical` already
+    /// orients the pair by it, so the ordered pair of ids IS the conflict.
+    reconciled: BTreeSet<([u8; 32], [u8; 32])>,
     f: usize,
 }
 
@@ -92,9 +99,15 @@ impl Finality {
             certified,
             forks: BTreeMap::new(),
             history: Vec::new(),
-            reconciled: Vec::new(),
+            reconciled: BTreeSet::new(),
             f,
         }
+    }
+
+    /// The identity of a CONFLICT: the ordered pair of signed-tuple ids, independent of
+    /// which quorum signed it and of the signature bytes.
+    fn fork_key(fork: &CertFork) -> ([u8; 32], [u8; 32]) {
+        (fork.a.tuple.id(), fork.b.tuple.id())
     }
 
     /// Offer a certificate to this node.
@@ -110,8 +123,13 @@ impl Finality {
             }
             if let Some(fork) = CertFork::canonical(existing.clone(), cert) {
                 if fork.is_valid(pki, self.f) {
+                    // Store only what verifies. `check` counts valid signatures rather than
+                    // requiring all of them, so junk entries survive validation -- and the
+                    // readers below take MEANING from `sigs` without holding a PKI. Prune at
+                    // ingest and membership becomes proof again.
+                    let fork = fork.pruned(pki);
                     self.record(fork.clone());
-                    if !self.reconciled.contains(&fork) {
+                    if !self.reconciled.contains(&Self::fork_key(&fork)) {
                         self.forks.insert(r, fork);
                         return Err(Rejected::ForkedAt(r));
                     }
@@ -133,7 +151,7 @@ impl Finality {
         self.record(fork.clone());
         // Only a fork this node has already reconciled is settled. Anything else halts,
         // whatever its round.
-        if !self.reconciled.contains(&fork) {
+        if !self.reconciled.contains(&Self::fork_key(&fork)) {
             self.forks.insert(fork.round(), fork);
         }
         true
@@ -218,8 +236,8 @@ impl Finality {
         // Record WHICH forks were settled before clearing, so a re-gossiped copy of one of
         // them is recognised as old news while a fork never seen before still halts.
         for f in self.forks.values() {
-            if !self.reconciled.contains(f) {
-                self.reconciled.push(f.clone());
+            if !self.reconciled.contains(&Self::fork_key(f)) {
+                self.reconciled.insert(Self::fork_key(f));
             }
         }
         self.forks.clear(); // no longer blocking; `history` keeps the record

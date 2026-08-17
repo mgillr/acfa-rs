@@ -54,6 +54,28 @@ Calling `aggregate()` directly without `tie_keys` derives them from update conte
 still a function of the set. Two clients sending byte-identical updates are then
 indistinguishable and the call refuses rather than guessing an order.
 
+## Resolution, and when this format does not suit your gradients
+
+Q16.16 resolves `2^-16`, about `1.5e-5`. A coordinate smaller than that quantises to **zero**
+-- not rounded, gone -- and the aggregate is then computed perfectly from an update that no
+longer carries the signal. Measured over 200 trials at n=10, d=256 with Gaussian updates:
+
+| gradient sigma | non-zero coords lost | Krum agrees with float |
+|---|---|---|
+| 1e-1 | 0.02% | 100% |
+| 1e-2 | 0.12% | 100% |
+| 1e-3 | 1.2% | 99.5% |
+| 1e-4 | 12.1% | 92.5% |
+| 1e-5 | 87.3% | 41.5% |
+
+So the format suits gradients around `1e-3` and above, and does not suit them much below
+`1e-4`. `aggregate()` refuses rather than returning a confident number when more than half
+of the non-zero coordinates would be destroyed.
+
+If your updates are smaller, rescale upstream by a factor both parties already hold --
+multiplying by a fixed power of two is exact and reversible -- rather than lowering the
+threshold.
+
 ## Limits
 
 `n >= 2f+3` is a population bound, not a safety guarantee. See the limitations section of

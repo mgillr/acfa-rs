@@ -6,7 +6,8 @@
 //! a design which only hunts for culprits would miss entirely.
 
 use acfa_finality::{
-    CertFork, CertTuple, Certificate, DeadlineCut, Finality, RelayChain, RoundBudget, Status,
+    CertFork, CertTuple, Certificate, DeadlineCut, Finality, Rejected, RelayChain, RoundBudget,
+    Status,
 };
 use acfa_receipt::hash::{enc_tensor, h};
 use acfa_receipt::identity::{contrib_msg, Identity, Pki};
@@ -544,5 +545,229 @@ fn a_new_fork_at_an_earlier_round_still_halts_after_a_resume() {
         fin.is_halted(),
         "a previously unseen fork was ignored because its round was below the reconcile \
          point -- withholding evidence until after a resume would suppress it permanently"
+    );
+}
+
+// ------------------------------------------------------- crypto-01 and crdt-05
+
+/// crypto-01. `msg()` signs `e_cut_root` and `id()` commits to it, but the conflict
+/// predicate compared a strict SUBSET of the signed tuple. Two valid round-r certificates
+/// that agreed on membership and aggregate while committing to different equivocation cuts
+/// were therefore neither equal nor conflicting: `observe` fell through to
+/// `Rejected::Invalid` and silently kept whichever arrived first.
+///
+/// FAILS ON THE UNFIXED CODE: `halted=false`, both certificates accepted, no fork recorded.
+#[test]
+fn a_cut_disagreement_is_a_fork_and_halts() {
+    let f = 1;
+    let (ids, pki) = room(6);
+
+    let mut t1 = tuple(1, "A", "rho");
+    let mut t2 = tuple(1, "A", "rho");
+    t1.e_cut_root = h(b"cut-convicts-node-7");
+    t2.e_cut_root = h(b"cut-convicts-nobody");
+    assert_ne!(t1.msg(), t2.msg(), "the cut is inside the signed bytes");
+    assert_ne!(
+        t1.id(),
+        t2.id(),
+        "and inside the id round r+1 anchors against"
+    );
+    assert!(t1.conflicts_with(&t2), "so they must conflict");
+
+    let mut node = Finality::new(f);
+    node.observe(cert_signed_by(t1, &[&ids[0], &ids[1]]), &pki)
+        .ok();
+    let second = node.observe(cert_signed_by(t2, &[&ids[2], &ids[3]]), &pki);
+    assert_eq!(second, Err(Rejected::ForkedAt(1)));
+    assert!(
+        node.is_halted(),
+        "two certificates over different signed tuples is a fork"
+    );
+}
+
+/// crdt-05. Suppression of re-delivered fork evidence was keyed on `CertFork` equality,
+/// which covers the signature map, so re-signing the SAME pair of tuples with a different
+/// valid `f+1` quorum produced a byte-different, semantically identical fork that slipped
+/// the check and re-halted a resumed node -- the denial of service the record exists to close.
+///
+/// FAILS ON THE UNFIXED CODE: the re-signed conflict returns `ForkedAt(1)` and halts.
+#[test]
+fn a_resumed_node_is_not_re_halted_by_the_same_conflict_re_signed() {
+    let f = 1;
+    let (ids, pki) = room(6);
+    let mut node = Finality::new(f);
+
+    let ta = tuple(1, "A", "rho");
+    let tb = tuple(1, "B", "rho");
+
+    node.observe(Certificate::new(tuple(0, "genesis", "g")), &pki)
+        .ok();
+    node.observe(cert_signed_by(ta, &[&ids[0], &ids[1]]), &pki)
+        .ok();
+    node.observe(cert_signed_by(tb, &[&ids[2], &ids[3]]), &pki)
+        .ok();
+    assert!(node.is_halted(), "precondition: the fork halts the node");
+
+    node.resume(RoundBudget::new(200)).expect("resume");
+    assert!(!node.is_halted());
+
+    // Verbatim re-gossip: old news.
+    node.observe(cert_signed_by(ta, &[&ids[0], &ids[1]]), &pki)
+        .ok();
+    node.observe(cert_signed_by(tb, &[&ids[2], &ids[3]]), &pki)
+        .ok();
+    assert!(
+        !node.is_halted(),
+        "verbatim re-delivery must stay suppressed"
+    );
+
+    // SAME two tuples, DIFFERENT valid quorum. Byte-different, semantically identical.
+    node.observe(cert_signed_by(ta, &[&ids[0], &ids[4]]), &pki)
+        .ok();
+    node.observe(cert_signed_by(tb, &[&ids[2], &ids[5]]), &pki)
+        .ok();
+    assert!(
+        !node.is_halted(),
+        "re-signing the same conflict with another quorum must not re-halt a resumed node"
+    );
+}
+
+/// The property the FIRST attempt at crdt-05 broke: evidence never seen before must halt
+/// regardless of round, including a fork withheld until after a resume. This one PASSES on
+/// the current code and is a guard, not a failing-first test; it fails against the
+/// round-suppression version (`6d5f48e`), which is where its teeth were demonstrated.
+#[test]
+fn a_withheld_earlier_fork_still_halts_after_a_resume() {
+    let f = 1;
+    let (ids, pki) = room(6);
+    let mut node = Finality::new(f);
+
+    node.observe(Certificate::new(tuple(0, "genesis", "g")), &pki)
+        .ok();
+    for r in 1..=3u64 {
+        node.observe(
+            cert_signed_by(tuple(r, "A", "rho"), &[&ids[0], &ids[1]]),
+            &pki,
+        )
+        .ok();
+    }
+    node.observe(
+        cert_signed_by(tuple(3, "B", "rho"), &[&ids[2], &ids[3]]),
+        &pki,
+    )
+    .ok();
+    assert!(node.is_halted());
+    node.resume(RoundBudget::new(200)).expect("resume");
+
+    node.observe(
+        cert_signed_by(tuple(2, "A", "rho"), &[&ids[0], &ids[1]]),
+        &pki,
+    )
+    .ok();
+    node.observe(
+        cert_signed_by(tuple(2, "C", "rho"), &[&ids[2], &ids[3]]),
+        &pki,
+    )
+    .ok();
+    assert!(
+        node.is_halted(),
+        "a fork never seen before must halt, whatever its round"
+    );
+}
+
+// ------------------------------------------------------------------- crdt-07
+
+/// PART ONE. `check` required EVERY carried signature to verify, returning on the first
+/// bad one before it counted the good ones. The wire format accepts any strictly-ascending
+/// signer list, so a relay could append one junk entry to GENUINE fork evidence and an
+/// honest node would decline to halt on it -- valid evidence made refusable by a bystander
+/// holding no key.
+///
+/// FAILS ON THE UNFIXED CODE: `halted=false`, the padded evidence is rejected.
+#[test]
+fn junk_appended_to_real_evidence_does_not_stop_the_halt() {
+    let f = 1;
+    let (ids, pki) = room(6);
+    let mut node = Finality::new(f);
+
+    let ta = tuple(1, "A", "rho");
+    let tb = tuple(1, "B", "rho");
+    let ca = cert_signed_by(ta, &[&ids[0], &ids[1]]);
+    let mut cb = cert_signed_by(tb, &[&ids[2], &ids[3]]);
+
+    // A bystander appends an entry for an id in the PKI, with a signature over nothing.
+    cb.sigs.insert(ids[5].node_id, [0u8; 64]);
+
+    node.observe(ca, &pki).ok();
+    let second = node.observe(cb, &pki);
+    assert_eq!(second, Err(Rejected::ForkedAt(1)));
+    assert!(
+        node.is_halted(),
+        "one junk signature must not make real fork evidence refusable"
+    );
+}
+
+/// PART TWO, and it is why counting alone is not enough. Once `check` counts valid
+/// signatures instead of requiring all, junk survives into the carried map -- and
+/// `attributable()` reads `sigs.keys()`, which is MEMBERSHIP, not proof. Without pruning at
+/// ingest, an attacker appends entries naming an HONEST node to BOTH halves of a real fork
+/// and that node is reported as having double-signed. Attribution is an accusation.
+///
+/// This test passes trivially on the UNFIXED code (which refuses the padded fork outright),
+/// so it is a guard on the FIX, not a failing-first test -- and it fails if part two is
+/// removed while part one is kept.
+#[test]
+fn padded_signatures_cannot_frame_an_honest_node() {
+    let f = 1;
+    let (ids, pki) = room(6);
+    let mut node = Finality::new(f);
+
+    let ta = tuple(1, "A", "rho");
+    let tb = tuple(1, "B", "rho");
+    let mut ca = cert_signed_by(ta, &[&ids[0], &ids[1]]);
+    let mut cb = cert_signed_by(tb, &[&ids[2], &ids[3]]);
+
+    // Node 6 signed NEITHER half. Forge its membership in BOTH.
+    let victim = ids[5].node_id;
+    ca.sigs.insert(victim, [0u8; 64]);
+    cb.sigs.insert(victim, [0u8; 64]);
+
+    node.observe(ca, &pki).ok();
+    node.observe(cb, &pki).ok();
+    assert!(node.is_halted(), "precondition: the fork is real and halts");
+
+    assert!(
+        !node.attributed().contains(&victim),
+        "an honest node that signed neither half was named as a double-signer"
+    );
+}
+
+/// A threshold must never get EASIER as the claimed adversary budget grows. `f + 1` in
+/// `usize` wraps to zero at `usize::MAX`, making `have < need` vacuously false, so
+/// `Certificate::check` returned Ok on a certificate carrying NO valid signatures and
+/// `RelayChain::check` accepted a chain with no hops.
+///
+/// FAILS ON THE UNFIXED CODE: both return Ok.
+#[test]
+fn an_unreachable_fault_bound_does_not_make_the_threshold_vacuous() {
+    let (_ids, pki) = room(4);
+
+    // A certificate with NO signatures at all, offered under an absurd fault bound.
+    let empty = Certificate::new(tuple(1, "A", "rho"));
+    assert!(
+        empty.check(&pki, usize::MAX).is_err(),
+        "a certificate with zero valid signatures was accepted because f+1 wrapped to 0"
+    );
+    assert!(
+        empty.check(&pki, usize::MAX - 1).is_err(),
+        "same, one below the wrap point"
+    );
+
+    // The honest side, so the refusal is not vacuous: f+1 real signers still validate.
+    let (ids, pki2) = room(6);
+    let ok = cert_signed_by(tuple(1, "A", "rho"), &[&ids[0], &ids[1]]);
+    assert!(
+        ok.check(&pki2, 1).is_ok(),
+        "a genuine f+1 certificate must still validate"
     );
 }

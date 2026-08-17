@@ -105,14 +105,24 @@ impl RelayChain {
     /// Completeness is `f+1` DISTINCT signers. `f+1` guarantees at least one honest
     /// relayer, which is what carries the message to every honest node in time.
     pub fn check(&self, pki: &Pki, f: usize) -> Result<(), ChainError> {
-        let need = f + 1;
+        // SATURATES. `f` reaches here from an untrusted receipt, and `f + 1` in `usize`
+        // WRAPS TO ZERO at `usize::MAX` -- making the threshold comparison below vacuously
+        // false, so the check returned Ok on ZERO valid signatures. A threshold that gets
+        // easier as the claimed adversary budget grows is the guard failing open, in the
+        // one direction an attacker chooses. `usize::MAX` is unreachable, which is the
+        // honest answer for a fault bound nobody can satisfy.
+        let need = f.saturating_add(1);
         if self.hops.len() < need {
             return Err(ChainError::TooShort {
                 have: self.hops.len(),
                 need,
             });
         }
+        // Distinctness is about KEYS, not ids. `f + 1` distinct hops is a threshold over
+        // independent signers, and two ids sharing one key are one signer wearing two
+        // labels, so counting ids lets a single key supply the whole chain.
         let mut seen: BTreeSet<u32> = BTreeSet::new();
+        let mut seen_keys: BTreeSet<acfa_receipt::identity::PubKey> = BTreeSet::new();
         for (depth, (id, sig)) in self.hops.iter().enumerate() {
             if !seen.insert(*id) {
                 return Err(ChainError::RepeatedSigner(*id));
@@ -120,6 +130,9 @@ impl RelayChain {
             let Some(pk) = pki.get(id) else {
                 return Err(ChainError::UnknownSigner(*id));
             };
+            if !seen_keys.insert(*pk) {
+                return Err(ChainError::RepeatedSigner(*id));
+            }
             let msg = relay_msg(&self.anchor, &self.leaf, &self.hops[..depth]);
             if !verify(pk, &msg, sig) {
                 return Err(ChainError::BadHop {

@@ -55,3 +55,43 @@ pub fn contribution(tie_key: impl Into<Vec<u8>>, xs: &[f64]) -> Result<Contribut
         v,
     })
 }
+
+#[cfg(test)]
+mod manifest {
+    /// rust-09. The manifest advertised the `no-std` category while the crate has no
+    /// `#![no_std]` attribute and does not compile without std -- 36 errors under a bare
+    /// `#![no_std]`, and the irreducible one is `f64::round` on the encode boundary,
+    /// which lives in `std` and not in `core`.
+    ///
+    /// The guard is written over the CLASS, not the instance: it does not check for the
+    /// specific string that was wrong, it checks that the claim and the code agree, in
+    /// either direction. Removing the category alone would have left nothing to stop it
+    /// being re-added by someone who assumed a dependency-free crate must be no-std.
+    ///
+    /// It is a genuine gate, not a decorative one: with `no-std` restored to the
+    /// categories line and no `#![no_std]` in the crate, this test fails.
+    #[test]
+    fn the_no_std_claim_and_the_crate_agree() {
+        let manifest = include_str!("../Cargo.toml");
+        let claimed = manifest
+            .lines()
+            .map(str::trim_start)
+            .filter(|l| !l.starts_with('#'))
+            .find(|l| l.starts_with("categories"))
+            .expect("Cargo.toml must declare categories")
+            .contains("no-std");
+        // An ATTRIBUTE LINE, not a substring. The first draft used `.contains()` and
+        // failed against itself: the doc comment above mentions `#![no_std]`, so the
+        // crate looked no-std to its own test. A check that matches prose is not
+        // checking the code.
+        let actual = include_str!("lib.rs")
+            .lines()
+            .any(|l| l.trim_start().starts_with("#![no_std]"));
+        assert_eq!(
+            claimed, actual,
+            "manifest claims no-std = {claimed}, crate is no-std = {actual}; \
+             publishing the category without the attribute tells crates.io users \
+             the crate works in an environment where it does not compile"
+        );
+    }
+}

@@ -34,6 +34,15 @@ impl Contribution {
     /// message. Including the signature makes those two objects distinct leaves, so
     /// the duplicate is visible in the state rather than silently collapsing into one
     /// entry -- and `admit` can then refuse the identity outright.
+    ///
+    /// THE `C|` PREFIX IS LOAD-BEARING FOR A RELEASE ASSERT IN ANOTHER MODULE. `State::root`
+    /// concatenates the contribution and proof leaf sets and hands them to
+    /// `hash::merkle_root`, which REFUSES duplicate leaves (crdt-11: padding duplicates the
+    /// sorted maximum, so a duplicate makes the root ambiguous with a larger tree). Each set
+    /// is internally unique because both are map keys; the CONCATENATION is duplicate-free
+    /// only because `C|` and `P|` keep the two leaf spaces disjoint. A third leaf type
+    /// sharing either prefix, or these two prefixes being unified, turns that assert into a
+    /// panic in production. If you add a leaf type, give it its own prefix.
     pub fn leaf(&self) -> [u8; 32] {
         let mut b = Vec::with_capacity(2 + 8 + 4 + 32 + 64);
         b.extend_from_slice(b"C|");
@@ -95,6 +104,13 @@ impl EquivProof {
         }
     }
 
+    /// The proof's leaf in the state tree.
+    ///
+    /// THE `P|` PREFIX IS LOAD-BEARING FOR A RELEASE ASSERT IN ANOTHER MODULE, for the same
+    /// reason as `Contribution::leaf`: `State::root` concatenates the two leaf sets and
+    /// `hash::merkle_root` refuses duplicates, and the concatenation is duplicate-free only
+    /// because `C|` and `P|` keep the spaces disjoint. Do not unify these prefixes, and give
+    /// any new leaf type its own.
     pub fn leaf(&self) -> [u8; 32] {
         let mut b = Vec::with_capacity(2 + 8 + 4 + 64 + 128);
         b.extend_from_slice(b"P|");
@@ -110,11 +126,22 @@ impl EquivProof {
     /// Valid iff the two contents genuinely differ and BOTH signatures verify under
     /// the accused key for this round.
     ///
-    /// The `h1 == h2` rejection is what stops the obvious self-serving forgery:
-    /// without it, anyone could take one honest contribution, pair it with itself, and
-    /// convict an innocent identity.
+    /// The self-pairing rejection is what stops the obvious self-serving forgery: without
+    /// it, anyone could take one honest contribution, pair it with itself, and convict an
+    /// innocent identity.
+    ///
+    /// It rejects `(h1, sig1) == (h2, sig2)` -- the SAME ENTRY twice -- and not merely
+    /// `h1 == h2`. Ed25519 does not force a deterministic nonce, so a signer can emit two
+    /// DISTINCT valid signatures over the SAME contribution message. Those are two distinct
+    /// entries by one identity in one round, which is equivocation by the definition
+    /// `admit` already enforces (it excludes the identity on leaf uniqueness). Keying the
+    /// proof on content alone meant that case produced NO PROOF: the node was excluded and
+    /// no record of why was ever formed, so an observer could not distinguish it from a
+    /// node that simply went quiet. Widening the predicate to the whole entry keeps the
+    /// anti-framing guard exactly as strong -- one entry still cannot convict its own
+    /// author -- while making the two-signature case attributable.
     pub fn valid(&self, pki: &Pki) -> bool {
-        if self.h1 == self.h2 {
+        if self.h1 == self.h2 && self.sig1 == self.sig2 {
             return false;
         }
         let Some(pk) = pki.get(&self.node_id) else {

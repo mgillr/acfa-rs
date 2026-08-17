@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import importlib.util
+
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -195,11 +197,48 @@ def test_there_is_no_silent_python_fallback(monkeypatch):
         aggregate(honest_set(), rule=Rule.KRUM, f=1)
 
 
+def test_integer_dtypes_are_refused_not_silently_truncated():
+    """adv-02 REGRESSION. Reproduced before fixing.
+
+    `_unflatten` casts the aggregate back to each input's ORIGINAL dtype. For integer
+    inputs that truncates the fractional part of a result the binary computed
+    correctly, so the adapter DISAGREES with the tool it shells out to and says
+    nothing. Measured on unfixed code: MEAN of three 0s and two 1s returned 0 on the
+    int64 path where the float64 path returned 0.3999939 -- the whole aggregate
+    annihilated, and truncation is toward zero so the error is a systematic BIAS, not
+    rounding noise. Krum on the same numbers returned 11 against 11.5.
+
+    Per the standing rule, a value error must not become an order error: REFUSE.
+    """
+    ints = [[np.array([0, 0, 0], dtype=np.int64)]] * 3 + [
+        [np.array([1, 1, 1], dtype=np.int64)]
+    ] * 2
+    keys = [bytes([i]) for i in range(5)]
+    with pytest.raises(AcfaAggregationError, match="integer|dtype"):
+        aggregate(ints, rule=Rule.MEAN, f=1, tie_keys=keys)
+
+
+def test_float_inputs_still_aggregate_after_the_dtype_guard():
+    """The refusal must not be vacuous: the accepting side has to still accept."""
+    flts = [[np.array([0.0, 0.0, 0.0])]] * 3 + [[np.array([1.0, 1.0, 1.0])]] * 2
+    keys = [bytes([i]) for i in range(5)]
+    out = aggregate(flts, rule=Rule.MEAN, f=1, tie_keys=keys)
+    assert abs(float(out[0][0]) - 0.4) < 1e-4, out
+
+
 # ---------------------------------------------------------------- flower wiring
 
-flwr = pytest.importorskip("flwr")
+# Gate ONLY the wiring tests on flwr. A module-level importorskip aborts the whole
+# module import, which silently skipped ALL 26 tests -- including the 16 that never
+# touch flwr -- in any environment without it. CI installs flwr so this was never a
+# CI-integrity problem (pytest exits 5 on "no tests collected", so a missing flwr
+# turns CI RED, verified), but it made every local run vacuous.
+requires_flwr = pytest.mark.skipif(
+    importlib.util.find_spec("flwr") is None, reason="flwr is not installed"
+)
 
 
+@requires_flwr
 def test_strategy_aggregate_fit_matches_the_direct_call():
     from flwr.common import Code, FitRes, Status, ndarrays_to_parameters, parameters_to_ndarrays
 
@@ -238,6 +277,7 @@ def test_strategy_aggregate_fit_matches_the_direct_call():
     assert metrics["acfa_required_n"] == 5
 
 
+@requires_flwr
 def test_strategy_reports_bound_unmet_without_failing():
     """A round below the bound must still work AND must say the bound is unmet."""
     from flwr.common import Code, FitRes, Status, ndarrays_to_parameters
@@ -268,6 +308,7 @@ def test_strategy_reports_bound_unmet_without_failing():
     assert metrics["acfa_n"] == 3 and metrics["acfa_required_n"] == 5
 
 
+@requires_flwr
 def test_num_examples_cannot_amplify_a_client():
     """FedAvg weights by num_examples, which is an unverifiable self-report.
 
@@ -305,6 +346,7 @@ def test_num_examples_cannot_amplify_a_client():
         assert np.array_equal(a, b), "num_examples must not weight the aggregate"
 
 
+@requires_flwr
 def test_the_default_tie_key_is_content_derived_not_positional():
     """REGRESSION (found by adversarial review, reproduced with an exact-tie construction).
 
@@ -325,6 +367,7 @@ def test_the_default_tie_key_is_content_derived_not_positional():
     )
 
 
+@requires_flwr
 def test_byte_identical_updates_are_refused_rather_than_ordered_by_arrival():
     """The honest failure mode of a content-derived default, stated explicitly."""
     same = [np.array([1.0, 2.0])]
@@ -332,6 +375,7 @@ def test_byte_identical_updates_are_refused_rather_than_ordered_by_arrival():
         aggregate([same, same, same, same, same], rule=Rule.KRUM, f=1)
 
 
+@requires_flwr
 def test_string_tie_keys_are_accepted_and_match_their_bytes():
     """The docs say "client ids work", and a Flower client id is a str.
 
@@ -347,6 +391,7 @@ def test_string_tie_keys_are_accepted_and_match_their_bytes():
         assert np.array_equal(x, y)
 
 
+@requires_flwr
 def test_str_and_bytes_spelling_of_one_key_is_a_duplicate():
     """Normalising after the duplicate check would let "a" and b"a" pass as distinct."""
     ups = [[np.array([1.0, 2.0])], [np.array([3.0, 4.0])]]
@@ -354,7 +399,46 @@ def test_str_and_bytes_spelling_of_one_key_is_a_duplicate():
         aggregate(ups, rule=Rule.MEAN, f=0, tie_keys=["a", b"a"])
 
 
+@requires_flwr
 def test_non_bytes_tie_key_is_refused_by_name():
     ups = [[np.array([1.0, 2.0])], [np.array([3.0, 4.0])]]
     with pytest.raises(AcfaAggregationError, match="tie_keys\\[1\\] is int"):
         aggregate(ups, rule=Rule.MEAN, f=0, tie_keys=[b"a", 7])
+
+
+# ---------------------------------------------------------------- fl-02
+
+
+def test_updates_destroyed_by_quantisation_are_refused_not_aggregated():
+    """fl-02. Q16.16 resolves 2^-16 ~= 1.5e-5, so a smaller coordinate quantises to ZERO --
+    not rounded, gone. Measured over 200 trials at n=10, d=256: at sigma=1e-3 only 1.2% of
+    coordinates are lost and Krum agrees with float 99.5% of the time; at sigma=1e-5, 87.3%
+    are lost and agreement falls to 41.5%.
+
+    The determinism property is intact throughout, and completely beside the point: the
+    aggregate is computed perfectly from an update that no longer carries the signal. This
+    asserts the refusal, and the next test asserts it is not vacuous.
+    """
+    tiny = [[np.full(64, 1e-7)] for _ in range(5)]
+    keys = [bytes([i]) for i in range(5)]
+    with pytest.raises(AcfaAggregationError, match="resolution"):
+        aggregate(tiny, rule=Rule.MEAN, f=1, tie_keys=keys)
+
+
+def test_realistic_gradient_scales_still_aggregate():
+    """The guard must not be a blunt instrument. At 1e-3 -- an ordinary post-clipping
+    gradient scale -- almost nothing is lost and the aggregate must go through."""
+    rng = np.random.default_rng(0)
+    ups = [[rng.normal(0.0, 1e-3, size=64)] for _ in range(5)]
+    keys = [bytes([i]) for i in range(5)]
+    out = aggregate(ups, rule=Rule.MEAN, f=1, tie_keys=keys)
+    assert out and out[0].shape == (64,)
+
+
+def test_a_genuinely_sparse_update_is_not_mistaken_for_a_destroyed_one():
+    """The metric counts coordinates the QUANTISATION destroyed, not zeros. A first version
+    counted every zero and refused a legitimate sparse update -- sparsity is not loss."""
+    sparse = [[np.array([0.0] * 63 + [1.0])] for _ in range(5)]
+    keys = [bytes([i]) for i in range(5)]
+    out = aggregate(sparse, rule=Rule.MEAN, f=1, tie_keys=keys)
+    assert abs(float(out[0][63]) - 1.0) < 1e-3

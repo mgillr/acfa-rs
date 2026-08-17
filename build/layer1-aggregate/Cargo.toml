@@ -8,7 +8,17 @@ repository = "https://github.com/mgillr/acfa-rs"
 homepage = "https://github.com/mgillr/acfa-rs"
 readme = "README.md"
 keywords = ["byzantine", "aggregation", "federated-learning", "determinism", "krum"]
-categories = ["algorithms", "science", "no-std"]
+# NOT "no-std", and do not put it back without making it true first. The crate does not
+# carry `#![no_std]` and does not compile without std: `f64::round`, on the encode
+# boundary in `src/fixed.rs`, lives in `std` and not in `core` (verified in isolation --
+# `#![no_std]` + `x.round()` is E0599, the same code compiles with std). The rest is
+# reachable: every other std item in the library is `Vec`, which `extern crate alloc`
+# supplies, and the `no-std` category permits an alloc dependency.
+#
+# So the honest position is that this is std-only TODAY for one reason, and becoming
+# genuinely no-std is a design decision -- take a `libm` dependency, or move the float
+# boundary out of the library -- not an audit fix. It is not being made here.
+categories = ["algorithms", "science"]
 description = "Deterministic robust aggregation over fixed-point vectors: bit-identical output regardless of input order, accumulation order, or target architecture."
 license = "Apache-2.0"
 

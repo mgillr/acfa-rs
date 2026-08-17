@@ -71,6 +71,59 @@ impl W {
     }
 }
 
+/// KNOWN DEFECT, crypto-09-2, MEASURED AND UNFIXED PENDING AN API RULING. DO NOT "TIDY"
+/// THE `as u32` CASTS BELOW WITHOUT READING THIS.
+///
+/// `Receipt::f` is a `usize`, and this function writes it as a `u32`. On a 64-bit target
+/// that cast TRUNCATES MODULO 2^32, silently, with no error path -- `encode` is infallible
+/// by signature, so it cannot refuse. That contradicts the crate's own refuse-not-saturate
+/// discipline, which `src/fixed.rs` in `acfa-aggregate` holds to for exactly this reason.
+///
+/// THE CONSEQUENCE IS NOT A LOST NUMBER, IT IS A VERDICT THAT DEPENDS ON WHETHER THE
+/// RECEIPT CROSSED A SERIALISATION BOUNDARY. Measured, `f = 2^32 + 1` against a policy of
+/// `f = 1`:
+///
+///   in memory                      -> Err(FaultBoundMismatch { policy: 1, receipt: 4294967297 })
+///   after encode + decode          -> Ok(())
+///
+/// Two honest verifiers holding the SAME receipt reach OPPOSITE verdicts, one having
+/// serialised it and one not. For a protocol whose whole proposition is that everyone who
+/// re-executes a receipt reaches the same answer, that is the defect, and it is worse than
+/// the truncation that causes it. `encode` is also NON-INJECTIVE as a direct result: two
+/// receipts differing only in `f` produce byte-identical output, so receipt bytes do not
+/// determine the receipt.
+///
+/// HONEST SEVERITY: THIS IS NOT REMOTELY EXPLOITABLE and should not be filed as though it
+/// were. `decode` reads a `u32`, so no attacker-supplied stream can produce an out-of-range
+/// `f` in the first place; the state is only reachable by a local caller assigning to the
+/// `pub f` field. It is a determinism and injectivity defect, not an attack.
+///
+/// The other five `as u32` casts here are the same cast on `len()` values, and they are
+/// NOT equally reachable: each would require actually materialising four billion elements.
+/// `f` is the only one that can be enormous without allocating anything, which is why it
+/// is the one called out.
+///
+/// WHY NO FIX HAS LANDED. Every candidate breaks something a consumer sees: `encode ->
+/// Result` changes a public signature, `f: usize -> u32` changes a public field, and
+/// writing `f` as a `u64` changes the wire format. That is a ruling, not a tidy-up, so it
+/// is with B rather than taken unilaterally. A COMMENT CANNOT FAIL, so this paragraph is
+/// not the guard -- the failing test lands WITH the fix, and until then this exists only so
+/// the next person to read these casts meets the measurement instead of rediscovering it.
+///
+/// WHAT DOES AND DOES NOT WITNESS THIS FUNCTION. `examples/digest.rs` encodes each of the
+/// five fingerprint scenarios and hashes the RESULTING BYTES, and CI diffs those digests
+/// across eight architectures including big-endian s390x. So the wire format IS covered,
+/// strongly, ACROSS ARCHITECTURES -- verified by mutation, not by reading: swapping the
+/// `round` and `f` field order below moves all five per-scenario digests.
+///
+/// What is NOT covered is cross-IMPLEMENTATION agreement. `tests/golden/generate_l2.py` is an
+/// independent Python reference, but it produces vectors for `resolve` only, so nothing
+/// checks that a second implementation emits the same BYTES. One implementation agreeing
+/// with itself on eight architectures is a different property from two implementations
+/// agreeing, and only the first is tested.
+///
+/// The fingerprint is also blind to the truncation described above, because all five
+/// scenarios use a small `f`, so the case cannot arise in the digest's inputs.
 pub fn encode(r: &Receipt) -> Vec<u8> {
     let mut w = W(Vec::new());
     w.raw(MAGIC);
@@ -207,6 +260,18 @@ pub fn decode(bytes: &[u8]) -> Result<Receipt, WireError> {
     let n_pki = r.count(n_pki_raw, 4 + 32)?;
     let mut pki: Pki = Pki::new();
     let mut last_id: Option<u32> = None;
+    // ONE KEY IS ONE IDENTITY, enforced here rather than assumed. Ascending-by-id gives a
+    // canonical encoding; it does NOT make the id -> key map injective, and the signed
+    // contribution message binds the round and the tensor hash but NOT the signer, so
+    // authorship rests entirely on that injectivity. A PKI registering a second id to an
+    // honest node's key therefore lets anyone REPLAY that node's signed bytes under the
+    // extra identity, with no secret key at all: measured, five honest nodes, aggregate
+    // moved from [10, 9] to [750002, 750001] and the receipt VERIFIED, because the clones
+    // sit at distance zero from each other and Krum selects the tightest cluster. Refusing
+    // a non-injective PKI closes it on the wire and costs no bytes. The README delegates
+    // Sybil resistance to the PKI, so a PKI that maps two identities to one key is not a
+    // deployment choice to be honoured, it is a broken PKI.
+    let mut seen_keys: std::collections::BTreeSet<PubKey> = std::collections::BTreeSet::new();
     for _ in 0..n_pki {
         let id = r.u32()?;
         if let Some(prev) = last_id {
@@ -216,6 +281,14 @@ pub fn decode(bytes: &[u8]) -> Result<Receipt, WireError> {
         }
         last_id = Some(id);
         let pk: PubKey = r.arr32()?;
+        if !crate::identity::is_usable_pubkey(&pk) {
+            return Err(WireError::NotCanonical(
+                "pki contains an unusable public key",
+            ));
+        }
+        if !seen_keys.insert(pk) {
+            return Err(WireError::NotCanonical("pki reuses a public key"));
+        }
         pki.insert(id, pk);
     }
 

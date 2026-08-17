@@ -42,11 +42,20 @@ impl Rule {
         }
     }
     /// The admitted-population bound this rule's robustness argument rests on.
+    ///
+    /// SATURATES. `f` arrives from an untrusted receipt, and `2*f + 3` in `usize` WRAPPED:
+    /// at `f = usize::MAX` the bound came out as **1**, so a receipt declaring a huge fault
+    /// bound satisfied the Krum population bound with a SINGLE admitted contribution. That
+    /// is the guard failing OPEN -- the larger the claimed adversary budget, the weaker the
+    /// requirement became. Saturating makes an unmeetable claim unmeetable: no admitted set
+    /// can reach `usize::MAX`, so the bound is reported as not met, which is the honest
+    /// answer for a fault bound nobody can satisfy.
     pub fn required_n(&self, f: usize) -> usize {
-        match self {
-            Rule::Krum => 2 * f + 3,
-            Rule::Bulyan => 4 * f + 3,
-        }
+        let k: usize = match self {
+            Rule::Krum => 2,
+            Rule::Bulyan => 4,
+        };
+        k.saturating_mul(f).saturating_add(3)
     }
 }
 
