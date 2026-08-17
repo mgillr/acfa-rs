@@ -494,3 +494,90 @@ def test_a_genuinely_sparse_update_is_not_mistaken_for_a_destroyed_one():
     keys = [bytes([i]) for i in range(5)]
     out = aggregate(sparse, rule=Rule.MEAN, f=1, tie_keys=keys)
     assert abs(float(out[0][63]) - 1.0) < 1e-3
+
+
+# ---------------------------------------------------------------- fl-09
+
+def _fit_results(metrics_per_client):
+    """n FitRes carrying the honest updates and the given per-client metrics dicts."""
+    from flwr.common import Code, FitRes, Status, ndarrays_to_parameters
+
+    class Proxy:
+        def __init__(self, cid):
+            self.cid = cid
+
+    ups = honest_set()
+    return [
+        (
+            Proxy(f"client-{i}"),
+            FitRes(
+                status=Status(code=Code.OK, message=""),
+                parameters=ndarrays_to_parameters(u),
+                num_examples=10 + i,
+                metrics=m,
+            ),
+        )
+        for i, (u, m) in enumerate(zip(ups, metrics_per_client))
+    ]
+
+
+@requires_flwr
+def test_fit_metrics_aggregation_fn_is_called_not_silently_dropped():
+    """fl-09. `FedAvg.__init__` STORES the callable -- it reaches super() through **kwargs --
+    and `AcfaStrategy` overrides the method that consumes it. So the constructor accepted a
+    metrics aggregator, raised nothing, and every client-reported training metric vanished.
+    Constructor accepts, parent stores, override ignores.
+
+    FAILS ON THE UNFIXED CODE: `called` stays empty and `acc` is absent from the metrics.
+    """
+    from acfa_flower import AcfaStrategy
+
+    called = []
+
+    def agg(pairs):
+        called.append(pairs)
+        total = sum(n for n, _ in pairs)
+        return {"acc": sum(n * m["acc"] for n, m in pairs) / total}
+
+    results = _fit_results([{"acc": float(i)} for i in range(5)])
+    strat = AcfaStrategy(rule=Rule.KRUM, f=1, fit_metrics_aggregation_fn=agg)
+    _, metrics = strat.aggregate_fit(1, results, [])
+
+    assert called, "fit_metrics_aggregation_fn was never called"
+    # Flower's signature is List[Tuple[num_examples, metrics]]; the counts must reach it
+    # even though the AGGREGATE ignores them -- weighting the model by a self-report is the
+    # amplifier, a caller's own metrics callback is not.
+    assert called[0] == [(10 + i, {"acc": float(i)}) for i in range(5)]
+    assert abs(metrics["acc"] - sum((10 + i) * i for i in range(5)) / sum(range(10, 15))) < 1e-9
+    # ...and the strategy's own diagnostics still survive alongside the caller's.
+    assert metrics["acfa_n"] == 5 and metrics["acfa_population_bound_met"] is True
+
+
+@requires_flwr
+def test_no_metrics_fn_still_returns_the_acfa_diagnostics():
+    """The fix must not make the diagnostics conditional on a callback being supplied."""
+    from acfa_flower import AcfaStrategy
+
+    strat = AcfaStrategy(rule=Rule.KRUM, f=1)
+    _, metrics = strat.aggregate_fit(1, _fit_results([{} for _ in range(5)]), [])
+    assert metrics["acfa_rule"] == "krum"
+    assert metrics["acfa_n"] == 5 and metrics["acfa_required_n"] == 5
+    assert metrics["acfa_population_bound_met"] is True
+
+
+@requires_flwr
+def test_a_caller_metric_colliding_with_the_reserved_prefix_is_refused():
+    """Merging has to choose, and BOTH silent choices are bad: overwriting the caller's key
+    is the same silent drop fl-09 is about, and overwriting ours would let a client's
+    self-reported metric forge `acfa_population_bound_met` -- the field that tells an
+    operator the Byzantine guarantee is live. So it refuses, deterministically, on round 1.
+    """
+    from acfa_flower import AcfaStrategy
+
+    strat = AcfaStrategy(
+        rule=Rule.KRUM,
+        f=1,
+        fit_metrics_aggregation_fn=lambda pairs: {"acfa_population_bound_met": True},
+    )
+    with pytest.raises(AcfaAggregationError, match="reserved key"):
+        strat.aggregate_fit(1, _fit_results([{} for _ in range(5)]), [])

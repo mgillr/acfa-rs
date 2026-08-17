@@ -399,10 +399,34 @@ class AcfaStrategy(FedAvg):  # type: ignore[misc]
             binary=self.binary,
         )
 
+        # fl-09. CALL THE CALLER'S fit_metrics_aggregation_fn.
+        #
+        # FedAvg.__init__ STORES it -- it reaches super() through **kwargs -- and this
+        # override replaced the method that consumes it. So the constructor accepted the
+        # callable, nothing raised, and every client-reported training metric was silently
+        # discarded. Constructor accepts, parent stores, override ignores.
+        #
+        # `evaluate_metrics_aggregation_fn` is NOT affected and never was: aggregate_evaluate
+        # is inherited unchanged, so the evaluate side has always worked. fl-09 is the fit
+        # side only.
+        #
+        # num_examples IS passed through here, even though the aggregate deliberately ignores
+        # it. Those are different uses. Weighting the MODEL by an unverifiable self-report
+        # hands an attacker a free amplifier, which is why the rule refuses to; this is the
+        # caller's own callback over the caller's own metrics, and Flower's signature carries
+        # the count. Withholding it would silently change the meaning of every metrics
+        # function ever written against that signature.
+        metrics = {}
+        fit_metrics_fn = getattr(self, "fit_metrics_aggregation_fn", None)
+        if fit_metrics_fn is not None:
+            metrics = dict(
+                fit_metrics_fn([(res.num_examples, res.metrics) for _, res in results]) or {}
+            )
+
         n = len(updates)
         need = self.rule.required_n(self.f)
         population_bound_met = n >= need
-        metrics = {
+        acfa_metrics = {
             "acfa_rule": self.rule.value,
             "acfa_f": self.f,
             "acfa_n": n,
@@ -411,4 +435,19 @@ class AcfaStrategy(FedAvg):  # type: ignore[misc]
             # drops below its bound would otherwise look identical to a healthy one.
             "acfa_population_bound_met": population_bound_met,
         }
+
+        # `acfa_` is a RESERVED PREFIX and a collision is refused rather than resolved.
+        # Overwriting the caller's key would be the same silent-drop defect this fix exists
+        # to remove, and overwriting ours would let a client's self-reported metric forge
+        # `acfa_population_bound_met` -- the one field that tells an operator the Byzantine
+        # guarantee is live. Refusing is deterministic: it fires on the first round rather
+        # than the first round where the values happen to differ.
+        clash = sorted(set(metrics) & set(acfa_metrics))
+        if clash:
+            raise AcfaAggregationError(
+                f"fit_metrics_aggregation_fn returned reserved key(s) {clash}; `acfa_` is "
+                "reserved for this strategy's own diagnostics. Rename the metric -- "
+                "silently overwriting either side would hide one of them."
+            )
+        metrics.update(acfa_metrics)
         return ndarrays_to_parameters(aggregated), metrics
