@@ -55,16 +55,20 @@ pub struct Finality {
     /// propagates to everyone -- grew it without bound. Evidence merging "by union" has to
     /// actually be a union.
     history: Vec<CertFork>,
-    /// Rounds at or below this have been reconciled by an explicit `resume`, so a fork at
-    /// or below it is HISTORY rather than a live halt.
+    /// The specific forks an explicit `resume` has settled. Re-delivering one of THESE is
+    /// old news; anything else is not.
     ///
-    /// Without this, resume could not stick. `resume` cleared the blocking set, but any
-    /// peer re-gossiping the old fork -- ordinary behaviour, not an attack -- put it
-    /// straight back and halted the node again, forever. The evidence is unsuppressible by
-    /// design, so a design that halts on every re-delivery of unsuppressible evidence can
-    /// never resume. Recording the reconcile point separates "this happened" from "this is
-    /// blocking now", and keeps both true.
-    reconciled_through: u64,
+    /// WHY IDENTITY AND NOT A ROUND NUMBER. Resume has to stick: the evidence is
+    /// unsuppressible by design and keeps arriving, so a node that re-halts on every
+    /// re-delivery can never resume at all. The first version of this fix suppressed by
+    /// ROUND -- ignore any fork at or below the reconcile point -- and that was wrong in a
+    /// way that mattered. A fork the node has never seen, at an EARLIER round, is not old
+    /// news: it invalidates that round and everything after it, including the rounds just
+    /// reconciled. Round-suppression let an adversary withhold a fork until after a resume
+    /// and have it ignored permanently, which converts a fix for a denial of service into
+    /// a way to hide a violation. Matching on the fork itself keeps the resume working and
+    /// leaves genuinely new evidence able to halt.
+    reconciled: Vec<CertFork>,
     f: usize,
 }
 
@@ -88,7 +92,7 @@ impl Finality {
             certified,
             forks: BTreeMap::new(),
             history: Vec::new(),
-            reconciled_through: 0,
+            reconciled: Vec::new(),
             f,
         }
     }
@@ -107,7 +111,7 @@ impl Finality {
             if let Some(fork) = CertFork::canonical(existing.clone(), cert) {
                 if fork.is_valid(pki, self.f) {
                     self.record(fork.clone());
-                    if r > self.reconciled_through {
+                    if !self.reconciled.contains(&fork) {
                         self.forks.insert(r, fork);
                         return Err(Rejected::ForkedAt(r));
                     }
@@ -127,9 +131,9 @@ impl Finality {
             return false;
         }
         self.record(fork.clone());
-        // A fork at or below the reconcile point is settled history. Re-halting on it would
-        // mean the node can never resume, because the evidence is designed to keep arriving.
-        if fork.round() > self.reconciled_through {
+        // Only a fork this node has already reconciled is settled. Anything else halts,
+        // whatever its round.
+        if !self.reconciled.contains(&fork) {
             self.forks.insert(fork.round(), fork);
         }
         true
@@ -211,15 +215,13 @@ impl Finality {
         }
         let from = self.reconcile_point();
         self.certified.retain(|&r, _| r <= from);
-        // Record the point BEFORE clearing, so a re-gossiped copy of the fork we just
-        // reconciled is recognised as settled rather than treated as a fresh halt.
-        self.reconciled_through = self
-            .forks
-            .keys()
-            .next_back()
-            .copied()
-            .unwrap_or(from)
-            .max(from);
+        // Record WHICH forks were settled before clearing, so a re-gossiped copy of one of
+        // them is recognised as old news while a fork never seen before still halts.
+        for f in self.forks.values() {
+            if !self.reconciled.contains(f) {
+                self.reconciled.push(f.clone());
+            }
+        }
         self.forks.clear(); // no longer blocking; `history` keeps the record
         Ok(from)
     }

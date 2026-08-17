@@ -505,3 +505,44 @@ fn the_fork_record_is_idempotent_under_redelivery() {
         "fifty deliveries of one fork stored fifty copies; a union is not a push"
     );
 }
+
+/// crdt-05c: a fork the node has NEVER SEEN must halt it, even at a round below the
+/// reconcile point. Suppressing evidence by round number lets an adversary withhold a fork
+/// until after reconciliation and have it ignored forever.
+#[test]
+fn a_new_fork_at_an_earlier_round_still_halts_after_a_resume() {
+    let (ids, pki) = room(5);
+    let mut fin = Finality::new(1);
+
+    // Rounds 1..=3 certified cleanly.
+    for r in 1..=3u64 {
+        fin.observe(
+            cert_signed_by(tuple(r, "A", "a"), &[&ids[0], &ids[1]]),
+            &pki,
+        )
+        .unwrap();
+    }
+    // A fork at round 3, then reconcile past it.
+    let _ = fin.observe(
+        cert_signed_by(tuple(3, "B", "b"), &[&ids[2], &ids[3]]),
+        &pki,
+    );
+    assert!(fin.is_halted());
+    fin.resume(RoundBudget::new(200)).unwrap();
+    assert!(!fin.is_halted());
+
+    // Now a DIFFERENT, previously unseen fork surfaces at round 1 -- an adversary held it
+    // back. It invalidates round 1 onward, including everything just reconciled.
+    let a1 = cert_signed_by(tuple(1, "A", "a"), &[&ids[0], &ids[1]]);
+    let c1 = cert_signed_by(tuple(1, "C", "c"), &[&ids[2], &ids[3]]);
+    let new_fork = CertFork::canonical(a1, c1).expect("round-1 fork");
+    assert!(
+        fin.observe_fork(new_fork, &pki),
+        "valid evidence must be accepted"
+    );
+    assert!(
+        fin.is_halted(),
+        "a previously unseen fork was ignored because its round was below the reconcile \
+         point -- withholding evidence until after a resume would suppress it permanently"
+    );
+}
