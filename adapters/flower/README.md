@@ -56,21 +56,31 @@ indistinguishable and the call refuses rather than guessing an order.
 
 ## Resolution, and when this format does not suit your gradients
 
-Q16.16 resolves `2^-16`, about `1.5e-5`. A coordinate smaller than that quantises to **zero**
--- not rounded, gone -- and the aggregate is then computed perfectly from an update that no
-longer carries the signal. Measured over 200 trials at n=10, d=256 with Gaussian updates:
+Q16.16 has a step of `2^-16`, so it rounds to the nearest multiple of `1.5e-5` and a
+coordinate is lost only below **half a step, `7.6e-6`**. Smaller than that and it quantises
+to **zero** -- not rounded, gone -- and the aggregate is then computed perfectly from an
+update that no longer carries the signal.
 
-| gradient sigma | non-zero coords lost | Krum agrees with float |
-|---|---|---|
-| 1e-1 | 0.02% | 100% |
-| 1e-2 | 0.12% | 100% |
-| 1e-3 | 1.2% | 99.5% |
-| 1e-4 | 12.1% | 92.5% |
-| 1e-5 | 87.3% | 41.5% |
+Measured at n=10, d=256 with Gaussian updates. The middle column is the fraction genuinely
+destroyed; the third is what an earlier version of this table reported, using a whole-step
+floor instead of a half-step one, and it is kept so the correction is visible rather than
+quietly swapped:
+
+| gradient sigma | non-zero coords lost | previously reported | Krum agrees with float |
+|---|---|---|---|
+| 1e-1 | 0.01% | 0.01% | 100% |
+| 1e-2 | 0.06% | 0.11% | 100% |
+| 1e-3 | 0.61% | 1.24% | 99.5% |
+| 1e-4 | 6.01% | 12.14% | 92.5% |
+| 1e-5 | 55.4% | 87.4% | 41.5% |
+
+The loss column is 60 trials; the agreement column is carried over unchanged from the
+200-trial run, because it is measured through the kernel and does not depend on the
+predicate that was corrected.
 
 So the format suits gradients around `1e-3` and above, and does not suit them much below
 `1e-4`. `aggregate()` refuses rather than returning a confident number when more than half
-of the non-zero coordinates would be destroyed.
+of the non-zero coordinates would be destroyed -- which is reached near sigma `1.1e-5`.
 
 If your updates are smaller, rescale upstream by a factor both parties already hold --
 multiplying by a fixed power of two is exact and reversible -- rather than lowering the

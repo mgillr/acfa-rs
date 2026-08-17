@@ -112,9 +112,30 @@ Q_MAX = (1 << 31) - 1
 Q_MIN = -(1 << 31)
 
 #: Refuse when more than this fraction of coordinates quantise to zero. At 50% the majority
-#: of the update has been destroyed before the kernel ever sees it; measured Krum/float
-#: selection agreement is already below 60% there and falls to 41% by 87% annihilation.
+#: of the update has been destroyed before the kernel ever sees it, and measured Krum/float
+#: selection agreement is 41% by the time annihilation reaches 55% (sigma 1e-5).
+#: The threshold is unchanged from the first version; what changed is WHERE it bites, since
+#: the predicate that feeds it was over-counting by roughly 2x -- see `annihilated_mask`.
 ANNIHILATION_REFUSE_ABOVE = 0.5
+
+
+def annihilated_mask(values: np.ndarray) -> np.ndarray:
+    """Which coordinates `fixed::encode` will quantise to zero.
+
+    A NAMED PREDICATE ON PURPOSE. This is a MODEL of the kernel, and the first version
+    modelled it wrongly -- np.trunc, the whole-unit floor, where `fixed::encode` is
+    `(x * SCALE).round()`, half away from zero. Everything in [7.63e-6, 1.53e-5) was
+    reported destroyed and is in fact encoded to +/-1.
+
+    It lives here rather than inline in :func:`aggregate` so a test can bind to THIS
+    expression and compare it against the shipped binary. Inlined, the only available test
+    was one that re-derived the arithmetic and compared it to the kernel -- which passes
+    whatever `aggregate` actually does, and is therefore a check that cannot fail.
+
+    `< 0.5` on the scaled magnitude rather than `np.round(...) == 0`: numpy rounds half to
+    even, so it breaks the exact-0.5 tie the opposite way from the kernel.
+    """
+    return np.abs(values * Q_SCALE) < 0.5
 
 
 def aggregate(
@@ -224,16 +245,30 @@ def aggregate(
 
     # fl-02. MEASURE WHAT THE QUANTISATION DESTROYS, AND REFUSE WHEN IT DESTROYS THE UPDATE.
     #
-    # Q16.16 resolves 2^-16 ~= 1.5e-5. A gradient coordinate smaller than that quantises to
-    # ZERO -- not rounded, gone. Measured over 200 trials at n=10, d=256, Gaussian updates
-    # (probe in the project's research notes):
+    # THE FLOOR IS HALF A RAW UNIT, NOT A WHOLE ONE. `fixed::encode` is `(x * SCALE).round()`
+    # and `f64::round` is HALF AWAY FROM ZERO -- the kernel's own doc calls that "the
+    # contract" and warns against composing one. So a coordinate is annihilated iff
+    # |x| < 0.5/2^16 = 7.63e-6, NOT |x| < 2^-16 = 1.53e-5. The first version of this guard
+    # predicted with np.trunc, which is the whole-unit floor, so everything in
+    # [7.63e-6, 1.53e-5) was reported destroyed when the kernel in fact encodes it to +/-1.
+    # Confirmed against the shipped binary, not against a model of it: 7.62e-6 -> 0, but
+    # 8.0e-6 -> 1, 1.0e-5 -> 1, 1.4e-5 -> 1. The flip is at x*SCALE == 0.5 exactly.
     #
-    #   sigma    coords annihilated    Krum agrees with float
-    #   1e-1     0.02%                 100%
-    #   1e-2     0.12%                 100%
-    #   1e-3     1.2%                  99.5%
-    #   1e-4     12.1%                 92.5%
-    #   1e-5     87.3%                 41.5%
+    # Annihilation re-measured with the correct predicate (60 trials, n=10, d=256, Gaussian);
+    # the trunc column is kept to show the size of the error, which is roughly a doubling:
+    #
+    #   sigma    annihilated (round)   was reported (trunc)   Krum agrees with float
+    #   1e-1     0.01%                 0.01%                  100%
+    #   1e-2     0.06%                 0.11%                  100%
+    #   1e-3     0.61%                 1.24%                  99.5%
+    #   1e-4     6.01%                 12.14%                 92.5%
+    #   1e-5     55.36%                87.36%                 41.5%
+    #
+    # The agreement column is NOT re-derived here. It is measured through the kernel and does
+    # not depend on this predicate, so the fix does not move it. What the fix moves is WHERE
+    # the threshold bites: 50% annihilation was being reached near sigma 2.2e-5 and is
+    # actually reached near 1.1e-5. The guard now fires where 41% agreement lives rather than
+    # where 92% does, which is where it was aimed in the first place.
     #
     # So the format is fit for gradients around 1e-3 and above, and unfit below about 1e-4 --
     # and NOTHING in the stack said so. A user with small gradients got an aggregate computed
@@ -250,15 +285,15 @@ def aggregate(
     # destroyed and refused a legitimate sparse update -- caught by an existing test that
     # aggregates mostly-zero vectors. The metric has to measure loss, not sparsity.
     annihilated = sum(
-        int(((fl.values != 0.0) & (np.trunc(fl.values * Q_SCALE) == 0)).sum())
-        for fl in flats
+        int(((fl.values != 0.0) & annihilated_mask(fl.values)).sum()) for fl in flats
     )
     nonzero = sum(int((fl.values != 0.0).sum()) for fl in flats)
     frac = annihilated / nonzero if nonzero else 0.0
     if frac > ANNIHILATION_REFUSE_ABOVE:
         raise AcfaAggregationError(
             f"{frac:.1%} of NON-ZERO update coordinates are below the Q16.16 resolution "
-            f"floor (2^-16 ~= 1.5e-5) and would quantise to zero, so the aggregate would be "
+            f"floor (half a raw unit, 2^-17 ~= 7.6e-6) and would quantise to zero, so the "
+            f"aggregate would be "
             f"computed from an update that no longer carries the signal. Rescale upstream "
             f"by a factor both parties already hold -- multiplying gradients by a fixed "
             f"power of two is exact and reversible -- or aggregate at a coarser step. "

@@ -20,7 +20,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from acfa_flower import AcfaAggregationError, Rule, aggregate  # noqa: E402
-from acfa_flower.strategy import _find_binary  # noqa: E402
+from acfa_flower.strategy import _find_binary, annihilated_mask  # noqa: E402
 
 
 def upd(*vals):
@@ -410,10 +410,10 @@ def test_non_bytes_tie_key_is_refused_by_name():
 
 
 def test_updates_destroyed_by_quantisation_are_refused_not_aggregated():
-    """fl-02. Q16.16 resolves 2^-16 ~= 1.5e-5, so a smaller coordinate quantises to ZERO --
-    not rounded, gone. Measured over 200 trials at n=10, d=256: at sigma=1e-3 only 1.2% of
-    coordinates are lost and Krum agrees with float 99.5% of the time; at sigma=1e-5, 87.3%
-    are lost and agreement falls to 41.5%.
+    """fl-02. Q16.16 steps by 2^-16, so a coordinate is lost below HALF a step, 7.6e-6 --
+    quantised to ZERO, not rounded, gone. Measured at n=10, d=256: at sigma=1e-3 only 0.61%
+    of coordinates are lost and Krum agrees with float 99.5% of the time; at sigma=1e-5,
+    55.4% are lost and agreement falls to 41.5%.
 
     The determinism property is intact throughout, and completely beside the point: the
     aggregate is computed perfectly from an update that no longer carries the signal. This
@@ -433,6 +433,58 @@ def test_realistic_gradient_scales_still_aggregate():
     keys = [bytes([i]) for i in range(5)]
     out = aggregate(ups, rule=Rule.MEAN, f=1, tie_keys=keys)
     assert out and out[0].shape == (64,)
+
+
+def test_the_annihilation_predicate_agrees_with_the_kernel_at_the_boundary():
+    """fl-02, second pass. The guard PREDICTS what the kernel will destroy, and the first
+    version predicted with np.trunc while `fixed::encode` is `(x * SCALE).round()` --
+    half away from zero. So the real floor is HALF a raw unit, 7.63e-6, not a whole one.
+
+    This is differential on purpose. Every other test here asserts the guard against the
+    same model the guard uses, which is self-consistent and blind: a wrong model passes its
+    own tests. This one asks the SHIPPED BINARY what it actually encodes and requires the
+    prediction to match, so the model cannot drift from the kernel again without failing.
+
+    FAILS ON THE UNFIXED CODE at the three band values: trunc calls them destroyed and the
+    kernel encodes every one of them to +/-1.
+    """
+    # Straddle x*SCALE == 0.5 exactly, which is where half-away-from-zero flips.
+    for x in (5.0e-6, 7.62e-6, 8.0e-6, 1.0e-5, 1.4e-5, 1.6e-5, -1.0e-5):
+        # Built here rather than via the adapter, so the guard cannot filter the input
+        # before the kernel sees it -- that is the whole point of the comparison.
+        bits = struct.pack(">d", float(x)).hex()
+        payload = "rule mean\nf 0\n" + "".join(
+            bytes([i + 1] * 32).hex() + " " + bits + "\n" for i in range(3)
+        )
+        proc = subprocess.run(
+            [_find_binary()], input=payload.encode(), capture_output=True, check=False
+        )
+        assert proc.returncode == 0 and proc.stdout.decode().startswith("ok ")
+        kernel_destroyed = int(proc.stdout.decode().strip()[3:].split()[0]) == 0
+        # THE MODULE's predicate, not a re-derivation of it. Re-deriving the arithmetic
+        # here would compare correct arithmetic against the kernel and pass no matter what
+        # `aggregate` does -- a check that cannot fail. The first draft of this test did
+        # exactly that and passed against the unfixed code.
+        predicted = bool(annihilated_mask(np.array([x]))[0])
+        assert predicted == kernel_destroyed, (
+            f"guard and kernel disagree at x={x:.3e} (x*SCALE={x * (1 << 16):.4f}): "
+            f"guard says destroyed={predicted}, kernel says destroyed={kernel_destroyed}"
+        )
+
+
+def test_an_update_inside_the_rounding_band_is_aggregated_not_refused():
+    """The consequence of the trunc/round mismatch, stated as behaviour rather than as a
+    predicate. Every coordinate here is inside [7.63e-6, 1.53e-5) -- called destroyed by the
+    old guard, encoded to +/-1 by the kernel. The old guard reports 100% annihilation and
+    raises; the aggregate is in fact perfectly well defined.
+
+    FAILS ON THE UNFIXED CODE with AcfaAggregationError('... resolution floor ...').
+    """
+    band = [[np.full(64, 1.0e-5)] for _ in range(5)]
+    keys = [bytes([i]) for i in range(5)]
+    out = aggregate(band, rule=Rule.MEAN, f=1, tie_keys=keys)
+    # 1.0e-5 * 65536 = 0.6554 -> rounds to 1 -> decodes to 1/65536.
+    assert abs(float(out[0][0]) - 1.0 / (1 << 16)) < 1e-9
 
 
 def test_a_genuinely_sparse_update_is_not_mistaken_for_a_destroyed_one():
