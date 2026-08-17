@@ -626,3 +626,54 @@ def test_median_trimmed_differs_from_a_true_coordinate_wise_median_by_half_the_s
         relative = float(np.mean(gaps)) / spread
         # Wide band: the claim is "about half the spread, at every scale", not a constant.
         assert 0.3 < relative < 0.8, (spread, relative)
+
+
+@requires_flwr
+def test_inplace_is_inapplicable_rather_than_silently_dropped():
+    """The FedAvg constructor-parameter sweep flagged `inplace` alongside
+    `fit_metrics_aggregation_fn`: consumed by `aggregate_fit`, never referenced here.
+
+    On measurement it is NOT the same defect. Both of FedAvg's `inplace` branches do
+    `num_examples`-weighted averaging, and this class replaces that step entirely, so both
+    settings must give the IDENTICAL ACFA result. Nothing the caller supplied is lost --
+    which is what separates an inapplicable parameter from a dropped one.
+
+    Refusing it was the other candidate fix and would have been wrong: `inplace` defaults
+    to True, so refusing True would break every default construction.
+    """
+    from acfa_flower import AcfaStrategy
+
+    results = _fit_results([{} for _ in range(5)])
+    a, _ = AcfaStrategy(rule=Rule.KRUM, f=1, inplace=True).aggregate_fit(1, results, [])
+    b, _ = AcfaStrategy(rule=Rule.KRUM, f=1, inplace=False).aggregate_fit(1, results, [])
+
+    from flwr.common import parameters_to_ndarrays
+
+    for x, y in zip(parameters_to_ndarrays(a), parameters_to_ndarrays(b)):
+        assert x.tobytes() == y.tobytes()
+
+
+def test_trimmed_matches_a_standard_symmetric_trimmed_mean():
+    """`Rule.TRIMMED` audited against its own name, after fl-05 showed `MEDIAN` did not
+    match its. It DOES: with beta=(1,4), t = floor(n/4), the kernel agrees with a standard
+    symmetric trimmed mean to within one Q16.16 step at n = 5, 7, 8 and 12.
+
+    A null needs a positive control, so this also asserts the comparison can tell the two
+    apart at all: the same rule differs from a PLAIN MEAN by ~0.2-0.3 on the same data.
+    Without that, agreement to 1.5e-5 could just mean the probe measures nothing.
+    """
+    rng = np.random.default_rng(5)
+    step = 1.0 / (1 << 16)
+    for n in (5, 7, 8, 12):
+        t = (n * 1) // 4
+        ups = [[rng.normal(0.0, 1.0, 32)] for _ in range(n)]
+        keys = [bytes([i]) for i in range(n)]
+        got = aggregate(ups, rule=Rule.TRIMMED, f=1, tie_keys=keys)[0]
+
+        col = np.sort(np.array([u[0] for u in ups]), axis=0)
+        want = col[t : n - t].mean(axis=0) if n > 2 * t else col.mean(axis=0)
+        assert np.max(np.abs(got - want)) <= step, (n, t)
+
+        # Positive control: the probe must be able to see a difference when there is one.
+        plain = np.mean([u[0] for u in ups], axis=0)
+        assert np.max(np.abs(got - plain)) > 10 * step, (n, "probe cannot discriminate")

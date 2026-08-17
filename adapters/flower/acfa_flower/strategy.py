@@ -380,6 +380,16 @@ class AcfaStrategy(FedAvg):  # type: ignore[misc]
     a free amplifier: claim a large `num_examples` and your update dominates, with no way
     for the server to check the claim. A robust rule that then weighted by an unverifiable
     self-report would give the guarantee back with one hand and take it with the other.
+
+    INHERITED PARAMETERS THAT DO NOT APPLY. `inplace` selects between FedAvg's two
+    implementations of `num_examples`-weighted averaging, and this class replaces that step
+    entirely, so BOTH settings produce the identical ACFA result. It is accepted and ignored
+    because it defaults to `True` -- refusing it would break every default construction --
+    and because it is inapplicable rather than dropped: nothing the caller supplied is lost.
+    That is the distinction from fl-09, where `fit_metrics_aggregation_fn` carried the
+    caller's own data and discarding it lost something. Found by sweeping all 13 FedAvg
+    constructor parameters for the accept-store-ignore shape; `inplace` was the only other
+    hit, and on measurement it is not one.
     """
 
     def __init__(
