@@ -955,9 +955,18 @@ def test_required_n_is_right_for_every_rule_not_only_krum():
     preconditions the metric exists to report."""
     assert Rule.KRUM.required_n(1) == 5 and Rule.KRUM.required_n(2) == 7
     assert Rule.BULYAN.required_n(1) == 7 and Rule.BULYAN.required_n(2) == 11
-    for rule in (Rule.MEDIAN_TRIMMED, Rule.TRIMMED, Rule.MEAN):
+    for rule in (Rule.MEDIAN_TRIMMED, Rule.MEAN):
         assert rule.required_n(1) == 2, rule
         assert rule.required_n(3) == 4, rule
+
+    # fl-04. TRIMMED was in the loop above asserting f+1, which is the defect: its tolerance
+    # is `t = floor(n*num/den)` and depends on BETA, not on f alone. This is my own test from
+    # earlier today, written to cover an unexecuted branch, and it pinned the wrong number --
+    # covering a branch is not the same as checking it is right.
+    assert Rule.TRIMMED.required_n(1, (1, 4)) == 4
+    assert Rule.TRIMMED.required_n(3, (1, 4)) == 12
+    assert Rule.TRIMMED.required_n(3, (1, 2)) == 7   # a bigger trim needs fewer clients
+    assert Rule.TRIMMED.required_n(1) == 4           # default beta, single-argument callers
 
 
 @requires_flwr
@@ -1095,3 +1104,54 @@ def test_the_documented_downward_bias_is_the_measured_one():
         # Direction is the part that matters: a downward bias accumulates, a symmetric one
         # cancels. Asserted separately so a sign flip cannot hide inside the tolerance.
         assert measured < 0, (n, measured, "the bias must be DOWNWARD")
+
+
+@requires_flwr
+def test_the_bound_goes_red_where_f_adversaries_actually_beat_trimmed():
+    """fl-04. `acfa_population_bound_met` reported GREEN in configurations TRIMMED provably
+    loses, because `required_n` returned `f + 1` for it -- a number with no relationship to
+    the trim. MEASURED with f adversaries at 500.0 among honest 1.0, beta=(1,4):
+
+        n=8  f=3  aggregate 125.8   bound_met was True
+        n=12 f=5  aggregate 167.3   bound_met was True
+        n=20 f=8  aggregate 150.7   bound_met was True
+
+    The rule survives `t = floor(n*num/den)` adversaries per side and no more, so the bound
+    has to be a function of beta. FAILS ON THE UNFIXED CODE: bound_met is True.
+    """
+    from flwr.common import Code, FitRes, Status, ndarrays_to_parameters
+
+    from acfa_flower import AcfaStrategy
+
+    class Proxy:
+        def __init__(self, cid):
+            self.cid = cid
+
+    def round_of(n, f):
+        vals = [1.0] * (n - f) + [500.0] * f
+        return [
+            (
+                Proxy(f"c{i}"),
+                FitRes(
+                    status=Status(code=Code.OK, message=""),
+                    parameters=ndarrays_to_parameters([np.array([v])]),
+                    num_examples=1,
+                    metrics={},
+                ),
+            )
+            for i, v in enumerate(vals)
+        ]
+
+    for n, f in ((8, 3), (12, 5), (20, 8)):
+        strat = AcfaStrategy(rule=Rule.TRIMMED, f=f, beta=(1, 4))
+        params, metrics = strat.aggregate_fit(1, round_of(n, f), [])
+        from flwr.common import parameters_to_ndarrays
+
+        moved = abs(float(parameters_to_ndarrays(params)[0][0]) - 1.0) > 0.5
+        assert moved, (n, f, "fixture must actually defeat the rule, or this proves nothing")
+        assert metrics["acfa_population_bound_met"] is False, (n, f, metrics)
+
+    # COUNTER-TEST: a configuration the rule genuinely survives must still report green.
+    strat = AcfaStrategy(rule=Rule.TRIMMED, f=1, beta=(1, 4))
+    params, metrics = strat.aggregate_fit(1, round_of(8, 1), [])
+    assert metrics["acfa_population_bound_met"] is True, metrics

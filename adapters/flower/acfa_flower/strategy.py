@@ -57,11 +57,38 @@ class Rule(str, Enum):
     TRIMMED = "trimmed"  # coordinate-wise trimmed mean
     MEAN = "mean"        # NO robustness; present for A/B against FedAvg only
 
-    def required_n(self, f: int) -> int:
+    def required_n(self, f: int, beta: tuple = (1, 4)) -> int:
+        """Clients needed for this rule to tolerate `f` adversaries.
+
+        fl-04. TRIMMED's tolerance is NOT a function of `f` alone, and returning `f + 1` for
+        it reported a bound met in configurations the rule provably loses. It trims
+        `t = floor(n * num / den)` from each end, so it survives `t` adversaries per side and
+        no more -- `t` depends on BETA, which this signature did not take.
+
+        MEASURED, beta=(1,4), f adversaries at 500.0 among honest 1.0, against the OLD `f+1`:
+            n=8  f=3  t=2  bound_met=True  aggregate 125.8   green and defeated
+            n=12 f=5  t=3  bound_met=True  aggregate 167.3   green and defeated
+            n=20 f=8  t=5  bound_met=True  aggregate 150.7   green and defeated
+
+        MEDIAN_TRIMMED is NOT affected and the finding's claim about it does not reproduce:
+        its `keep = max(n - 2f, 1)` already scales with `f`, and it excluded the adversaries
+        at every configuration above. One rule confirmed, one refuted, for a structural
+        reason -- one rule's tolerance is a function of `f` and the other's is not.
+
+        `beta` defaults so existing single-argument callers keep working; it only changes the
+        answer for TRIMMED, which is the only rule that reads it.
+        """
         if self is Rule.KRUM:
             return 2 * f + 3
         if self is Rule.BULYAN:
             return 4 * f + 3
+        if self is Rule.TRIMMED:
+            # Need t >= f (survive f per side) and n > 2t (something left to average).
+            num, den = int(beta[0]), int(beta[1])
+            if num <= 0 or den <= 0:
+                return f + 1
+            need = -(-f * den // num)          # ceil(f * den / num): smallest n with t >= f
+            return max(need, 2 * f + 1, f + 1)
         return f + 1
 
 
@@ -654,7 +681,7 @@ class AcfaStrategy(FedAvg):  # type: ignore[misc]
             )
 
         n = len(updates)
-        need = self.rule.required_n(self.f)
+        need = self.rule.required_n(self.f, self.beta)
         population_bound_met = n >= need
         # fl-11. BAND TWO AND BAND THREE WERE REPORTED IDENTICALLY AND ARE NOT THE SAME
         # EVENT. `acfa_population_bound_met: False` covered both "the rule selected, with no
