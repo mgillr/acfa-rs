@@ -46,6 +46,49 @@ pub fn enc_tensor(t: &[i64]) -> Vec<u8> {
 ///    validates. Odd levels duplicate the final element, which is the same shape that
 ///    made CVE-2012-2459 exploitable in Bitcoin, and is safe *only* because the
 ///    prefixes make a duplicated node unforgeable as a leaf.
+///
+/// THE TWO RULES A PORT AUTHOR CANNOT DERIVE FROM THE ABOVE. Both are ENFORCED already --
+/// `empty_root_is_the_documented_sentinel_and_not_a_zero` and
+/// `a_duplicated_argmax_leaf_is_refused_rather_than_silently_colliding` below, and the
+/// empty case is additionally cross-checked against the Python reference by
+/// `cross_impl_l2::merkle_roots_match_the_reference_including_the_empty_and_odd_paths`.
+/// What was missing is not coverage, it is DISCLOSURE: they were stated only in the
+/// function body and the tests, neither of which is the published contract a second
+/// implementation reads.
+///
+/// 3. **The empty root is `sha256(0x00 || "empty")`** =
+///    `bb505e5f87d323a731d016a7fc865c625ce60cda69ec88ee863efbeb61da42fb`. It is a
+///    sentinel, not a derivation, so there is nothing to work out from first principles
+///    and every natural convention gets it wrong: zeros, `sha256("")` and `sha256(0x00)`
+///    are all different values. This case is REACHED IN PRACTICE -- a round with no
+///    admitted contributions -- and it is the `empty-krum` golden vector, whose
+///    `state_root` is exactly the digest above.
+/// 4. **Duplicate leaves are REFUSED, not deduplicated.** See the assert below for why:
+///    padding duplicates the sorted maximum, so a padded tree over `S` is byte-identical
+///    to an honest tree over `S + {max(S)}`, and the root therefore does not commit to
+///    its own leaf count. An implementation that silently dedupes returns a root for a
+///    SET while its caller committed to a MULTISET.
+///
+/// Rules 1 and 2 were already meetable from this comment -- an independent decoder was
+/// written from the wire doc comments alone and got field widths, endianness, presence
+/// semantics and the leaf construction right first time. Rules 3 and 4 were not, which is
+/// the whole reason they are written down now: a contract that is only in the body is a
+/// contract a second implementation cannot meet.
+///
+/// WHICH GOLDEN VECTORS ACTUALLY PIN RULES 1 AND 2, because "we have vectors" is not the
+/// same as "the vectors would catch it". A second implementation of this function was
+/// written from the rules above and reproduces the `state_root` of ALL FIVE
+/// `vectors_wire.json` cases. Two plausible wrong ports were then measured against them:
+///
+///   sort the RAW leaves, then hash   caught by three-contribs and five-bulyan ONLY
+///   pad by duplicating the FIRST     caught by three-contribs and five-bulyan ONLY
+///
+/// Both need **three or more leaves** to bite -- with 0, 1 or 2 there is no padding step
+/// and no ordering ambiguity, so `empty-krum`, `high-round` and `byte-distinct-round`
+/// cannot detect either error. The coverage is real but INCIDENTAL: it comes from those
+/// two vectors happening to be large enough. **Do not reduce the vector set to the small
+/// cases**, and if you add a rule here, add a vector with an odd leaf count above one that
+/// fails without it.
 pub fn merkle_root(leaves: &[[u8; 32]]) -> [u8; 32] {
     if leaves.is_empty() {
         return h(b"\x00empty");
