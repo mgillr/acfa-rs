@@ -34,6 +34,29 @@ pub enum FixedError {
     NotFinite,
 }
 
+/// `Display` and `Error`. See the note on `rules::AggError`: a refusal the caller cannot
+/// print or propagate with `?` is a refusal that reaches the operator as a type name.
+impl core::fmt::Display for FixedError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            FixedError::OutOfRange => write!(
+                f,
+                "value is outside the Q16.16 range [{}, {}] in raw units; saturating would \
+                 make the aggregate depend on WHICH replica saturated first",
+                MIN, MAX
+            ),
+            FixedError::NotFinite => {
+                write!(
+                    f,
+                    "NaN or infinity has no fixed-point image and no sensible default"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for FixedError {}
+
 /// Encode a float to Q16.16, refusing anything it cannot represent exactly-enough.
 ///
 /// Rounds half away from zero. The rounding rule is part of the wire contract: two

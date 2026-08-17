@@ -80,6 +80,56 @@ pub enum AggError {
     },
 }
 
+/// `Display` and `Error`, because THIS CRATE'S PRODUCT IS ITS REFUSALS.
+///
+/// Every variant above exists so a rule can decline rather than return a plausible wrong
+/// answer -- that is the design argument made throughout this module. A refusal a caller
+/// cannot print, and cannot carry with `?` into `Box<dyn Error>` or `anyhow`, is a refusal
+/// that arrives as `AggError` in a log and tells the operator nothing. The messages carry
+/// the VALUES where a variant has them: "4097 contributions, max 4096" is actionable and
+/// `TooManyContributions` alone is not.
+impl core::fmt::Display for AggError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            AggError::Empty => write!(f, "no contributions to aggregate"),
+            AggError::DimensionMismatch => write!(
+                f,
+                "contributions have differing vector lengths; padding one would let a short \
+                 contribution shift the result"
+            ),
+            AggError::DuplicateTieKey => write!(
+                f,
+                "two contributions share a tie key, so no total order exists and the output \
+                 would depend on arrival order"
+            ),
+            AggError::BulyanTooFewContributions => write!(
+                f,
+                "too few contributions for Bulyan's precondition n >= 4f + 3; running anyway \
+                 would return an aggregate with no Byzantine guarantee behind it"
+            ),
+            AggError::ValueOutOfRange => write!(
+                f,
+                "a raw value lies outside the Q16.16 range [{}, {}]",
+                crate::fixed::MIN,
+                crate::fixed::MAX
+            ),
+            AggError::BetaDenominatorZero => {
+                write!(
+                    f,
+                    "beta denominator is zero, so the trim fraction is undefined"
+                )
+            }
+            AggError::TooManyContributions { n, max } => write!(
+                f,
+                "{n} contributions exceeds the limit of {max}; the distance matrix is \
+                 quadratic in n and a prefix would aggregate a set the caller never chose"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AggError {}
+
 /// Largest contribution count the distance-matrix rules will accept.
 ///
 /// WHY A CAP EXISTS AT ALL. `multi_krum` and `bulyan_select` allocate an `n x n` matrix of
@@ -727,6 +777,74 @@ mod tests {
                 "ranking must not depend on `f` wrapping (f={f})"
             );
         }
+    }
+
+    /// rust-10. Every refusal must be PRINTABLE, DISTINCT, and CARRY ITS VALUES.
+    ///
+    /// "It compiles" is not much of a proof for a `Display` impl, so this pins the three
+    /// properties that actually rot: a variant added later with no arm (caught by the
+    /// exhaustive match in the impl itself), two variants copy-pasted to the same message,
+    /// and a value-carrying variant whose message drops the values. The last is the one that
+    /// matters in a log: `TooManyContributions` alone tells an operator nothing, and
+    /// "4097 contributions exceeds the limit of 4096" tells them what to change.
+    #[test]
+    fn every_refusal_is_printable_distinct_and_carries_its_values() {
+        let all = [
+            AggError::Empty,
+            AggError::DimensionMismatch,
+            AggError::DuplicateTieKey,
+            AggError::BulyanTooFewContributions,
+            AggError::ValueOutOfRange,
+            AggError::BetaDenominatorZero,
+            AggError::TooManyContributions { n: 4097, max: 4096 },
+        ];
+        let msgs: Vec<String> = all.iter().map(|e| e.to_string()).collect();
+
+        for (e, m) in all.iter().zip(&msgs) {
+            assert!(!m.is_empty(), "{e:?} has an empty message");
+            assert!(
+                m.len() > 15,
+                "{e:?} message is too short to be useful: {m:?}"
+            );
+        }
+
+        // Distinct, so a copy-pasted arm cannot hide.
+        let mut sorted = msgs.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            msgs.len(),
+            "two refusals share a message; a caller cannot tell them apart"
+        );
+
+        // The value-carrying variant must actually carry them.
+        let m = AggError::TooManyContributions { n: 4097, max: 4096 }.to_string();
+        assert!(
+            m.contains("4097") && m.contains("4096"),
+            "values dropped: {m:?}"
+        );
+
+        // And the range refusal names the range rather than asserting one exists.
+        let r = AggError::ValueOutOfRange.to_string();
+        assert!(
+            r.contains(&crate::fixed::MAX.to_string()),
+            "range refusal should name the bound: {r:?}"
+        );
+    }
+
+    /// The `Error` impl, proven by USE rather than by existence: a refusal must travel
+    /// through `?` into a boxed trait object, which is what a caller with `anyhow` or a
+    /// `Box<dyn Error>` signature actually does. Without the impl this does not compile.
+    #[test]
+    fn a_refusal_propagates_through_the_std_error_trait() {
+        fn caller() -> Result<Vec<i64>, Box<dyn std::error::Error>> {
+            let empty: Vec<Contribution> = Vec::new();
+            Ok(mean(&empty)?)
+        }
+        let e = caller().expect_err("empty set must refuse");
+        assert_eq!(e.to_string(), AggError::Empty.to_string());
+        assert!(e.source().is_none(), "leaf error should report no source");
     }
 
     /// THE `.max(1)` FLOOR IN `coord_median_trim`, WHICH NOTHING EXERCISED.
