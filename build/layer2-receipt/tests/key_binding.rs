@@ -84,7 +84,18 @@ fn the_population_bound_saturates_rather_than_wrapping() {
     assert_eq!(Rule::Bulyan.required_n(1), 7);
 
     // Adversarial values must be UNMEETABLE, never small.
-    for f in [usize::MAX, usize::MAX - 1, usize::MAX / 2, 1usize << 62] {
+    // `1usize << 62` does not COMPILE on a 32-bit target -- usize is 32 bits there and the
+    // shift is a deny-by-default overflow, so this test broke the i386 and armv7 builds
+    // while passing everywhere else. Deriving the value from usize::BITS keeps the intent
+    // (a large power of two well inside the type) on every width. This is the same
+    // target-width assumption the suite exists to catch, reintroduced by a test written to
+    // catch it.
+    for f in [
+        usize::MAX,
+        usize::MAX - 1,
+        usize::MAX / 2,
+        1usize << (usize::BITS - 2),
+    ] {
         let k = Rule::Krum.required_n(f);
         let b = Rule::Bulyan.required_n(f);
         assert!(
