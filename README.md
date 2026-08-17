@@ -15,6 +15,30 @@ use acfa_aggregate::{krum_aggregate, Contribution};
 let agg = krum_aggregate(&contributions, 1)?;  // f = 1 tolerated adversaries
 ```
 
+## How it works
+
+Mutually distrusting parties -- each on whatever hardware they run -- submit signed updates.
+ACFA combines them with a robust rule so an adversarial minority cannot move the result,
+computes the aggregate as an exact function of the input *set*, and emits a receipt. Anyone,
+on any architecture, can re-run that receipt offline and get the identical bytes -- so the
+answer to "who moved the aggregate" is checkable rather than asserted.
+
+```mermaid
+flowchart LR
+  P1["Party 1 (x86_64)"]
+  P2["Party 2 (ARM64)"]
+  P3["Party 3 (big-endian)"]
+  PA["Adversary, up to f of n"]
+  P1 --> AGG
+  P2 --> AGG
+  P3 --> AGG
+  PA -. poison attempt .-> AGG
+  AGG["ACFA robust aggregation<br/>integer fixed-point (Q16.16)<br/>Krum / Bulyan / median / trimmed mean"]
+  AGG --> R["Aggregate + receipt<br/>byte-identical, signed"]
+  R --> V["Any third party, any architecture<br/>re-checks the receipt offline"]
+  V --> OK["Same bytes = verified:<br/>what was aggregated, and who equivocated"]
+```
+
 ## What it solves
 
 Robust aggregation rules (multi-Krum, Bulyan, coordinate median, trimmed mean) already exist
@@ -50,6 +74,24 @@ round is where byte-identity breaks if it is going to. x86_64 little-endian and 
 big-endian produce the same SHA-256 over the full five-scenario fingerprint,
 `bd13ba3209a940b2025368a63c546ffd59e2580a1b8aa7128cc9b423d1957e40`. Method and reproduction in
 [`build/ARCHITECTURE-COVERAGE.md`](build/ARCHITECTURE-COVERAGE.md).
+
+```mermaid
+flowchart TB
+  IN["One input set<br/>(order-independent)"]
+  IN --> A1["x86_64 Linux"]
+  IN --> A2["aarch64 / Apple Silicon"]
+  IN --> A3["Windows x86_64"]
+  IN --> A4["i386 / armv7 (32-bit)"]
+  IN --> A5["ppc64le"]
+  IN --> A6["s390x (big-endian)"]
+  A1 --> H["Identical SHA-256 receipt<br/>bd13ba32...d1957e40"]
+  A2 --> H
+  A3 --> H
+  A4 --> H
+  A5 --> H
+  A6 --> H
+  H --> CI["CI blocks any push where<br/>the 8 targets disagree"]
+```
 
 ## Install
 
