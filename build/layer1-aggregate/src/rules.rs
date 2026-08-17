@@ -61,7 +61,41 @@ pub enum AggError {
     /// `sq_dist` alone would have moved the fault one line down and left it looking like a
     /// different bug.
     ValueOutOfRange,
+    /// More contributions than the rule will process. See `MAX_CONTRIBUTIONS` and
+    /// `MAX_CONTRIBUTIONS_BULYAN` for the arithmetic behind each bound.
+    ///
+    /// This is a REFUSAL, not a truncation. Silently aggregating a prefix would produce a
+    /// plausible-looking result over a set the caller never chose, which is the same class
+    /// of error as saturating an out-of-range value.
+    TooManyContributions {
+        n: usize,
+        max: usize,
+    },
 }
+
+/// Largest contribution count the distance-matrix rules will accept.
+///
+/// WHY A CAP EXISTS AT ALL. `multi_krum` and `bulyan_select` allocate an `n x n` matrix of
+/// `i128`, so memory grows QUADRATICALLY in `n` while a receipt carrying those
+/// contributions grows only LINEARLY. The wire decoder bounds `n` against the bytes
+/// actually present, which stops a length prefix inventing elements -- but a linear bound
+/// does not bound quadratic work. A ~1 MB receipt can legitimately carry thousands of
+/// small contributions, and the matrix for those is gigabytes. The decoder was hardened
+/// and the amplification simply moved one layer up.
+///
+/// 4096^2 * 16 bytes = 268 MB, which is the point past which this stops being a
+/// computation and becomes a denial-of-service vector against anyone who verifies an
+/// untrusted receipt.
+pub const MAX_CONTRIBUTIONS: usize = 4096;
+
+/// Bulyan's cap is lower because its cost is CUBIC, not quadratic: it re-runs the Krum
+/// selection `theta = n - 2f` times over a shrinking pool, so the work is `O(n^3 * d)`.
+///
+/// Measured on the reference host (see `build/LOAD-AND-STRESS.md`): n=256, d=1024 takes
+/// 11.55 s. The cube law puts n=512 near 90 s and n=1024 beyond ten minutes. A single wire
+/// byte selects this rule, so an attacker picks the exponent; the cap is what stops one
+/// byte buying an unbounded amount of a verifier's time.
+pub const MAX_CONTRIBUTIONS_BULYAN: usize = 512;
 
 /// Floor division: rounds toward NEGATIVE INFINITY, matching the reference kernel.
 ///
@@ -231,6 +265,14 @@ pub fn multi_krum(cs: &[Contribution], f: usize) -> Result<Vec<usize>, AggError>
     }
     let m = n - f - 2;
 
+    // Refuse before allocating: the matrix is the amplification, so the check has to
+    // precede it rather than follow it.
+    if n > MAX_CONTRIBUTIONS {
+        return Err(AggError::TooManyContributions {
+            n,
+            max: MAX_CONTRIBUTIONS,
+        });
+    }
     let mut d2 = vec![vec![0i128; n]; n];
     for i in 0..n {
         for j in (i + 1)..n {
@@ -283,6 +325,14 @@ pub fn multi_krum_ranked(cs: &[Contribution], f: usize) -> Result<Vec<usize>, Ag
         n.saturating_sub(1).max(1)
     };
 
+    // Refuse before allocating: the matrix is the amplification, so the check has to
+    // precede it rather than follow it.
+    if n > MAX_CONTRIBUTIONS {
+        return Err(AggError::TooManyContributions {
+            n,
+            max: MAX_CONTRIBUTIONS,
+        });
+    }
     let mut d2 = vec![vec![0i128; n]; n];
     for i in 0..n {
         for j in (i + 1)..n {
@@ -334,6 +384,15 @@ pub fn multi_krum_ranked(cs: &[Contribution], f: usize) -> Result<Vec<usize>, Ag
 /// parity" would be reintroducing the defect.
 pub fn bulyan_select(cs: &[Contribution], f: usize) -> Result<Vec<usize>, AggError> {
     check(cs)?;
+    // Bulyan gets its OWN, lower cap: it drives the quadratic selection `theta` times, so
+    // the cost is cubic and the per-call guard inside `multi_krum_ranked` would let a
+    // caller buy `n` of them. One wire byte chooses this rule, so the bound has to be here.
+    if cs.len() > MAX_CONTRIBUTIONS_BULYAN {
+        return Err(AggError::TooManyContributions {
+            n: cs.len(),
+            max: MAX_CONTRIBUTIONS_BULYAN,
+        });
+    }
     let n = cs.len();
     // Refuse below Bulyan's precondition rather than returning a plausible aggregate
     // with no guarantee behind it.

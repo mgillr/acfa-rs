@@ -336,7 +336,10 @@ mod tests {
             a.root(),
             "identical contribution sets produced different state roots"
         );
-        assert!(!a.convicted(&pki).is_empty(), "the equivocation was not detected at all");
+        assert!(
+            !a.convicted(&pki).is_empty(),
+            "the equivocation was not detected at all"
+        );
     }
 
     /// The derived proof must not depend on merge order, or merge stops being a CRDT join.
@@ -364,5 +367,4 @@ mod tests {
         twice.merge(&b, &pki);
         assert_eq!(twice.root(), ab.root(), "merge is not idempotent");
     }
-
 }

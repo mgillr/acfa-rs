@@ -149,3 +149,68 @@ fn in_range_extremes_still_compute() {
     assert!(mean(&cs).is_ok());
     assert!(coord_median_trim(&cs, 2).is_ok());
 }
+
+// ---------------------------------------------------------------- cost guards
+
+/// rust-02: the decoder bounds `n` LINEARLY against the bytes present, but the distance
+/// matrix is QUADRATIC in `n`. Hardening the decoder moved the amplification one layer up
+/// rather than removing it: a receipt small enough to pass the wire check can still ask a
+/// verifier to allocate gigabytes.
+#[test]
+fn the_quadratic_matrix_is_bounded() {
+    use acfa_aggregate::rules::MAX_CONTRIBUTIONS;
+    let n = MAX_CONTRIBUTIONS + 1;
+    let cs: Vec<Contribution> = (0..n)
+        .map(|i| Contribution {
+            tie_key: format!("k{i}").into_bytes(),
+            v: vec![(i as i64 % 1000) << 8, 0],
+        })
+        .collect();
+
+    assert_eq!(
+        multi_krum(&cs, 2),
+        Err(AggError::TooManyContributions {
+            n,
+            max: MAX_CONTRIBUTIONS
+        }),
+        "multi_krum accepted a set large enough to make the n x n matrix a DoS vector"
+    );
+}
+
+/// rust-03: one attacker-chosen wire byte selects Bulyan, whose cost is CUBIC. The guard
+/// inside the quadratic selection is not enough, because Bulyan buys `theta` of them.
+#[test]
+fn the_cubic_rule_has_its_own_lower_bound() {
+    use acfa_aggregate::rules::MAX_CONTRIBUTIONS_BULYAN;
+    // A const-vs-const assert is a compile-time tautology to clippy, so the relationship
+    // is stated where it is enforced -- in the guard itself -- and exercised below instead.
+    let n = MAX_CONTRIBUTIONS_BULYAN + 1;
+    let cs: Vec<Contribution> = (0..n)
+        .map(|i| Contribution {
+            tie_key: format!("k{i}").into_bytes(),
+            v: vec![(i as i64 % 1000) << 8, 0],
+        })
+        .collect();
+
+    assert_eq!(
+        bulyan_select(&cs, 2),
+        Err(AggError::TooManyContributions {
+            n,
+            max: MAX_CONTRIBUTIONS_BULYAN
+        }),
+        "bulyan accepted a set whose cubic cost is unbounded from one wire byte"
+    );
+}
+
+/// The guards must not have become a blunt instrument: ordinary deployment sizes still run.
+#[test]
+fn realistic_sizes_are_unaffected() {
+    let cs: Vec<Contribution> = (0..64)
+        .map(|i| Contribution {
+            tie_key: format!("k{i}").into_bytes(),
+            v: vec![(i as i64) << 10, 1 << 12],
+        })
+        .collect();
+    assert!(multi_krum(&cs, 2).is_ok());
+    assert!(bulyan_select(&cs, 2).is_ok());
+}

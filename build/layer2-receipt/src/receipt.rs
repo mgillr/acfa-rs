@@ -532,5 +532,4 @@ mod tests {
             "distinct rounds must commit to distinct state roots"
         );
     }
-
 }
