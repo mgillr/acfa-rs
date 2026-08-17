@@ -29,7 +29,7 @@
 //! **fail-visible-and-halt** rather than fail-silent.
 
 use acfa_receipt::hash::h;
-use acfa_receipt::identity::{verify, Identity, Pki, Sig};
+use acfa_receipt::identity::{verify, Identity, Pki, PubKey, Sig};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The signed tuple. `(A_r, E^cut_r, rho_r)`, by root.
@@ -176,6 +176,33 @@ impl Certificate {
             .collect()
     }
 
+    /// The distinct PUBLIC KEYS behind the verifying signatures. This, not the count of
+    /// verified ids, is the quorum.
+    ///
+    /// crypto-03 at this layer. `CertTuple::msg` omits the signer, so authorship rests on
+    /// the PKI's id -> key map being INJECTIVE -- and nothing on the finality side enforces
+    /// that. `wire::decode` refuses a non-injective PKI in `acfa-receipt`, but a finality
+    /// PKI never touches that decoder: it is built line by line, and the `acfa-finality`
+    /// parser rejects a duplicate node_id and NOT a duplicate key. So two ids sharing one
+    /// key let a SINGLE signature be replayed under both, and counting ids made `check`
+    /// read `f+1` where only ONE independent key signed.
+    ///
+    /// Measured on the unfixed count: two ids on one key, one signature copied to the
+    /// second id, `verified_signers().len()` was 2 and `check(pki, f=1)` returned `Ok(())`.
+    /// The whole safety argument of this layer is that `f+1` INDEPENDENT signers guarantee
+    /// one honest signer in every quorum intersection; one key wearing two ids collapses
+    /// `f+1` to 1. Counting keys makes the quorum mean what the argument assumes.
+    ///
+    /// Only ever REDUCES a count relative to the id count, so it never rejects a certificate
+    /// signed by distinct keys: no wire change, and the fingerprint is unaffected.
+    pub fn verified_signer_keys(&self, pki: &Pki) -> BTreeSet<PubKey> {
+        let msg = self.tuple.msg();
+        self.sigs
+            .iter()
+            .filter_map(|(id, sig)| pki.get(id).filter(|pk| verify(pk, &msg, sig)).copied())
+            .collect()
+    }
+
     /// This certificate with every unverifiable signature entry removed.
     ///
     /// Pruning at ingest is what makes the counting `check` safe. `Finality` stores forks
@@ -210,7 +237,9 @@ impl Certificate {
         // one direction an attacker chooses. `usize::MAX` is unreachable, which is the
         // honest answer for a fault bound nobody can satisfy.
         let need = f.saturating_add(1);
-        let have = self.verified_signers(pki).len();
+        // Count distinct KEYS, not distinct ids. A non-injective PKI (two ids, one key)
+        // otherwise lets one signature satisfy `f+1` -- see `verified_signer_keys`.
+        let have = self.verified_signer_keys(pki).len();
         if have < need {
             return Err(CertError::Insufficient { have, need });
         }
