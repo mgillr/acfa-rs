@@ -186,7 +186,13 @@ fn dimension_mismatch_is_refused_rather_than_padded() {
             v: vec![1, 2],
         },
     ];
-    assert_eq!(mean(&cs), Err(AggError::DimensionMismatch));
+    // crdt-08: the refusal now names the offender. `b` is the minority length here, and
+    // with only two contributions there is no strict plurality to attribute against -- so
+    // the honest answer is that nobody can be named. See `rules::check`.
+    assert_eq!(
+        mean(&cs),
+        Err(AggError::DimensionMismatchUnattributable { lengths: 2 })
+    );
 }
 
 #[test]

@@ -30,7 +30,76 @@ pub enum AggError {
     Empty,
     /// Vectors of differing length cannot be aggregated coordinate-wise, and
     /// padding one silently would let a short contribution shift the result.
-    DimensionMismatch,
+    ///
+    /// crdt-08, ACCOUNTABILITY HALF. This variant used to be a bare unit with no payload,
+    /// so a single in-budget adversary sending a short vector nullified the round for
+    /// everyone and NOBODY WAS ATTRIBUTABLE for it. The refusal named no node, no index and
+    /// no tie key, which left an operator with a dead round and no one to exclude.
+    ///
+    /// `expected` IS THE LOAD-BEARING FIELD, not `offender`. It is the PLURALITY length --
+    /// the length held by strictly more contributions than any other -- so a caller
+    /// recovers the whole offender set with one filter (`c.v.len() != expected`) and
+    /// attributes each by its own `tie_key`. `offender` is the first such index, a witness
+    /// for the log. The slice is the caller's, so an index is a sufficient handle and this
+    /// variant stays `Copy`.
+    ///
+    /// PLURALITY, NOT `cs[0]`, AND THAT IS THE WHOLE SECURITY ARGUMENT. Attribution is an
+    /// accusation, so the obvious rule is the dangerous one. Taking `cs[0].v.len()` as
+    /// correct -- which is exactly what this function computed before -- lets the ADVERSARY
+    /// PICK THE ACCUSED simply by arriving first: measured on six honest dim-4 and one
+    /// adversarial dim-2, that rule names the adversary when it arrives last and names ALL
+    /// SIX HONEST NODES when the same adversary arrives at index 0. Naive attribution is
+    /// therefore strictly worse than none, converting a denial of service into a framing
+    /// vector. Plurality names the adversary in both orders, and in the two-adversary case
+    /// names both. Same shape as the `crdt-07` framing vector in `layer2-finality`, where
+    /// attribution had to be read from verified signatures rather than map membership.
+    ///
+    /// Soundness rests on the fault budget, and it is the budget this crate already
+    /// assumes: with `f < n/2` the honest nodes are the strict plurality by counting, so
+    /// the plurality length is honest. Outside that budget there is no strict plurality to
+    /// find and the refusal degrades to `DimensionMismatchUnattributable` rather than
+    /// guessing -- see there.
+    ///
+    /// WHAT THIS DOES NOT FIX: the AVAILABILITY half of crdt-08. One short vector still
+    /// nullifies the round -- every rule still returns `Err` and no aggregate is produced.
+    /// Whether to refuse the set or drop the offenders and proceed is a protocol policy
+    /// decision that does not belong in this module, and `expected` is what makes that
+    /// decision a one-line filter at the layer that owns it.
+    DimensionMismatch {
+        /// Index of the first contribution not at `expected`. A witness; the full set is
+        /// recovered by filtering on `expected`.
+        offender: usize,
+        /// The plurality vector length -- what strictly more contributions agreed on than
+        /// any other length, and under the fault budget the honest length.
+        expected: usize,
+        /// The offending contribution's length.
+        got: usize,
+    },
+    /// Vector lengths disagree and NO STRICT PLURALITY EXISTS, so there is no honest
+    /// majority to attribute against and naming anyone would be a guess.
+    ///
+    /// crdt-08 again, and this variant exists so that the fix cannot become the defect.
+    /// Refusing to accuse is the correct answer here: an even split (`n = 4` as `2/2`) or a
+    /// two-node round means the fault budget is already exceeded, and the rule that names
+    /// an offender anyway would be naming one of two indistinguishable groups. Measured:
+    /// the `cs[0]` rule accuses the second group in both cases with no evidence whatsoever.
+    ///
+    /// This is a strictly worse position for the operator than `DimensionMismatch` and the
+    /// message says so, because the remedy is different -- there is no one to exclude, and
+    /// the round cannot be repaired by dropping a minority.
+    DimensionMismatchUnattributable {
+        /// How many distinct lengths were present. Always `>= 2`.
+        lengths: usize,
+    },
+    /// Every contribution agrees on a length of ZERO, so there are no coordinates to
+    /// aggregate.
+    ///
+    /// Split out of `DimensionMismatch` while fixing crdt-08. It was reported as a
+    /// mismatch, which was a second unattributable refusal hiding inside the first: nothing
+    /// mismatches here, everyone agrees, and there is no offender to name because there is
+    /// no offender. It had no test at all -- the `d == 0` branch was the only arm of this
+    /// function no case in the suite entered.
+    EmptyVectors,
     /// Two contributions carry the same tie key, so no total order exists and the
     /// output would depend on input order. Refusing is the only deterministic answer.
     DuplicateTieKey,
@@ -92,10 +161,26 @@ impl core::fmt::Display for AggError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             AggError::Empty => write!(f, "no contributions to aggregate"),
-            AggError::DimensionMismatch => write!(
+            AggError::DimensionMismatch {
+                offender,
+                expected,
+                got,
+            } => write!(
                 f,
-                "contributions have differing vector lengths; padding one would let a short \
-                 contribution shift the result"
+                "contribution {offender} has vector length {got}, but {expected} is the \
+                 plurality length; exclude every contribution not at {expected} and retry"
+            ),
+            AggError::DimensionMismatchUnattributable { lengths } => write!(
+                f,
+                "contributions carry {lengths} different vector lengths with no strict \
+                 plurality among them, so no offender can be named without guessing; the \
+                 fault budget is already exceeded and the round cannot be repaired by \
+                 dropping a minority"
+            ),
+            AggError::EmptyVectors => write!(
+                f,
+                "every contribution agrees on a vector length of 0, so there are no \
+                 coordinates to aggregate"
             ),
             AggError::DuplicateTieKey => write!(
                 f,
@@ -230,9 +315,57 @@ fn check(cs: &[Contribution]) -> Result<usize, AggError> {
     if cs.is_empty() {
         return Err(AggError::Empty);
     }
+    // crdt-08, accountability half. The plurality length -- NOT `cs[0].v.len()`, which
+    // hands the adversary the choice of who gets accused. See `AggError::DimensionMismatch`
+    // for the measurement behind that sentence and for why naive attribution is worse than
+    // none. `n` is bounded by `MAX_CONTRIBUTIONS` above, so the quadratic count is bounded
+    // work by construction; it also only runs on the refusal path's precondition.
+    //
+    // THE PLURALITY SCAN IS QUADRATIC AND IT RUNS ONLY ON THE PATH THAT IS ALREADY
+    // REFUSING. Unanimity -- every accepted round -- is settled by the linear `all` below
+    // and returns before reaching it, so the happy path costs exactly what it cost before
+    // this fix. Putting an O(n^2) length scan in front of every aggregate to improve an
+    // error message would have been the day's own mistake committed a third time.
     let d = cs[0].v.len();
-    if d == 0 || cs.iter().any(|c| c.v.len() != d) {
-        return Err(AggError::DimensionMismatch);
+    if !cs.iter().all(|c| c.v.len() == d) {
+        let mut best_len = d;
+        let mut best_count = 0usize;
+        let mut strict = true;
+        for c in cs {
+            let count = cs.iter().filter(|o| o.v.len() == c.v.len()).count();
+            if count > best_count {
+                best_len = c.v.len();
+                best_count = count;
+                // A tie recorded below the new maximum was never a tie FOR the maximum.
+                strict = true;
+            } else if count == best_count && c.v.len() != best_len {
+                strict = false;
+            }
+        }
+        if !strict {
+            let mut lens: Vec<usize> = cs.iter().map(|c| c.v.len()).collect();
+            lens.sort_unstable();
+            lens.dedup();
+            return Err(AggError::DimensionMismatchUnattributable {
+                lengths: lens.len(),
+            });
+        }
+        // `best_count < cs.len()` here because the lengths are not unanimous, so a
+        // contribution off the plurality exists and this cannot be `None`.
+        let offender = cs
+            .iter()
+            .position(|c| c.v.len() != best_len)
+            .expect("lengths are not unanimous, so one is off the plurality");
+        return Err(AggError::DimensionMismatch {
+            offender,
+            expected: best_len,
+            got: cs[offender].v.len(),
+        });
+    }
+    // Reached only when every contribution agrees, so a zero here is unanimous and is not
+    // a mismatch by anyone. It was reported as one until crdt-08.
+    if d == 0 {
+        return Err(AggError::EmptyVectors);
     }
     let mut keys: Vec<&[u8]> = cs.iter().map(|c| c.tie_key.as_slice()).collect();
     keys.sort_unstable();
@@ -791,7 +924,13 @@ mod tests {
     fn every_refusal_is_printable_distinct_and_carries_its_values() {
         let all = [
             AggError::Empty,
-            AggError::DimensionMismatch,
+            AggError::DimensionMismatch {
+                offender: 6,
+                expected: 4,
+                got: 2,
+            },
+            AggError::DimensionMismatchUnattributable { lengths: 2 },
+            AggError::EmptyVectors,
             AggError::DuplicateTieKey,
             AggError::BulyanTooFewContributions,
             AggError::ValueOutOfRange,
@@ -1049,6 +1188,214 @@ mod tests {
         assert!(
             coord_median_trim(&cs, 1).is_ok(),
             "coord_median_trim refused it"
+        );
+    }
+
+    /// Six honest dim-4 contributions and one adversarial dim-2, with the adversary placed
+    /// at each index in turn.
+    fn short_vector_round(adversary_at: usize) -> Vec<Contribution> {
+        (0..7usize)
+            .map(|i| Contribution {
+                tie_key: vec![i as u8],
+                v: if i == adversary_at {
+                    vec![1, 2]
+                } else {
+                    vec![10, 20, 30, 40]
+                },
+            })
+            .collect()
+    }
+
+    /// crdt-08, ACCOUNTABILITY HALF, AND THIS IS THE ONE THAT PINS THE SECURITY ARGUMENT.
+    ///
+    /// The finding is that one in-budget adversary nullifies the round with a short vector
+    /// and NOBODY IS ATTRIBUTABLE. The fix names the offender -- but the obvious way to name
+    /// it is worse than not naming it at all, and that is what this test exists to hold.
+    ///
+    /// `check` used to take `cs[0].v.len()` as the reference length. Attributing against
+    /// that reference lets the ADVERSARY CHOOSE THE ACCUSED by choosing where it arrives:
+    /// measured over the seven placements below, that rule names the adversary in exactly
+    /// ONE of them and names all six HONEST nodes in the other six. Attribution is an
+    /// accusation, so a denial of service would have become a framing vector -- the same
+    /// shape as `crdt-07` in `layer2-finality`, where attribution had to be read from
+    /// verified signatures rather than from map membership.
+    ///
+    /// IF THIS TEST IS EVER REDUCED TO A SINGLE PLACEMENT IT STOPS DEFENDING ANYTHING: the
+    /// `cs[0]` rule passes the adversary-last case perfectly. Sweeping every index is the
+    /// whole test.
+    #[test]
+    fn the_short_vector_offender_is_named_wherever_it_arrives() {
+        for adversary_at in 0..7 {
+            let cs = short_vector_round(adversary_at);
+            assert_eq!(
+                mean(&cs),
+                Err(AggError::DimensionMismatch {
+                    offender: adversary_at,
+                    expected: 4,
+                    got: 2,
+                }),
+                "the accused must be the adversary, not whoever it arrived after \
+                 (adversary at index {adversary_at})"
+            );
+            // The message an operator actually reads must carry the same accusation.
+            let msg = mean(&cs).unwrap_err().to_string();
+            assert!(
+                msg.contains(&format!("contribution {adversary_at}")),
+                "message does not name the offender: {msg}"
+            );
+        }
+    }
+
+    /// crdt-08. Every rule, not just `mean` -- the finding says the adversary "nullifies
+    /// every round", and all five refusals funnel through the same `check`.
+    #[test]
+    fn every_rule_attributes_the_same_offender() {
+        let cs = short_vector_round(0);
+        let expected = Err(AggError::DimensionMismatch {
+            offender: 0,
+            expected: 4,
+            got: 2,
+        });
+        assert_eq!(mean(&cs), expected, "mean");
+        assert_eq!(multi_krum(&cs, 1).map(|_| vec![]), expected, "multi_krum");
+        assert_eq!(
+            coord_median_trim(&cs, 1).map(|_| vec![]),
+            expected,
+            "coord_median_trim"
+        );
+        assert_eq!(
+            trimmed_mean(&cs, 1, 4).map(|_| vec![]),
+            expected,
+            "trimmed_mean"
+        );
+        assert_eq!(
+            bulyan_select(&cs, 1).map(|_| vec![]),
+            expected,
+            "bulyan_select"
+        );
+    }
+
+    /// crdt-08. `expected` is the field that makes the AVAILABILITY half fixable one layer
+    /// up, so this asserts it is sufficient on its own: filtering on it recovers the whole
+    /// offender set and leaves a set that aggregates.
+    ///
+    /// This is NOT a claim that the availability half is fixed here. It is not -- the round
+    /// is still refused, by design, because dropping contributions is a protocol policy
+    /// decision that does not belong in this module.
+    #[test]
+    fn the_plurality_length_is_enough_to_repair_the_round_one_layer_up() {
+        let cs = short_vector_round(0);
+        let Err(AggError::DimensionMismatch { expected, .. }) = mean(&cs) else {
+            panic!("expected an attributable dimension mismatch");
+        };
+        let kept: Vec<Contribution> = cs
+            .iter()
+            .filter(|c| c.v.len() == expected)
+            .cloned()
+            .collect();
+        assert_eq!(
+            kept.len(),
+            6,
+            "exactly the adversary should have been dropped"
+        );
+        assert_eq!(
+            mean(&kept),
+            Ok(vec![10, 20, 30, 40]),
+            "the surviving set must aggregate to the honest answer"
+        );
+    }
+
+    /// crdt-08, AND THIS IS THE GUARD AGAINST THE FIX BECOMING THE DEFECT. With no strict
+    /// plurality there is no honest majority to attribute against, so naming anyone is a
+    /// guess -- and the `cs[0]` rule guesses confidently in both cases here.
+    #[test]
+    fn no_strict_plurality_names_nobody() {
+        let split: Vec<Contribution> = (0..4usize)
+            .map(|i| Contribution {
+                tie_key: vec![i as u8],
+                v: if i < 2 { vec![1, 2] } else { vec![1, 2, 3, 4] },
+            })
+            .collect();
+        assert_eq!(
+            mean(&split),
+            Err(AggError::DimensionMismatchUnattributable { lengths: 2 }),
+            "an even 2/2 split has no honest majority and must accuse no one"
+        );
+
+        let pair = vec![
+            Contribution {
+                tie_key: vec![0],
+                v: vec![1, 2],
+            },
+            Contribution {
+                tie_key: vec![1],
+                v: vec![1, 2, 3, 4],
+            },
+        ];
+        assert_eq!(
+            mean(&pair),
+            Err(AggError::DimensionMismatchUnattributable { lengths: 2 }),
+            "two nodes disagreeing are indistinguishable"
+        );
+
+        // A tie BELOW the maximum must not spoil attribution: 4 is still the strict
+        // plurality here even though 2 and 3 tie each other.
+        let mixed: Vec<Contribution> = [4usize, 4, 4, 2, 2, 3, 3]
+            .iter()
+            .enumerate()
+            .map(|(i, &len)| Contribution {
+                tie_key: vec![i as u8],
+                v: vec![1; len],
+            })
+            .collect();
+        assert_eq!(
+            mean(&mixed),
+            Err(AggError::DimensionMismatch {
+                offender: 3,
+                expected: 4,
+                got: 2,
+            }),
+            "a tie among non-winners must not suppress a real plurality"
+        );
+    }
+
+    /// crdt-08, incidental. The `d == 0` branch was the only arm of `check` no test in the
+    /// suite entered, and it reported unanimous agreement on zero as a MISMATCH -- a second
+    /// unattributable refusal hiding inside the first, naming an offender that does not
+    /// exist because nothing mismatches.
+    #[test]
+    fn unanimous_zero_length_is_not_a_mismatch_by_anyone() {
+        let cs: Vec<Contribution> = (0..3u8)
+            .map(|i| Contribution {
+                tie_key: vec![i],
+                v: vec![],
+            })
+            .collect();
+        assert_eq!(mean(&cs), Err(AggError::EmptyVectors));
+    }
+
+    /// crdt-08, AVAILABILITY HALF -- A CHARACTERISATION TEST, NOT A GUARD.
+    ///
+    /// It pins behaviour that is still WRONG: one in-budget adversary sending a short
+    /// vector costs everyone the round. It exists so the fail-closed default cannot change
+    /// silently while the policy decision is outstanding.
+    ///
+    /// WHEN THIS GOES RED, THE FIX ARRIVED -- INVERT OR DELETE IT, DO NOT PATCH IT BACK TO
+    /// GREEN. Repairing it to keep the suite green would restore the defect and add a test
+    /// that defends it.
+    #[test]
+    fn one_short_vector_still_nullifies_the_round_for_everyone() {
+        let cs = short_vector_round(6);
+        assert!(
+            mean(&cs).is_err(),
+            "if this now succeeds, the exclusion policy landed"
+        );
+        let honest: Vec<Contribution> = cs[..6].to_vec();
+        assert_eq!(
+            mean(&honest),
+            Ok(vec![10, 20, 30, 40]),
+            "positive control: the same six honest contributions aggregate fine alone, so \
+             the refusal above is caused by the single adversary and nothing else"
         );
     }
 }
