@@ -886,6 +886,64 @@ mod tests {
         );
     }
 
+    /// THE OTHER SILENT NO-TRIM REGION, AND MY OWN COVERAGE MISSED IT.
+    ///
+    /// `trimmed_mean` declines to trim in TWO disjoint regions, not one. The sibling test
+    /// below covers `n <= 2t`, at the LARGE-beta end. This one covers `t == 0`, at the
+    /// SMALL-beta end, where `floor(n * num / den)` rounds down to zero and the rule trims
+    /// nothing while taking the `n > 2t` branch normally.
+    ///
+    /// I documented the first region, pinned it, and wrote that the trim "would empty the
+    /// column" -- true, and a description of only one of the two ways this rule silently
+    /// does not trim. MEASURED: breaking the `t == 0` path outright, so it returns a single
+    /// element, leaves ALL 56 TESTS PASSING. It was dead to the whole suite.
+    ///
+    /// WHY IT MATTERS MORE THAN THE OTHER ONE. In both regions the rule returns exactly the
+    /// plain mean it exists to replace, so the Byzantine guarantee simply leaves, with no
+    /// error, no warning and no metric. Measured downstream at n=7 with six honest values
+    /// near 1.0 and ONE ADVERSARY AT 500.0: any trimming beta gives 1.01, and both no-trim
+    /// regions give 72.29 -- the adversary passes through in full.
+    ///
+    /// THIS PINS THE BEHAVIOUR AND DOES NOT ENDORSE IT. Whether a rule that cannot honour
+    /// its bound should refuse instead of silently returning an unprotected value is an
+    /// open specification question (adv-05, fl-10) and is not settled here. What is settled
+    /// is that BOTH regions now have a witness, so whichever way it is decided, the change
+    /// is visible rather than silent.
+    #[test]
+    fn a_trim_fraction_that_floors_to_zero_trims_nothing_and_says_nothing() {
+        // n = 7, beta = 1/8 -> floor(7/8) = 0. The small-beta end.
+        let vals = [1i64, 1, 1, 1, 1, 1, 500];
+        let cs: Vec<Contribution> = vals
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| Contribution {
+                tie_key: vec![i as u8],
+                v: vec![v],
+            })
+            .collect();
+
+        // Precondition, so a change to `t` cannot make this test quietly stop testing
+        // the region it exists for.
+        let (n, num, den) = (7usize, 1usize, 8usize);
+        let t = (n * num) / den;
+        assert_eq!(t, 0, "precondition: this beta must floor to a zero trim");
+
+        // Untrimmed: (1*6 + 500) / 7 = 506 / 7 = 72 by floor division.
+        assert_eq!(
+            trimmed_mean(&cs, 1, 8),
+            Ok(vec![72]),
+            "t == 0 returns the plain mean -- the outlier is NOT trimmed"
+        );
+
+        // And a beta that does trim excludes it, which is the contrast that shows the
+        // first result is the rule declining rather than the data being harmless.
+        assert_eq!(
+            trimmed_mean(&cs, 1, 4),
+            Ok(vec![1]),
+            "beta = 1/4 gives t = 1 and the outlier is trimmed away"
+        );
+    }
+
     /// THE UNTRIMMED BRANCH OF `trimmed_mean`, WHICH NOTHING EXERCISED.
     ///
     /// When `n <= 2t` the trim would empty the column, so the rule keeps the WHOLE column
