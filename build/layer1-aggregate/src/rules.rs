@@ -484,7 +484,11 @@ mod tests {
     #[test]
     fn floors_toward_negative_infinity_rather_than_truncating_toward_zero() {
         // The regression this crate is most likely to suffer from a well-meaning port.
-        assert_eq!(floor_div(-7, 2), Some(-4), "must floor, not truncate toward zero");
+        assert_eq!(
+            floor_div(-7, 2),
+            Some(-4),
+            "must floor, not truncate toward zero"
+        );
         assert_eq!(floor_div(7, 2), Some(3));
         assert_eq!(floor_div(-1, 2), Some(-1));
         assert_eq!(floor_div(-8, 2), Some(-4));
@@ -532,8 +536,16 @@ mod tests {
     /// including both exact edges of the representable quotient.
     #[test]
     fn accepts_and_is_exact_across_the_whole_domain_it_claims() {
-        assert_eq!(floor_div(i64::MAX as i128, 1), Some(i64::MAX), "upper edge must PASS");
-        assert_eq!(floor_div(i64::MIN as i128, 1), Some(i64::MIN), "lower edge must PASS");
+        assert_eq!(
+            floor_div(i64::MAX as i128, 1),
+            Some(i64::MAX),
+            "upper edge must PASS"
+        );
+        assert_eq!(
+            floor_div(i64::MIN as i128, 1),
+            Some(i64::MIN),
+            "lower edge must PASS"
+        );
         // A quotient that fits even though the numerator does not.
         assert_eq!(floor_div(i128::MAX, i128::MAX), Some(1));
 
@@ -554,7 +566,10 @@ mod tests {
                 checked += 1;
             }
         }
-        assert!(checked > 30_000, "scan too small to be meaningful ({checked})");
+        assert!(
+            checked > 30_000,
+            "scan too small to be meaningful ({checked})"
+        );
     }
 
     /// The refusal must not be reachable through the rules themselves. `check` rejects
@@ -572,6 +587,9 @@ mod tests {
             .collect();
         assert!(mean(&cs).is_ok(), "mean refused ordinary bounded input");
         assert!(trimmed_mean(&cs, 1, 4).is_ok(), "trimmed_mean refused it");
-        assert!(coord_median_trim(&cs, 1).is_ok(), "coord_median_trim refused it");
+        assert!(
+            coord_median_trim(&cs, 1).is_ok(),
+            "coord_median_trim refused it"
+        );
     }
 }

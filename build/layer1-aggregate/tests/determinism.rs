@@ -11,7 +11,6 @@
 //! build that silently truncated instead of floored -- which is exactly the defect
 //! that would make two conforming implementations disagree in production.
 
-use acfa_aggregate::rules::floor_div;
 use acfa_aggregate::*;
 
 /// Deterministic pseudo-random source. Fixed constants, no external crate, so the
@@ -134,13 +133,13 @@ fn selection_is_stable_when_scores_tie_exactly() {
 
 #[test]
 fn division_floors_and_does_not_truncate() {
-    // The regression this crate is most likely to suffer from a well-meaning port.
-    assert_eq!(floor_div(-7, 2), -4, "must floor, not truncate toward zero");
-    assert_eq!(floor_div(7, 2), 3);
-    assert_eq!(floor_div(-1, 2), -1);
-    assert_eq!(floor_div(-8, 2), -4);
-
-    // And it must show up at the rule level, not just the helper.
+    // The helper's own assertions moved into `build/layer1-aggregate/src/rules.rs`
+    // when `floor_div` became `pub(crate)`: reaching it from here meant reaching it
+    // the way a dependent crate could, which is what made its unguarded arithmetic
+    // exploitable. See
+    // `rules::tests::floors_toward_negative_infinity_rather_than_truncating_toward_zero`.
+    // What belongs at THIS level is the property the wire actually depends on -- that
+    // flooring survives all the way out through the public rule.
     let cs = vec![
         Contribution {
             tie_key: b"a".to_vec(),
