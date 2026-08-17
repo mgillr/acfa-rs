@@ -916,3 +916,56 @@ def test_with_no_strict_plurality_nobody_is_named():
     for ups in ([a, a, b, b], [a, b]):
         with pytest.raises(AcfaAggregationError, match="no strict plurality"):
             aggregate(ups, rule=Rule.MEAN, f=1, tie_keys=keys[: len(ups)])
+
+
+# ---------------------------------------------------------------- coverage gaps
+
+def test_a_tie_keys_length_mismatch_is_refused():
+    """Line coverage of the shipped module found this guard PRESENT, REACHABLE and covered
+    by NO test. It is reachable -- a hand probe fires it -- but "reachable" and "guarded"
+    are different claims, and only the second one survives a refactor.
+
+    FAILS ON THE UNFIXED CODE: without the length check the short list zips silently and
+    the extra clients aggregate with no tie key at all.
+    """
+    ups = [[np.array([1.0, 2.0])] for _ in range(5)]
+    for keys in ([bytes([i]) for i in range(3)], [bytes([i]) for i in range(9)]):
+        with pytest.raises(AcfaAggregationError, match="tie_keys length"):
+            aggregate(ups, rule=Rule.MEAN, f=1, tie_keys=keys)
+
+
+def test_a_kernel_failure_is_surfaced_not_swallowed():
+    """The other uncovered `raise`: the kernel exits non-zero without the `refused ` prefix.
+    Driven by pointing the adapter at a binary that is not the kernel, so the failure is
+    real rather than monkeypatched -- `false` exits 1 and prints nothing.
+    """
+    ups = [[np.array([1.0, 2.0])] for _ in range(5)]
+    keys = [bytes([i]) for i in range(5)]
+    with pytest.raises(AcfaAggregationError, match="kernel failed"):
+        aggregate(ups, rule=Rule.MEAN, f=1, tie_keys=keys, binary="/usr/bin/false")
+
+
+def test_required_n_is_right_for_every_rule_not_only_krum():
+    """`required_n`'s BULYAN and default branches were never executed by the suite, so the
+    `acfa_required_n` metric was only ever checked for KRUM. The bounds are the population
+    preconditions the metric exists to report."""
+    assert Rule.KRUM.required_n(1) == 5 and Rule.KRUM.required_n(2) == 7
+    assert Rule.BULYAN.required_n(1) == 7 and Rule.BULYAN.required_n(2) == 11
+    for rule in (Rule.MEDIAN_TRIMMED, Rule.TRIMMED, Rule.MEAN):
+        assert rule.required_n(1) == 2, rule
+        assert rule.required_n(3) == 4, rule
+
+
+@requires_flwr
+def test_aggregate_fit_returns_nothing_on_no_results_and_on_refused_failures():
+    """Both early returns in `aggregate_fit` were unexecuted. They are the paths a real
+    deployment hits first -- a round where every client dropped, and a round with failures
+    under the default `accept_failures=False`."""
+    from acfa_flower import AcfaStrategy
+
+    strat = AcfaStrategy(rule=Rule.KRUM, f=1)
+    assert strat.aggregate_fit(1, [], []) == (None, {})
+
+    results = _fit_results([{} for _ in range(5)])
+    strat.accept_failures = False
+    assert strat.aggregate_fit(1, results, [RuntimeError("a client died")]) == (None, {})
