@@ -178,10 +178,10 @@ fn a_fork_by_two_disjoint_honest_groups_is_visible_and_names_nobody() {
     let fork = CertFork::canonical(group_a, group_b).expect("tuples conflict");
     assert!(fork.is_valid(&pki, f), "both halves are genuinely valid");
     assert!(
-        fork.is_unattributable(),
+        fork.is_unattributable_verified(&pki),
         "disjoint honest groups: nobody to name"
     );
-    assert!(fork.attributable().is_empty());
+    assert!(fork.attributable_verified(&pki).is_empty());
 }
 
 #[test]
@@ -194,8 +194,13 @@ fn the_byzantine_bridging_signer_is_attributed() {
     let b = cert_signed_by(tuple(3, "B", "rho-b"), &[&ids[2], &ids[4]]); // ids[4] on both
     let fork = CertFork::canonical(a, b).unwrap();
     assert!(fork.is_valid(&pki, f));
-    assert!(!fork.is_unattributable());
-    assert_eq!(fork.attributable().into_iter().collect::<Vec<_>>(), vec![5]);
+    assert!(!fork.is_unattributable_verified(&pki));
+    assert_eq!(
+        fork.attributable_verified(&pki)
+            .into_iter()
+            .collect::<Vec<_>>(),
+        vec![5]
+    );
 }
 
 #[test]

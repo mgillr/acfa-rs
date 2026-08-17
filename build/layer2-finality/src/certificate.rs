@@ -304,7 +304,20 @@ impl CertFork {
     /// still conclusive proof the bound broke. That is precisely the case a design that
     /// only looks for culprits would miss, and it is why this returns a set rather than
     /// a single accused identity.
-    pub fn attributable(&self) -> BTreeSet<u32> {
+    ///
+    /// `pub(crate)` -- NOT PUBLIC -- BECAUSE IT NAMES ON UNVERIFIED MEMBERSHIP. crdt-05, the
+    /// third door. This reads `sigs.keys()`, which is membership, not proof: anyone can
+    /// append a `(honest_id, 64 zero bytes)` entry to a carried certificate. The `Finality`
+    /// ingest paths prune junk before it reaches here, so an in-`Finality` fork is safe by
+    /// invariant -- but `wire::decode_fork` has no PKI and CANNOT prune, so a gossip consumer
+    /// that decoded forwarded evidence and called a public `attributable()` would name an
+    /// honest node as a double-signer (measured: decode a 702-byte fork carrying a forged
+    /// entry for node 1, and this returns `{1}`). An accusation that cannot be verified must
+    /// not be OFFERED on the public surface. External callers use
+    /// [`CertFork::attributable_verified`], which takes the `Pki` and can only name a signer
+    /// whose signature actually verifies. This mirrors `fixed::sq_dist` (rust-01): a sound
+    /// guard beside a public symbol that bypasses it is not a guard.
+    pub(crate) fn attributable(&self) -> BTreeSet<u32> {
         self.a
             .sigs
             .keys()
@@ -344,7 +357,12 @@ impl CertFork {
     }
 
     /// True when the fork proves a violation but names nobody.
-    pub fn is_unattributable(&self) -> bool {
+    ///
+    /// `pub(crate)` for the same reason as [`CertFork::attributable`]: it answers on
+    /// unverified membership, so on a decoded (un-pruned) fork it returns `false` -- claiming
+    /// someone IS accusable -- while naming an innocent, which is the worse of the two
+    /// failures in one call. External callers use [`CertFork::is_unattributable_verified`].
+    pub(crate) fn is_unattributable(&self) -> bool {
         self.attributable().is_empty()
     }
 }

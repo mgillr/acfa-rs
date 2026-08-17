@@ -119,10 +119,13 @@ fn a_forged_signature_entry_cannot_name_an_honest_node_through_observe_fork() {
         fork.is_valid(&pki, f),
         "premise: the forged entry does not invalidate the fork, or nothing is being tested"
     );
-    assert_eq!(
-        fork.attributable(),
-        [1].into_iter().collect(),
-        "premise: the raw reader names node 1 before ingest"
+    // The ONLY public attributer takes a PKI and names nobody here: node 1's forged entry
+    // is 64 zero bytes and does not verify. (`attributable()` -- the raw membership reader
+    // that WOULD name node 1 -- is now `pub(crate)` and unreachable from this external test;
+    // that is the crdt-05 third-door fix, exercised end to end in the sibling file.)
+    assert!(
+        fork.attributable_verified(&pki).is_empty(),
+        "premise: the verified reader does not name an unverifiable entry"
     );
 
     let mut node = Finality::new(f);
@@ -130,13 +133,10 @@ fn a_forged_signature_entry_cannot_name_an_honest_node_through_observe_fork() {
 
     for rec in node.fork_history() {
         assert!(
-            !rec.attributable().contains(&1),
-            "node 1 is named as a double-signer on 64 ZERO BYTES it never produced. \
-             `observe` prunes with `fork.pruned(pki)` before recording and `observe_fork` \
-             did not, so membership in `sigs` stopped meaning `verified` on this path -- \
-             and `attributable()` reads that membership without holding a PKI. This layer \
-             exists to make misbehaviour self-authenticating; unpruned, it manufactures \
-             self-authenticating evidence against an innocent party."
+            !rec.attributable_verified(&pki).contains(&1),
+            "node 1 is named as a double-signer on 64 ZERO BYTES it never produced. Both \
+             ingest paths prune with `fork.pruned(pki)`, so membership in `sigs` means \
+             verified again, and the only public accuser is `attributable_verified`."
         );
     }
 }
