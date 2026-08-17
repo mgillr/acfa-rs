@@ -969,3 +969,30 @@ def test_aggregate_fit_returns_nothing_on_no_results_and_on_refused_failures():
     results = _fit_results([{} for _ in range(5)])
     strat.accept_failures = False
     assert strat.aggregate_fit(1, results, [RuntimeError("a client died")]) == (None, {})
+
+
+def test_a_policy_refusal_is_not_reported_as_a_kernel_crash():
+    """Found by MUTATION, not by reading: neutering the `refused ` branch left the whole
+    suite green, so that guard was carrying no test.
+
+    It survived because `test_bulyan_refuses_below_its_population_bound` matches
+    `"refused|Bulyan"`, and the FALLBACK message contains "Bulyan" too -- an alternation
+    that made the assertion true down either path. A regex with an OR is one of the ways a
+    test stops being able to discriminate while still looking specific.
+
+    The two paths are materially different and a caller has to tell them apart:
+        guarded  "kernel refused: BulyanTooFewContributions"   -- a policy answer, fix the input
+        mutant   "kernel failed (exit 1): acfa-agg: too few..." -- reads as a broken binary
+    Same shape as reporting a valid-but-already-settled certificate as Invalid: the caller
+    cannot distinguish "your request was declined" from "the thing you called is broken",
+    and those need opposite responses.
+
+    FAILS ON THE UNFIXED CODE: the message says "kernel failed".
+    """
+    ups = [[np.array([1.0, 2.0, 3.0, 4.0])] for _ in range(6)]  # n=6 < 4f+3 = 7
+    keys = [bytes([i]) for i in range(6)]
+    with pytest.raises(AcfaAggregationError) as ei:
+        aggregate(ups, rule=Rule.BULYAN, f=1, tie_keys=keys)
+    msg = str(ei.value)
+    assert msg.startswith("kernel refused: "), msg
+    assert "kernel failed" not in msg, msg
