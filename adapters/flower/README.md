@@ -117,6 +117,41 @@ If your updates are smaller, rescale upstream by a factor both parties already h
 multiplying by a fixed power of two is exact and reversible -- rather than lowering the
 threshold.
 
+## Model size: this path is for small models, and here is where it stops
+
+fl-08. Values cross to the kernel as **hex ASCII over stdin** -- 16 characters plus a
+separator per `f64`, against 8 bytes binary. That is a **2.13x wire cost, and it is
+structural**: it is arithmetic on the format, not an implementation detail to be tuned away.
+Measured at n=10 clients, and the ratio is constant at every size, as it must be:
+
+| parameters | binary | ASCII | wire | Python peak | heap vs binary | ms / 1k params |
+|---|---|---|---|---|---|---|
+| 1,000 | 80 KB | 171 KB | 2.13x | 1.1 MB | 13.2x | 53.1 |
+| 5,000 | 400 KB | 851 KB | 2.13x | 3.4 MB | 8.6x | 44.4 |
+| 20,000 | 1.6 MB | 3.4 MB | 2.13x | 12.4 MB | 7.8x | 30.9 |
+| 50,000 | 4.0 MB | 8.5 MB | 2.13x | 30.4 MB | 7.6x | 30.9 |
+
+**The heap multiplier is not a constant -- it FALLS with size**, 13.2x down to 7.6x, toward
+the structural floor. Quoting a single blow-up figure would mislead in both directions: it is
+worse than 7.6x for small models and better than 13x for large ones.
+
+Extrapolating the flat 30.9 ms per 1,000 parameters, at **n=10 clients**:
+
+| model | parameters | per round | peak |
+|---|---|---|---|
+| ResNet-18 | 11.7M | **~6 minutes** | ~0.7 GB |
+| BERT-base | 110M | **~57 minutes** | ~6.7 GB |
+
+**So this integration path suits models up to roughly a hundred thousand parameters, and does
+not suit realistic vision or language models.** That is minutes-to-an-hour per round on a
+model that is small by current standards, with only ten clients -- and the cost grows with
+the client count too. If you are aggregating a real network, the ASCII-over-stdin boundary is
+the wrong interface and you want the kernel called directly rather than through this adapter.
+
+This is a property of the INTERFACE, not of the aggregation: the Rust kernel itself is fast,
+and the determinism guarantee is unaffected. What you are paying for here is a text boundary
+chosen for auditability and cross-language reproducibility.
+
 ## Non-IID data: a minority client is excluded, with zero adversaries
 
 fl-06. Every rule here selects by DISTANCE from the other clients. A client whose data is

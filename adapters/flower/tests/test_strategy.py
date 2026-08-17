@@ -1191,3 +1191,34 @@ def test_a_minority_distribution_client_is_excluded_with_zero_adversaries():
     # And the finding: KRUM removes essentially all of it, with no adversary present.
     assert krum_keeps < 0.2, (krum_keeps, "KRUM should exclude the minority client")
     assert krum_keeps < mean_keeps / 3, (krum_keeps, mean_keeps)
+
+
+def test_the_ascii_wire_cost_is_the_documented_structural_ratio():
+    """fl-08. Values cross to the kernel as hex ASCII: 16 chars plus a separator per f64,
+    against 8 bytes binary. The README quotes 2.13x and calls it STRUCTURAL -- arithmetic on
+    the format, not an implementation detail. This pins that claim to the actual encoder
+    rather than to my arithmetic, and it is the half of fl-08 that CAN be pinned.
+
+    The heap and timing figures in that table are deliberately NOT asserted: they are
+    machine-dependent, and a test that fails on a slower CI box would be noise dressed as a
+    finding. They are reported in the README as measurements with their conditions stated.
+    """
+    from acfa_flower.strategy import _bits
+
+    for d in (10, 100, 1000):
+        vals = np.linspace(-1.0, 1.0, d)
+        # what actually goes on the wire, from the shipped encoder
+        wire = " ".join(_bits(v) for v in vals)
+        binary = d * 8
+        ratio = len(wire) / binary
+        # EXACT, not a tolerance: 16 hex chars + 1 separator per value, minus the one
+        # trailing separator that is not written. So len == 17d - 1 and the ratio is
+        # 2.125 - 1/(8d), which approaches 2.125 from BELOW and is 2.1125 at d=10.
+        # A tolerance here hid that -- my first version asserted |ratio - 2.125| < 0.01 and
+        # failed at d=10, because the asymptote is not the value at small d.
+        assert len(wire) == 17 * d - 1, (d, len(wire))
+        assert abs(ratio - (2.125 - 1.0 / (8 * d))) < 1e-12, (d, ratio)
+
+    # And the per-value encoding is exactly 16 hex characters, which is what makes it exact.
+    assert len(_bits(0.1)) == 16
+    assert len(_bits(-1e300)) == 16
