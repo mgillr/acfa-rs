@@ -729,6 +729,45 @@ mod tests {
         }
     }
 
+    /// THE `.max(1)` FLOOR IN `coord_median_trim`, WHICH NOTHING EXERCISED.
+    ///
+    /// `keep = (theta - 2f).max(1)`. The clamp only does anything when `theta <= 2f + 1`,
+    /// and every existing test keeps at least three, so the floor was dead. Found by
+    /// mutation rather than by reading: changing `.max(1)` to `.max(2)` SURVIVES THE
+    /// ENTIRE SUITE.
+    ///
+    /// It matters because at `theta == 2f` the rule keeps exactly ONE value -- the
+    /// coordinate median -- and that is the strongest form of the rule, not a degenerate
+    /// case to be rounded up. Keeping two instead averages the median with its nearest
+    /// neighbour and moves the result.
+    #[test]
+    fn median_trim_keeps_exactly_the_median_when_theta_equals_two_f() {
+        let cs: Vec<Contribution> = [10i64, 20, 30, 40, 5000]
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| Contribution {
+                tie_key: vec![i as u8],
+                v: vec![v],
+            })
+            .collect();
+
+        // n = 5, f = 2 -> theta - 2f = 1, so the floor is what supplies `keep`.
+        assert_eq!(
+            (5usize).saturating_sub(2 * 2).max(1),
+            1,
+            "precondition: this n and f must drive keep to the floor"
+        );
+
+        // Sorted column is [10, 20, 30, 40, 5000]; the median is col[5/2] = 30. Keeping
+        // exactly one leaves the median alone. Keeping two would average 30 with its
+        // nearest neighbour 20 and floor to 25, which is what the `.max(2)` mutant does.
+        assert_eq!(
+            coord_median_trim(&cs, 2),
+            Ok(vec![30]),
+            "at theta == 2f the rule must keep exactly the median, not widen to two"
+        );
+    }
+
     /// THE UNTRIMMED BRANCH OF `trimmed_mean`, WHICH NOTHING EXERCISED.
     ///
     /// When `n <= 2t` the trim would empty the column, so the rule keeps the WHOLE column

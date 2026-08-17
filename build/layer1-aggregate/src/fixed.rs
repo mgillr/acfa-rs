@@ -234,6 +234,44 @@ mod tests {
         assert_eq!(encode(-40000.0), Err(FixedError::OutOfRange));
     }
 
+    /// THE RANGE EDGE ITSELF, which nothing pinned.
+    ///
+    /// `refuses_rather_than_saturates` above probes 40000, roughly 2.6 billion raw units
+    /// past the limit. That says the check exists; it says nothing about WHERE it is.
+    /// Found by mutation, not by reading: widening the lower bound by a single raw unit
+    /// (`scaled < MIN as f64` becomes `scaled < MIN as f64 - 1.0`) SURVIVES THE ENTIRE
+    /// SUITE. A port whose bound is off by one, in either direction, was undetectable.
+    ///
+    /// Both edges are inclusive and the first excluded value on each side is half a raw
+    /// unit out, because the comparison happens on the SCALED value before rounding.
+    #[test]
+    fn the_range_edge_is_inclusive_and_the_next_value_out_is_refused() {
+        let q = SCALE as f64;
+        // The edges themselves must ENCODE, not refuse.
+        assert_eq!(
+            encode(MIN as f64 / q),
+            Ok(MIN),
+            "MIN itself is representable"
+        );
+        assert_eq!(
+            encode(MAX as f64 / q),
+            Ok(MAX),
+            "MAX itself is representable"
+        );
+        // And half a raw unit beyond each must refuse. This is the assertion the
+        // off-by-one mutant fails; `-40000.0` cannot see it.
+        assert_eq!(
+            encode((MIN as f64 - 0.5) / q),
+            Err(FixedError::OutOfRange),
+            "half a raw unit below MIN must be refused, not rounded back into range"
+        );
+        assert_eq!(
+            encode((MAX as f64 + 0.5) / q),
+            Err(FixedError::OutOfRange),
+            "half a raw unit above MAX must be refused"
+        );
+    }
+
     #[test]
     fn rounds_half_away_from_zero_symmetrically() {
         // The asymmetric case is the one that bites: banker's rounding would send
