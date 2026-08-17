@@ -820,3 +820,50 @@ def test_a_non_integral_f_is_refused_rather_than_floored():
     ups, keys = _outlier_set()
     with pytest.raises(AcfaAggregationError, match="not an integer"):
         aggregate(ups, rule=Rule.KRUM, f=1.7, tie_keys=keys)
+
+
+# ---------------------------------------------------------------- fl-12
+
+def test_a_structural_disagreement_is_refused_not_resolved_by_arrival_order():
+    """fl-12. The shape check compared only the FLATTENED length, and `_unflatten` rebuilds
+    the result with `flats[0].shapes` -- whichever client arrived first. Two clients can
+    flatten to the same length while disagreeing on structure, so the OUTPUT SHAPE depended
+    on arrival order.
+
+    FAILS ON THE UNFIXED CODE: both calls succeed and return different structures.
+    """
+    odd = [np.array([1.0]), np.array([2.0])]      # two 1-element arrays
+    same = [np.array([1.0, 2.0])]                 # one 2-element array
+    keys = [bytes([i]) for i in range(5)]
+    for ups in ([odd, same, same, same, same], [same, same, same, same, odd]):
+        with pytest.raises(AcfaAggregationError, match="arrival order"):
+            aggregate(ups, rule=Rule.MEAN, f=1, tie_keys=keys)
+
+
+def test_a_dtype_disagreement_is_refused_because_it_changes_the_output_bytes():
+    """The same defect through `ref.dtypes`, and this half is the sharper one: the result is
+    cast back to client 0's dtypes, so a float32 client arriving FIRST downcasts the whole
+    aggregate. Measured on the unfixed code -- identical set, permuted:
+
+        float32 first -> dtype float32, bytes 0000c03f00002040
+        float32 last  -> dtype float64, bytes 000000000000f83f0000000000000440
+
+    Different BYTES from the same SET, which is precisely the property the adapter claims.
+
+    FAILS ON THE UNFIXED CODE: both calls succeed and disagree byte for byte.
+    """
+    f32 = [np.array([1.5, 2.5], dtype=np.float32)]
+    f64 = [np.array([1.5, 2.5], dtype=np.float64)]
+    keys = [bytes([i]) for i in range(5)]
+    for ups in ([f32, f64, f64, f64, f64], [f64, f64, f64, f64, f32]):
+        with pytest.raises(AcfaAggregationError, match="different BYTES"):
+            aggregate(ups, rule=Rule.MEAN, f=1, tie_keys=keys)
+
+
+def test_agreeing_clients_are_untouched_by_the_structural_check():
+    """COUNTER-TEST. Multi-array updates with matching structure must still aggregate -- the
+    honest case is every client deriving its parameter list from the same model, which is
+    exactly what `honest_set()` builds (two arrays, shapes (2,) and (1, 2))."""
+    out = aggregate(honest_set(), rule=Rule.KRUM, f=1)
+    assert [o.shape for o in out] == [(2,), (1, 2)]
+    assert all(o.dtype == np.float64 for o in out)

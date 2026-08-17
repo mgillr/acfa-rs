@@ -233,6 +233,44 @@ def aggregate(
                 f"client {i} sent {fl.values.size} values, client 0 sent {ref.values.size}; "
                 "padding one would let a short update shift the result"
             )
+        # fl-12. THE FLATTENED LENGTH WAS THE ONLY THING COMPARED, AND THE RESULT IS
+        # RECONSTRUCTED FROM CLIENT ZERO -- SO THE OUTPUT DEPENDED ON ARRIVAL ORDER.
+        #
+        # `_unflatten` rebuilds using `ref.shapes` and `ref.dtypes`, and `ref` is `flats[0]`,
+        # i.e. whichever client happened to arrive first. Two clients can flatten to the same
+        # LENGTH while disagreeing on STRUCTURE or DTYPE, and that passed the check above.
+        #
+        # MEASURED, same five updates, one client differing, permuted:
+        #   structure: [array([1.]), array([2.])] vs [array([1., 2.])]
+        #       that client first -> shapes [(1,), (1,)]
+        #       that client last  -> shapes [(2,)]
+        #   dtype: one float32 client among float64
+        #       float32 first -> dtype float32, bytes 0000c03f00002040
+        #       float32 last  -> dtype float64, bytes 000000000000f83f0000000000000440
+        #
+        # THE SAME SET IN A DIFFERENT ORDER PRODUCED DIFFERENT BYTES. That is the exact
+        # property this adapter exists to provide, contradicted by the reconstruction step
+        # rather than by the aggregation -- the kernel's answer was identical both times.
+        # `test_aggregate_is_a_function_of_the_set_not_the_order` cannot see it because every
+        # client there shares one structure.
+        #
+        # Refusing rather than picking a canonical structure: with clients disagreeing there
+        # is no principled choice, and any rule for choosing (majority, first, smallest) is a
+        # policy the caller should set upstream where the model definition lives.
+        if fl.shapes != ref.shapes:
+            raise AcfaAggregationError(
+                f"client {i} sent parameter shapes {fl.shapes}, client 0 sent {ref.shapes}. "
+                "They flatten to the same length, so the aggregate is well defined -- but the "
+                "result is rebuilt with client 0's structure, which would make the OUTPUT "
+                "SHAPE depend on arrival order. Refusing rather than picking one."
+            )
+        if fl.dtypes != ref.dtypes:
+            raise AcfaAggregationError(
+                f"client {i} sent dtypes {tuple(str(d) for d in fl.dtypes)}, client 0 sent "
+                f"{tuple(str(d) for d in ref.dtypes)}. The result is cast back to client 0's "
+                "dtypes, so a lower-precision client arriving first silently downcasts the "
+                "aggregate -- the same set in a different order returns different BYTES."
+            )
 
     # adv-02. REFUSE integer dtypes rather than truncating the aggregate to fit them.
     #
