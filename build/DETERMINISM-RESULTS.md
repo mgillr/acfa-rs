@@ -209,12 +209,51 @@ So the goldens are genuinely reproducible from a second implementation, not numb
 written to match. Measured corpus: **9 cases, 2 784 output components, 1 397 negative**
 -- so the floor-vs-truncate divergence is genuinely exercised.
 
-## 4. Build-profile axis -- closed by construction
+## 4. Build-profile axis -- CORRECTED: the original justification was false
 
 Integer overflow panics in debug and wraps in release, which is a real
-"two conforming implementations disagree" hazard in general. In this crate it cannot
-occur: `Cargo.toml` sets `[profile.release] overflow-checks = true`, so both profiles
-panic. Measured anyway -- debug and release digests are identical (sec.1, rows 1-2).
+"two conforming implementations disagree" hazard in general.
+
+**An earlier revision of this section said the hazard "cannot occur" here, and gave
+this reason:**
+
+> In this crate it cannot occur: `Cargo.toml` sets `[profile.release]
+> overflow-checks = true`, so both profiles panic.
+
+**That reason is false for everyone who is not us.** Cargo profile settings apply only
+to the **root package being built**. A dependency's `[profile.*]` sections are ignored
+entirely. So the setting governs our own CI, tests and benchmarks -- where this crate
+*is* the root -- and does nothing whatsoever in a downstream build, where the
+consumer's profile governs and release defaults to `overflow-checks = false`.
+
+Reproduced directly rather than argued, with a two-crate minimal case: a dependency
+pinning `[profile.release] overflow-checks = true`, consumed by a root that does not.
+The dependency's own overflowing `x + 1` at `i64::MAX`:
+
+```text
+release: NO PANIC, wrapped to -9223372036854775808
+```
+
+The pin was ignored. Any claim in this repository of the form "overflow-checks is on,
+therefore X" is a claim about **our** builds only, and several were made.
+
+### What actually closes the axis now, and why the distinction matters
+
+The *conclusion* still holds at tip, but for an entirely different reason than the one
+given: raw values are now bounded to the Q16.16 range wherever they enter
+(`rules::check` and `wire::decode`, see sec. 2), so the aggregation path cannot reach
+an overflowing operation in either profile. The score accumulator additionally uses
+`checked_add`, which is profile-independent by construction in the way the pin was
+merely assumed to be.
+
+That is a **contingent** property resting on the entry validation, not a structural one
+resting on a build flag. If the validation were ever relaxed, this axis would reopen
+silently for consumers and the pin would not catch it -- which is precisely the failure
+the original sentence would have concealed.
+
+Measured, and still true for the builds it describes: debug and release digests are
+identical (sec.1, rows 1-2). That measurement was always sound; only the explanation
+attached to it was wrong.
 
 ## 5. Still owed
 
