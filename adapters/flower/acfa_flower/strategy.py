@@ -184,6 +184,46 @@ def aggregate(
     if not updates:
         raise AcfaAggregationError("no updates to aggregate")
 
+    # fl-11. THERE ARE TWO THRESHOLDS ON `f`, NOT ONE, AND ONLY THE FIRST IS DOCUMENTED.
+    #
+    #   n >= 2f + 3     sound. The population bound in `Rule.required_n`.
+    #   f + 3 <= n      the rule STILL SELECTS, with no Byzantine guarantee. This is the
+    #                   case the class docstring describes -- "still returns a number, it
+    #                   simply carries no Byzantine guarantee" -- and it is left alone.
+    #   n < f + 3       `multi_krum` returns EVERY index by its select-all convention, so
+    #                   the aggregate is the PLAIN MEAN. The rule did not run at all.
+    #
+    # The third band is not a weakened guarantee, it is an ABSENT one, and nothing in this
+    # adapter said so. Measured at n=7 with six honest values near 1.0 and one adversary at
+    # 500.0, where the plain mean is 72.29:
+    #
+    #   f=1  -> 1.0050    f=2  -> 1.0000    f=3  -> 1.0050    (selects; f=3 is band two)
+    #   f=5  -> 72.2900   f=99 -> 72.2900                     (select-all: FedAvg exactly)
+    #
+    # Refusing here does NOT contradict the docstring's reasoning. That argument -- refuse
+    # and callers patch the check out -- is about a REDUCED guarantee, which still does the
+    # work asked of it. This is the rule silently not running, which is the one outcome a
+    # caller cannot detect and would never choose.
+    #
+    # KRUM only, measured per rule rather than assumed: BULYAN already refuses below its own
+    # bound, MEDIAN_TRIMMED and TRIMMED still exclude the adversary at every f tested (their
+    # `keep` floors at 1), and MEAN is documented as carrying no robustness at all.
+    if float(f) != int(f):
+        raise AcfaAggregationError(
+            f"f={f!r} is not an integer. Flooring it would silently change the assumed "
+            "adversary count, and f is what every population bound is computed from."
+        )
+    f = int(f)
+    # NOT REFUSED HERE. `test_strategy_reports_bound_unmet_without_failing` constructs
+    # exactly this case -- n=3, f=1 -- and asserts it works and reports. That is a deliberate
+    # design decision with a test behind it, and the docstring argument (refuse, and callers
+    # patch the check out) is the room's, not mine to overturn from the adapter. What was
+    # missing was not a refusal but VISIBILITY: band two and band three were reported
+    # identically, as `acfa_population_bound_met: False`, and they are not the same event.
+    # `AcfaStrategy.aggregate_fit` now distinguishes them. The open question I am NOT
+    # deciding: the direct `aggregate()` path has no metrics channel, so on that path band
+    # three remains undisclosed at runtime and is documented only here.
+
     flats = [_flatten(u) for u in updates]
     ref = flats[0]
     for i, fl in enumerate(flats[1:], start=1):
@@ -513,11 +553,20 @@ class AcfaStrategy(FedAvg):  # type: ignore[misc]
         n = len(updates)
         need = self.rule.required_n(self.f)
         population_bound_met = n >= need
+        # fl-11. BAND TWO AND BAND THREE WERE REPORTED IDENTICALLY AND ARE NOT THE SAME
+        # EVENT. `acfa_population_bound_met: False` covered both "the rule selected, with no
+        # Byzantine guarantee" and "multi-Krum returned EVERY contribution, so this is the
+        # plain mean and no rule ran". An operator watching the first metric cannot tell a
+        # degraded round from an undefended one. Measured at n=7: f=3 selects and excludes an
+        # adversary at 500.0; f=5 returns 72.29, which is FedAvg exactly.
+        selected_all = self.rule is Rule.KRUM and n < self.f + 3
         acfa_metrics = {
             "acfa_rule": self.rule.value,
             "acfa_f": self.f,
             "acfa_n": n,
             "acfa_required_n": need,
+            # True means NO ROBUST RULE RAN -- strictly worse than an unmet bound.
+            "acfa_rule_selected_all": selected_all,
             # Surfaced on EVERY round, not only when it fails. A deployment that quietly
             # drops below its bound would otherwise look identical to a healthy one.
             "acfa_population_bound_met": population_bound_met,

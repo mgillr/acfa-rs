@@ -744,3 +744,79 @@ def test_the_probe_can_see_the_failure_it_is_looking_for():
     ups, keys = _outlier_set()
     plain = float(aggregate(ups, rule=Rule.MEAN, f=1, tie_keys=keys)[0][0])
     assert plain > 50.0, plain
+
+
+# ---------------------------------------------------------------- fl-11
+
+@requires_flwr
+def test_the_select_all_band_is_reported_distinctly_from_an_unmet_bound():
+    """fl-11. There are TWO thresholds on f and only one was reported.
+
+      n >= 2f+3   sound; the population bound in `Rule.required_n`
+      n >= f+3    the rule STILL SELECTS with no Byzantine guarantee
+      n <  f+3    `multi_krum` returns EVERY index, so the result is the PLAIN MEAN and no
+                  robust rule ran at all
+
+    Both lower bands reported `acfa_population_bound_met: False` and nothing else, so an
+    operator could not tell a DEGRADED round from an UNDEFENDED one. Measured at n=7 with an
+    adversary at 500.0: f=3 excludes it, f=5 returns 72.29, which is FedAvg exactly.
+
+    Not refused: `test_strategy_reports_bound_unmet_without_failing` asserts this case works
+    and reports, which is a deliberate decision with a test behind it. The fix is visibility.
+
+    FAILS ON THE UNFIXED CODE: `acfa_rule_selected_all` does not exist.
+    """
+    from acfa_flower import AcfaStrategy
+
+    results = _fit_results([{} for _ in range(5)])
+    _, degraded = AcfaStrategy(rule=Rule.KRUM, f=2).aggregate_fit(1, results, [])
+    _, undefended = AcfaStrategy(rule=Rule.KRUM, f=4).aggregate_fit(1, results, [])
+
+    # n=5, f=2: below the bound 2f+3=7, but 5 >= f+3=5, so the rule selects.
+    assert degraded["acfa_population_bound_met"] is False
+    assert degraded["acfa_rule_selected_all"] is False
+    # n=5, f=4: 5 < f+3=7, so multi-Krum selects everything -- no rule ran.
+    assert undefended["acfa_population_bound_met"] is False
+    assert undefended["acfa_rule_selected_all"] is True
+
+
+def test_krum_between_the_two_thresholds_still_selects_and_is_not_refused():
+    """COUNTER-TEST, and it is the one that stops this guard becoming a different bug.
+
+    At n=7, f=3 and f=4 are BELOW the population bound 2f+3 but AT OR ABOVE f+3, so the rule
+    genuinely selects and must keep working. The class docstring's argument -- refuse and
+    callers patch the check out -- applies to exactly this band, so refusing here would
+    contradict a deliberate design decision rather than fix a defect.
+    """
+    ups, keys = _outlier_set()
+    for f in (1, 2, 3, 4):
+        out = float(aggregate(ups, rule=Rule.KRUM, f=f, tie_keys=keys)[0][0])
+        assert abs(out - 1.0) < 0.5, (f, out, "adversary was not excluded")
+
+
+def test_the_other_rules_were_measured_not_assumed_at_large_f():
+    """The guard is KRUM-only because only KRUM has the select-all convention. Measured per
+    rule rather than reasoned: BULYAN refuses below its own bound, and the two coordinate-wise
+    rules still exclude the adversary at every f tested because their `keep` floors at 1.
+
+    MEAN is excluded deliberately -- it is documented as carrying no robustness, so returning
+    the plain mean is the correct answer for it and not a defect.
+    """
+    ups, keys = _outlier_set()
+    for f in (5, 99):
+        with pytest.raises(AcfaAggregationError):
+            aggregate(ups, rule=Rule.BULYAN, f=f, tie_keys=keys)
+        for rule in (Rule.MEDIAN_TRIMMED, Rule.TRIMMED):
+            out = float(aggregate(ups, rule=rule, f=f, tie_keys=keys)[0][0])
+            assert abs(out - 1.0) < 0.5, (rule, f, out)
+
+
+def test_a_non_integral_f_is_refused_rather_than_floored():
+    """`int(1.7)` is 1, so a caller's assumed adversary count silently changed -- and f is
+    what every population bound is computed from.
+
+    FAILS ON THE UNFIXED CODE: aggregates as though f=1.
+    """
+    ups, keys = _outlier_set()
+    with pytest.raises(AcfaAggregationError, match="not an integer"):
+        aggregate(ups, rule=Rule.KRUM, f=1.7, tie_keys=keys)
