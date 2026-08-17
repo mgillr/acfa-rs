@@ -21,7 +21,7 @@
 
 use acfa_receipt::identity::{Pki, PubKey};
 use acfa_receipt::{decode, Invalid, Policy, Rule, WireError};
-use std::io::Read;
+use std::io::{IsTerminal, Read};
 use std::process::ExitCode;
 
 fn hex32(b: &[u8; 32]) -> String {
@@ -53,8 +53,17 @@ fn parse_pki(text: &str) -> Result<Pki, String> {
                 hex.len()
             ));
         }
+        // ASCII before byte-slicing. `&hex[i*2..i*2+2]` indexes a `&str` by BYTES and
+        // panics when the boundary falls inside a multi-byte character, so a non-ASCII
+        // PKI line aborted the process instead of being reported as a bad line. Hex is
+        // ASCII by definition, so this rejects rather than aborts.
+        if !hex.is_ascii() {
+            return Err(format!("line {}: public key must be hex", n + 1));
+        }
         let mut pk: PubKey = [0u8; 32];
         for (i, b) in pk.iter_mut().enumerate() {
+            // Slicing a `&str` by byte index panics on a non-ASCII boundary; hex is
+            // ASCII, so reject rather than abort. See acfa-agg for the same guard.
             *b = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
                 .map_err(|_| format!("line {}: bad hex", n + 1))?;
         }
@@ -108,6 +117,24 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // REJECT UNKNOWN FLAGS. Silently ignoring them turns a failing security check into a
+    // passing one: `--require-bounds` (plural, a one-character typo) simply did not match
+    // `--require-bound`, so the check the operator asked for was never applied and the tool
+    // exited 0. A verifier that ignores what it was asked to do is worse than one that
+    // refuses, because the operator has no way to notice.
+    const KNOWN: [&str; 6] = ["--pki", "--f", "--rule", "--require-bound", "--help", "-h"];
+    for a in &args {
+        if !a.starts_with('-') {
+            continue;
+        }
+        let name = a.split('=').next().unwrap_or(a);
+        if !KNOWN.contains(&name) {
+            eprintln!("acfa-verify: unknown option {a:?}\n");
+            eprint!("{USAGE}");
+            return ExitCode::from(2);
+        }
+    }
+
     let require_bound = args.iter().any(|a| a == "--require-bound");
     let pki_path = flag_value(&args, "--pki");
     let f_override = flag_value(&args, "--f");
@@ -126,6 +153,15 @@ fn main() -> ExitCode {
         .enumerate()
         .find(|(i, a)| !a.starts_with("--") && !consumed.contains(i))
         .map(|(_, a)| a.clone());
+
+    // Refuse an interactive stdin rather than blocking on it. With no FILE and no pipe this
+    // sat in a blocking read forever and printed nothing, which reads as a hang. acfa-agg
+    // was given this guard; acfa-verify was not, so the two disagreed about the same case.
+    if path.is_none() && std::io::stdin().is_terminal() {
+        eprintln!("acfa-verify: no input. Give a FILE, or pipe a receipt in, or --help.\n");
+        eprint!("{USAGE}");
+        return ExitCode::from(2);
+    }
 
     let mut bytes = Vec::new();
     let read = match &path {

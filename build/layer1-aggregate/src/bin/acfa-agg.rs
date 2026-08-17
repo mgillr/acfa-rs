@@ -46,7 +46,11 @@ fn die(code: u8, msg: &str) -> ExitCode {
 }
 
 fn parse_bits(tok: &str) -> Option<f64> {
-    if tok.len() != 16 {
+    // ASCII FIRST, THEN SLICE. `&tok[i..i+2]` indexes a `&str` by BYTES and panics if the
+    // boundary lands inside a multi-byte character, so any non-ASCII token aborted the
+    // process instead of being rejected as malformed input. A panic reachable from stdin
+    // is a denial of service, and hex is ASCII by definition, so the check costs nothing.
+    if tok.len() != 16 || !tok.is_ascii() {
         return None;
     }
     let mut b = [0u8; 8];
@@ -169,7 +173,7 @@ fn main() -> ExitCode {
                 }
             }
             tie_key_hex => {
-                if tie_key_hex.len() % 2 != 0 {
+                if tie_key_hex.len() % 2 != 0 || !tie_key_hex.is_ascii() {
                     return die(2, &format!("line {}: tie key must be hex", n + 1));
                 }
                 let mut tie_key = Vec::with_capacity(tie_key_hex.len() / 2);
@@ -185,13 +189,21 @@ fn main() -> ExitCode {
                         Some(x) => match encode(x) {
                             Ok(q) => v.push(q),
                             Err(e) => {
+                                // EXIT 1, NOT 2. The documented contract is
+                                // "1 refused (bound not met, bad input values)" against
+                                // "2 unreadable input". An out-of-range or non-finite value
+                                // is perfectly readable -- it parsed as an f64 -- and the
+                                // program is REFUSING it rather than failing to understand
+                                // it. Reporting it as unreadable told a caller to go looking
+                                // for a malformed wire encoding when the real answer was
+                                // "rescale your data".
                                 return die(
-                                    2,
+                                    1,
                                     &format!(
                                         "line {}: {e:?} -- value out of Q16.16 range or not finite",
                                         n + 1
                                     ),
-                                )
+                                );
                             }
                         },
                         None => {

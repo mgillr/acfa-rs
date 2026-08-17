@@ -214,3 +214,18 @@ fn realistic_sizes_are_unaffected() {
     assert!(multi_krum(&cs, 2).is_ok());
     assert!(bulyan_select(&cs, 2).is_ok());
 }
+
+/// adv-04 / rust-06: a zero trim denominator must be a typed refusal, not an abort.
+/// It was `assert!` in library code, so `acfa-agg` exited 101 on `beta <num> 0` while its
+/// own documented contract promises a refusal exit.
+#[test]
+fn a_zero_trim_denominator_is_refused_not_asserted() {
+    let cs: Vec<Contribution> = (0..5)
+        .map(|i| Contribution {
+            tie_key: vec![i as u8],
+            v: vec![i as i64, 1],
+        })
+        .collect();
+    assert_eq!(trimmed_mean(&cs, 1, 0), Err(AggError::BetaDenominatorZero));
+    assert!(trimmed_mean(&cs, 1, 4).is_ok(), "ordinary beta still works");
+}

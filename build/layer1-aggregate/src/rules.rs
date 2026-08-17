@@ -61,6 +61,13 @@ pub enum AggError {
     /// `sq_dist` alone would have moved the fault one line down and left it looking like a
     /// different bug.
     ValueOutOfRange,
+    /// `beta_den` is zero, so the trim fraction `beta_num / beta_den` is undefined.
+    ///
+    /// This was an `assert!` in library code, which aborts the process. A library reached
+    /// from a CLI that reads untrusted directives must not abort on a value the caller
+    /// supplied -- `acfa-agg` exited 101 on `beta <num> 0` where its own contract promises
+    /// a typed refusal.
+    BetaDenominatorZero,
     /// More contributions than the rule will process. See `MAX_CONTRIBUTIONS` and
     /// `MAX_CONTRIBUTIONS_BULYAN` for the arithmetic behind each bound.
     ///
@@ -163,7 +170,9 @@ pub fn trimmed_mean(
 ) -> Result<Vec<i64>, AggError> {
     let d = check(cs)?;
     let n = cs.len();
-    assert!(beta_den > 0, "beta_den must be positive");
+    if beta_den == 0 {
+        return Err(AggError::BetaDenominatorZero);
+    }
     let t = (n * beta_num as usize) / beta_den as usize;
     Ok((0..d)
         .map(|k| {
