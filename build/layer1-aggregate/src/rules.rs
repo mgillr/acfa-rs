@@ -729,6 +729,61 @@ mod tests {
         }
     }
 
+    /// THE UNTRIMMED BRANCH OF `trimmed_mean`, WHICH NOTHING EXERCISED.
+    ///
+    /// When `n <= 2t` the trim would empty the column, so the rule keeps the WHOLE column
+    /// instead. Every call site in this crate and every one of the nine golden vectors uses
+    /// beta of 1/4 or 1/5, and reaching this branch needs beta >= 1/2 -- so it was dead to
+    /// the entire suite. MEASURED, not assumed: replacing `&col[..]` with `&col[..1]`, which
+    /// makes the branch return a single element instead of the column, leaves ALL 51 TESTS
+    /// PASSING at exit 0. A port could omit this branch entirely, or get it arbitrarily
+    /// wrong, and be certified by everything we had.
+    ///
+    /// THIS TEST PINS THE BEHAVIOUR; IT DOES NOT ENDORSE IT. Returning the untrimmed mean
+    /// means the result includes the outliers the caller asked to trim -- an open finding
+    /// (adv-05) argues that a rule which cannot honour its bound should refuse rather than
+    /// silently return a value the bound does not protect. That is a specification question
+    /// and it is not settled here. What is settled is that the branch now has a witness, so
+    /// whichever way it is decided the change is VISIBLE rather than silent.
+    #[test]
+    fn the_untrimmable_column_is_kept_whole_rather_than_emptied() {
+        // n = 5, beta = 3/5 -> t = 3, and 2t = 6 > 5, so the trim would empty the column.
+        let cs: Vec<Contribution> = [1i64, 2, 3, 4, 1000]
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| Contribution {
+                tie_key: vec![i as u8],
+                v: vec![v],
+            })
+            .collect();
+
+        // Precondition, so a future change to `t` cannot make this test silently stop
+        // testing the branch it exists for.
+        let t = (5 * 3) / 5;
+        assert!(
+            5 <= 2 * t,
+            "precondition: this beta must reach the untrimmed branch"
+        );
+
+        // The whole column, floor-averaged: (1+2+3+4+1000)/5 = 1010/5 = 202.
+        assert_eq!(
+            trimmed_mean(&cs, 3, 5),
+            Ok(vec![202]),
+            "an untrimmable column must be kept WHOLE, not emptied or truncated"
+        );
+
+        // And the outlier is still in there, which is the substance of adv-05: the caller
+        // asked to trim and got a mean the trim bound does not protect. Asserted against a
+        // COMPUTED value rather than a literal -- `assert!(202 > 4)` compares two constants
+        // and clippy is right that it can never fail, which is this repository's own
+        // gates-that-cannot-fail defect appearing inside a test about coverage gaps.
+        let got = trimmed_mean(&cs, 3, 5).unwrap()[0];
+        assert!(
+            got > 100,
+            "the 1000 outlier survives into the result (got {got}) -- see adv-05"
+        );
+    }
+
     /// num-03, the target-width half, and the reason this is a determinism finding and
     /// not merely a robustness one. `beta_num / beta_den` here is exactly 1/4, written
     /// with large numerals -- an ordinary way to express a fraction, not an attack.
