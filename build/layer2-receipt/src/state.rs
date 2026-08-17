@@ -39,18 +39,42 @@ pub const MAX_MERGE_CONTRIBUTIONS: usize = 4096;
 /// A peer sends `n` and the receiver stores `n^2/2`. That is amplification, not merely
 /// unbounded growth, and it is why a contribution cap alone does not close it.
 ///
-/// 2^20 proofs at the struct's 192 bytes (`rnd`, `node_id`, two 32-byte hashes, two 64-byte
-/// signatures) is about 201 MB, ignoring allocator overhead. That is the point past which
-/// this stops being a merge and becomes a memory-exhaustion vector against any node that
-/// syncs with an untrusted replica.
+/// THE BOUND IS ON TIME, NOT MEMORY, AND THE FIRST VERSION OF THIS CONSTANT GOT THAT WRONG.
 ///
-/// GENEROUS BY DESIGN, and worth saying why the true requirement is far smaller:
-/// `convicted` collects `node_id` into a `BTreeSet`, so ONE valid proof per node already
-/// convicts and every further proof for that node changes no answer this crate returns.
-/// The cap is not set at that minimum because the proof set is a G-Set whose union defines
-/// the state root -- discarding redundant proofs would change `root()` and therefore the
-/// bytes two replicas must agree on. Refusing is available; thinning is not.
-pub const MAX_MERGE_PROOFS: usize = 1 << 20;
+/// It was originally 2^20, justified purely by storage: 2^20 proofs at the struct's 192
+/// bytes (`rnd`, `node_id`, two 32-byte hashes, two 64-byte signatures) is about 201 MB.
+/// That reasoning is sound and it bounds the wrong resource. Deriving a proof costs a
+/// SIGNATURE VERIFICATION, so the cap also decides how much CPU an ACCEPTED merge may
+/// consume, and nothing checked that.
+///
+/// MEASURED, on accepted merges under the old cap:
+///
+/// ```text
+///   k=200   19 900 proofs    2.48 s
+///   k=400   79 800 proofs    9.61 s
+///   k=600  179 700 proofs   22.38 s
+///   k=800  319 600 proofs   52.67 s     <- accepted, and already a minute of CPU
+/// ```
+///
+/// Derivation runs at roughly 6 000-8 000 proofs/second on the reference host, so the old
+/// 2^20 admitted a single merge costing about 130 SECONDS. The memory bound held perfectly
+/// while the machine sat unavailable for over two minutes.
+///
+/// 8192 puts the worst accepted merge at about one second. The number is chosen from that
+/// measurement, not from a round binary figure that happens to look tidy.
+///
+/// IT COSTS LEGITIMATE USE NOTHING, which is what makes the tightening safe rather than a
+/// trade: proofs arise ONLY from equivocation, an honest node sends one contribution per
+/// round, so an honest merge derives ZERO. 8192 is one node equivocating 128 ways in a
+/// single round, which is already far past anything a real deployment produces.
+///
+/// AND THE TRUE REQUIREMENT IS SMALLER STILL: `convicted` collects `node_id` into a
+/// `BTreeSet`, so ONE valid proof per node convicts and every further proof for that node
+/// changes no answer this crate returns. The cap is not set at that minimum because the
+/// proof set is a G-Set whose union defines the state root -- discarding redundant proofs
+/// would change `root()` and therefore the bytes two replicas must agree on. Refusing is
+/// available; thinning is not.
+pub const MAX_MERGE_PROOFS: usize = 8192;
 
 /// Why a merge was refused. Refusing rather than truncating is not a preference: a
 /// partially-absorbed merge leaves two honest replicas holding different states from the
@@ -370,6 +394,48 @@ mod tests {
             mine.c.is_empty() && mine.e.is_empty(),
             "refused merge must absorb NOTHING"
         );
+    }
+
+    /// WHERE THE PROOF BOUNDARY SITS, pinned so that widening it is a visible act.
+    ///
+    /// The cap is a TIME bound expressed as a count: derivation costs one signature
+    /// verification per proof, measured at roughly 6 000-8 000/second, so 8192 puts the
+    /// worst ACCEPTED merge near one second. The original 2^20 admitted about 130 seconds
+    /// and its justification never mentioned time at all.
+    ///
+    /// Asserted on the REFUSAL side because that path costs nothing -- the bound is computed
+    /// from group sizes and refuses before any work -- whereas exercising the accepting side
+    /// at the boundary would derive 8128 proofs and take about a second in every CI run on
+    /// every architecture. The accepting side is covered by
+    /// `an_ordinary_merge_still_absorbs_and_still_derives`.
+    #[test]
+    fn the_proof_bound_sits_exactly_where_the_timing_measurement_puts_it() {
+        // k(k-1)/2 is the derivable count for one (rnd, node_id) group of size k.
+        let max_k = (1..).find(|k| k * (k - 1) / 2 > MAX_MERGE_PROOFS).unwrap() - 1;
+        assert_eq!(
+            max_k, 128,
+            "the cap admits at most 128 conflicting contributions"
+        );
+        assert!(max_k * (max_k - 1) / 2 <= MAX_MERGE_PROOFS);
+        assert!((max_k + 1) * max_k / 2 > MAX_MERGE_PROOFS);
+
+        // One past the boundary must refuse, and refuse without absorbing anything.
+        let a = ident(1);
+        let mut pki: Pki = BTreeMap::new();
+        pki.insert(1, a.public());
+        let mut peer = State::new();
+        for i in 0..(max_k + 1) {
+            peer.add_contribution(contrib(&a, 7, &[i as i64]));
+        }
+        let mut mine = State::new();
+        match mine.merge(&peer, &pki) {
+            Err(MergeError::TooManyProofs { would_be, max }) => {
+                assert_eq!(max, MAX_MERGE_PROOFS);
+                assert_eq!(would_be, (max_k + 1) * max_k / 2);
+            }
+            other => panic!("one past the boundary must refuse, got {other:?}"),
+        }
+        assert!(mine.c.is_empty() && mine.e.is_empty());
     }
 
     /// THE ALL-OR-NOTHING PROPERTY, asserted on the ROOT rather than on lengths, because
