@@ -47,13 +47,16 @@ pub enum FixedError {
 /// non-conforming implementation has got wrong:
 ///
 /// > **The annihilation threshold is HALF a raw unit, not one.** `|s| < 0.5` encodes to 0;
-/// > `0.5 <= |s| < 1.5` encodes to `±1`. Nothing in `[0.5, 1)` may vanish.
+/// > `0.5 <= |s| < 1.5` encodes to `+/-1`. Nothing in `[0.5, 1)` may vanish.
 ///
-/// THREE INDEPENDENT IMPLEMENTATIONS HAVE GOT THIS WRONG IN THREE DIFFERENT WAYS, which is
-/// why it is now pinned by `a_conforming_encoder_rounds_half_away_from_zero` rather than
-/// described in prose that only a Rust reader ever opens:
+/// FIVE INDEPENDENT IMPLEMENTATIONS HAVE GOT THIS WRONG, in three distinct ways, which is
+/// why it is now pinned by `a_conforming_encoder_rounds_half_away_from_zero` and its sibling
+/// rather than described in prose that only a Rust reader ever opens. Three of the five were
+/// written by ONE author inside a single afternoon, twice while reviewing this very rule with
+/// the contract open on screen. The idiom survives repeated exposure to its own refutation,
+/// and that -- not the count -- is the argument for pinning it:
 ///
-///   - **Truncation toward zero** (`np.trunc`, `int(s)`, C's `(long)s`). Annihilates the
+///   - **Truncation toward zero** (`np.trunc`, `int(s)`, a C-style cast to `long`). Annihilates the
 ///     whole band up to one raw unit, so its threshold is exactly TWICE the contract's.
 ///     This is not a tie-breaking difference -- it disagrees on every non-integer `s`, and
 ///     it fails 9 of the 12 conformance rows. Measured consequence when it appeared in the
@@ -257,6 +260,28 @@ mod tests {
     /// by WHICH rows which mistake it made. Note the rows are chosen so that `s` is exactly
     /// representable wherever it sits on a boundary (halves and integers are dyadic, and
     /// dividing by `SCALE` is exact), so no row depends on float round-trip luck.
+    ///
+    /// # NEITHER THIS TEST NOR ITS SIBLING IS SUFFICIENT ALONE. MEASURED, BOTH DIRECTIONS.
+    ///
+    /// Each of the two catches a wrong rule the other certifies, so deleting either loses
+    /// coverage. Every cell below was produced by mutating `encode` and running both tests:
+    ///
+    /// ```text
+    ///   wrong rule                     this table      sibling (annihilation boundary)
+    ///   truncation toward zero            FAIL              FAIL
+    ///   ties-to-even                      FAIL              pass     <- only this test
+    ///   floor(s+0.5), naive               FAIL              FAIL
+    ///   floor(s+0.5)/ceil(s-0.5)          pass              FAIL     <- only the sibling
+    /// ```
+    ///
+    /// The rows here catch rules that differ AT a midpoint. They cannot see a rule that
+    /// differs BESIDE one: a sign-symmetric `(s + 0.5).floor()` port passes all twelve,
+    /// including every midpoint, and is wrong on exactly one double per sign. Conversely the
+    /// sibling cannot see ties-to-even, which is correct at that boundary.
+    ///
+    /// So they are not one test split for tidiness, they are two different questions.
+    /// Do not fold them together, and do not treat these rows as the conformance suite on
+    /// their own -- see the sibling for why a conformance table can CERTIFY a wrong port.
     #[test]
     fn a_conforming_encoder_rounds_half_away_from_zero() {
         // (scaled value `s`, the only admissible output)
@@ -282,14 +307,49 @@ mod tests {
                 "conformance: s={s} must encode to {want} (half away from zero)"
             );
         }
+    }
 
-        // The threshold itself, stated as the one number ports get wrong: half a raw
-        // unit, not one. Nothing in [0.5, 1) may vanish, and everything below 0.5 must.
+    /// THE CASE `a_conforming_encoder_rounds_half_away_from_zero` CANNOT CATCH.
+    ///
+    /// Deliberately a SEPARATE test rather than two more assertions inside the table
+    /// above, because the note warning against deleting it would otherwise be a comment,
+    /// and a comment cannot fail. As its own named test the protection is structural: the
+    /// name states the role, removing it is a visible deletion of a test rather than a
+    /// tidy-up of a line that looks redundant, and `grep half_away_from_zero` surfaces
+    /// both halves from either end.
+    ///
+    /// WHAT IT CATCHES THAT THE TABLE DOES NOT. The textbook `(s + 0.5).floor()` idiom
+    /// written with sign symmetry -- `floor(s+0.5)` for positives, `ceil(s-0.5)` for
+    /// negatives -- returns the CONTRACT'S ANSWER on all twelve rows, including every
+    /// midpoint. It is wrong on exactly one double per sign: at the largest double below
+    /// half a unit, `s + 0.5` rounds up to exactly `1.0` and the floor yields 1.
+    ///
+    /// So the table certifies it and this test does not. Sign asymmetry is the first thing
+    /// anyone notices about that idiom, so the author who thinks about it at all writes the
+    /// form the table cannot see -- CARE REMOVES THE COARSE ERRORS AND LEAVES THE SUBTLE
+    /// ONE. Measured: naive `floor(s+0.5)` everywhere fails the table 3/12 (all negatives)
+    /// and fails here; the symmetric form passes the table 12/12 and fails here.
+    ///
+    /// AND THE DEPENDENCE RUNS BOTH WAYS, which is why neither test absorbs the other: this
+    /// one CANNOT see ties-to-even. That rule rounds `0.49999999999999994` to 0 correctly and
+    /// passes here, and is caught only by the table's midpoint rows. Two different questions,
+    /// two tests; the full matrix is in the sibling's doc.
+    ///
+    /// Five implementations have now got this rule wrong -- three of them by one author
+    /// inside a single afternoon, twice while reviewing this very rule with the contract
+    /// open. The idiom survives repeated exposure to its own refutation, which is the whole
+    /// argument for pinning it rather than describing it.
+    #[test]
+    fn a_conforming_encoder_annihilates_below_half_a_unit_and_not_above() {
+        // The one number ports get wrong: the threshold is HALF a raw unit, not one.
         let below = f64::from_bits((0.5f64 / (SCALE as f64)).to_bits() - 1);
         assert_eq!(
             encode(below),
             Ok(0),
-            "just below half a unit must annihilate"
+            "the double just below half a unit must annihilate. THE CONFORMANCE TABLE IN \
+             `a_conforming_encoder_rounds_half_away_from_zero` CANNOT CATCH THIS: a \
+             sign-symmetric `(s + 0.5).floor()` port passes all twelve of its rows and \
+             fails only here. Do not fold this test into that one."
         );
         assert_eq!(
             encode(0.999 / (SCALE as f64)),
