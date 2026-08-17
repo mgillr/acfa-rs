@@ -338,6 +338,17 @@ jobs:
         run: python3 tools/readme-commands.py
       - name: Coverage table must match what CI enforces
         run: python3 tools/coverage-claim-check.py
+      # adv-08. Needs the release binaries, and needs a real pty -- `cargo test` gives a
+      # child a pipe, so `stdin().is_terminal()` is false and the branch is unreachable
+      # from the Rust suites. Measured: deleting the guard in any of the three binaries
+      # leaves every cargo suite GREEN while the binary hangs on an interactive stdin.
+      - name: Build the CLIs the tty check drives
+        run: |
+          cargo build --release --bin acfa-agg --manifest-path build/layer1-aggregate/Cargo.toml
+          cargo build --release --manifest-path build/layer2-receipt/Cargo.toml
+          cargo build --release --manifest-path build/layer2-finality/Cargo.toml
+      - name: Every CLI must refuse an interactive stdin, not block on it
+        run: python3 tools/tty-guards.py
 
   # The hermetic readme-commands job substitutes a local remote for the documented URL,
   # which is right for a per-push gate and means it CANNOT verify the URL itself. Proven:
