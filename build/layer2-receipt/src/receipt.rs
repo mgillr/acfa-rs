@@ -117,6 +117,66 @@ pub enum Invalid {
     OutputRootMismatch { claimed: [u8; 32], actual: [u8; 32] },
 }
 
+fn hex8(b: &[u8; 32]) -> String {
+    b[..4].iter().map(|x| format!("{x:02x}")).collect()
+}
+
+impl core::fmt::Display for Invalid {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Invalid::PkiMismatch => write!(
+                f,
+                "the receipt's PKI is not the checker's trust file: it describes a different \
+                 deployment"
+            ),
+            Invalid::FaultBoundMismatch { policy, receipt } => write!(
+                f,
+                "fault bound mismatch: the checker assumes f={policy}, the receipt claims \
+                 f={receipt}"
+            ),
+            Invalid::RuleMismatch { policy, receipt } => write!(
+                f,
+                "aggregation rule mismatch: the checker requires {policy:?}, the receipt \
+                 used {receipt:?}"
+            ),
+            Invalid::BadContributionSignature { node_id, leaf } => write!(
+                f,
+                "contribution {}.. claims node {node_id} but carries no valid signature by it",
+                hex8(leaf)
+            ),
+            Invalid::BogusProof { node_id, leaf } => write!(
+                f,
+                "equivocation proof {}.. does not convict node {node_id}",
+                hex8(leaf)
+            ),
+            Invalid::WrongRound { expected, found } => {
+                write!(
+                    f,
+                    "round mismatch: expected {expected}, receipt is for {found}"
+                )
+            }
+            Invalid::StateRootMismatch { claimed, actual } => write!(
+                f,
+                "state root mismatch: receipt claims {}.., re-execution gives {}..",
+                hex8(claimed),
+                hex8(actual)
+            ),
+            Invalid::AggregateMismatch { .. } => write!(
+                f,
+                "the claimed aggregate is not what the rule produces from the admitted set"
+            ),
+            Invalid::OutputRootMismatch { claimed, actual } => write!(
+                f,
+                "output root mismatch: receipt claims {}.., re-execution gives {}..",
+                hex8(claimed),
+                hex8(actual)
+            ),
+        }
+    }
+}
+
+impl core::error::Error for Invalid {}
+
 /// What a receipt establishes once it verifies.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Verified {

@@ -77,6 +77,35 @@ pub enum ChainError {
     BadHop { depth: usize, node_id: u32 },
 }
 
+impl core::fmt::Display for ChainError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ChainError::TooShort { have, need } => {
+                write!(
+                    f,
+                    "relay chain has {have} distinct hop(s), the cut needs {need}"
+                )
+            }
+            ChainError::RepeatedSigner(id) => write!(
+                f,
+                "node {id} appears twice in the relay chain, so the hops are not distinct"
+            ),
+            ChainError::UnknownSigner(id) => {
+                write!(
+                    f,
+                    "relay hop by node {id}, which is not in the checker's PKI"
+                )
+            }
+            ChainError::BadHop { depth, node_id } => write!(
+                f,
+                "relay hop {depth} by node {node_id} does not carry a valid signature"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for ChainError {}
+
 impl RelayChain {
     /// Start a chain. The originator signs first, over an empty prefix.
     pub fn originate(anchor: [u8; 32], leaf: [u8; 32], by: &Identity) -> RelayChain {

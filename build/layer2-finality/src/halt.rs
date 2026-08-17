@@ -90,6 +90,20 @@ pub enum Rejected {
     ForkedAt(u64),
 }
 
+impl core::fmt::Display for Rejected {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Rejected::Invalid => write!(f, "the certificate did not verify"),
+            Rejected::ForkedAt(r) => write!(
+                f,
+                "a fork was observed at round {r}; nothing past it is final until reconciled"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for Rejected {}
+
 impl Finality {
     pub fn new(f: usize) -> Finality {
         let g = Certificate::genesis();
@@ -104,10 +118,31 @@ impl Finality {
         }
     }
 
-    /// The identity of a CONFLICT: the ordered pair of signed-tuple ids, independent of
-    /// which quorum signed it and of the signature bytes.
+    /// The identity of a CONFLICT: the two signed-tuple ids as an UNORDERED pair, independent
+    /// of which quorum signed it, of the signature bytes, AND of which half arrived first.
+    ///
+    /// SORTED HERE RATHER THAN TRUSTED FROM THE CALLER. `CertFork::canonical` already fixes
+    /// orientation, but `CertFork { a, b }` has PUBLIC fields, so a struct literal built
+    /// outside this crate bypasses it entirely -- and `observe_fork` is `pub` and takes a
+    /// `CertFork` by value. Reading the pair in field order therefore keyed this map on
+    /// something the caller controls.
+    ///
+    /// MEASURED, on the unfixed code: a fork observed, reconciled and re-offered SWAPPED came
+    /// back `Halted { at_round: 3, reconcile_from: 0, unattributable: true }` while the same
+    /// conflict re-offered canonically was correctly `Running`. A node re-halted permanently
+    /// on a conflict it had already settled, because the pair arrived the other way round.
+    ///
+    /// Not reachable from bytes -- `wire::decode_fork` always routes through `canonical` --
+    /// so this is an API-misuse footgun in a library others embed, and the remedy is to make
+    /// the invariant UNNECESSARY rather than to document it. Sorting removes the caller from
+    /// the trust path.
     fn fork_key(fork: &CertFork) -> ([u8; 32], [u8; 32]) {
-        (fork.a.tuple.id(), fork.b.tuple.id())
+        let (x, y) = (fork.a.tuple.id(), fork.b.tuple.id());
+        if x <= y {
+            (x, y)
+        } else {
+            (y, x)
+        }
     }
 
     /// Offer a certificate to this node.
@@ -148,6 +183,22 @@ impl Finality {
         if !fork.is_valid(pki, self.f) {
             return false;
         }
+        // PRUNE AT INGEST, EXACTLY AS `observe` DOES. This line was missing here and present
+        // there, and the asymmetry was the whole defect: `check` counts VALID signatures
+        // rather than requiring all of them, so junk entries survive validation, and
+        // `attributable()` then takes MEANING from `sigs` membership without holding a PKI.
+        //
+        // MEASURED, on the unfixed code: node 1 signed only certificate `a`; inserting a
+        // 64-ZERO-BYTE entry for node 1 on certificate `b` left `fork.is_valid` TRUE and
+        // `attributable()` returning `{1}` while `attributable_verified(pki)` was correctly
+        // empty -- and the junk survived into `fork_history()`, so an HONEST node was
+        // published as a double-signer on 64 zero bytes.
+        //
+        // That is worse than a nuisance in this layer specifically: the proposition is that
+        // misbehaviour leaves self-authenticating evidence, and this produced
+        // self-authenticating evidence AGAINST AN INNOCENT PARTY. Prune here and membership
+        // in `sigs` means verified again on BOTH ingest paths.
+        let fork = fork.pruned(pki);
         self.record(fork.clone());
         // Only a fork this node has already reconciled is settled. Anything else halts,
         // whatever its round.

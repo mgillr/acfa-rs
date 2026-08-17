@@ -98,6 +98,28 @@ pub enum CertError {
     BadSignature(u32),
 }
 
+impl core::fmt::Display for CertError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            CertError::Insufficient { have, need } => write!(
+                f,
+                "certificate carries {have} verifying signature(s), quorum needs {need}"
+            ),
+            CertError::UnknownSigner(id) => {
+                write!(f, "signer {id} is not in the checker's PKI")
+            }
+            CertError::BadSignature(id) => {
+                write!(
+                    f,
+                    "signer {id}'s signature does not verify over the certificate tuple"
+                )
+            }
+        }
+    }
+}
+
+impl core::error::Error for CertError {}
+
 impl Certificate {
     /// The fixed public genesis certificate that round 0 anchors to.
     ///

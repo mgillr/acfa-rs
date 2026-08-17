@@ -53,6 +53,32 @@ pub enum WireError {
     NotAFork,
 }
 
+impl core::fmt::Display for WireError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            WireError::BadMagic => write!(
+                f,
+                "not an ACFA certificate or fork: magic bytes do not match"
+            ),
+            WireError::UnsupportedVersion(v) => {
+                write!(
+                    f,
+                    "unsupported wire version {v}, this build speaks {VERSION}"
+                )
+            }
+            WireError::Truncated => write!(f, "stream ended mid-field"),
+            WireError::TrailingBytes => write!(f, "trailing bytes after a complete record"),
+            WireError::NotCanonical(why) => write!(f, "not canonically encoded: {why}"),
+            WireError::NotAFork => write!(
+                f,
+                "the two certificates do not conflict, so this is not a fork"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for WireError {}
+
 // ------------------------------------------------------------------ encoding
 
 fn put_cert(out: &mut Vec<u8>, c: &Certificate) {
