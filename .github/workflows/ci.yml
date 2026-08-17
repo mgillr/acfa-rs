@@ -36,7 +36,7 @@ jobs:
       run:
         working-directory: build/${{ matrix.crate }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup toolchain install stable --profile minimal
       - run: cargo test ${{ matrix.profile == 'release' && '--release' || '' }}
 
@@ -51,7 +51,7 @@ jobs:
       run:
         working-directory: build/${{ matrix.crate }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup toolchain install stable --profile minimal --component clippy --component rustfmt
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
@@ -65,7 +65,7 @@ jobs:
       run:
         working-directory: build/layer2-receipt
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup toolchain install stable --profile minimal
       - name: exercise the verifier
         run: |
@@ -115,9 +115,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     name: flower / ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup toolchain install stable --profile minimal
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with: { python-version: '3.12' }
       - working-directory: build/layer1-aggregate
         run: cargo build --release --bin acfa-agg
@@ -141,14 +141,14 @@ jobs:
       run:
         working-directory: build/layer2-receipt
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup toolchain install stable --profile minimal
       - shell: bash
         run: |
           cargo run -q --release --example digest > fingerprint.txt
           grep -v -E '^(arch|pointer-width|endian) ' fingerprint.txt > comparable.txt
           cat comparable.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: fingerprint-${{ matrix.os }}
           path: build/layer2-receipt/comparable.txt
@@ -160,7 +160,7 @@ jobs:
     needs: [fingerprint, emulated-arch]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with: { path: fps }
       - name: every architecture must produce the identical receipt
         run: |
@@ -196,8 +196,8 @@ jobs:
   golden-is-reproducible:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with: { python-version: '3.12' }
       - name: verify the vendored reference is unmodified
         working-directory: reference
@@ -241,8 +241,8 @@ jobs:
     runs-on: ubuntu-latest
     name: emulated / ${{ matrix.name }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
+      - uses: actions/checkout@v5
+      - uses: docker/setup-qemu-action@v4
       - name: test and fingerprint under ${{ matrix.platform }}
         run: |
           set -euo pipefail
@@ -256,7 +256,7 @@ jobs:
             '
           grep -v -E "^(arch|pointer-width|endian) " fp-raw.txt > comparable.txt
           cat comparable.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: fingerprint-${{ matrix.name }}
           path: comparable.txt
@@ -265,9 +265,9 @@ jobs:
     name: README commands actually run
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
       - name: Install what the doc checks need
         run: python3 -m pip install --quiet pyyaml
@@ -286,9 +286,9 @@ jobs:
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with: { python-version: "3.12" }
       - run: python3 -m pip install --quiet pyyaml
       - name: Run the documented commands without rewriting the URL
