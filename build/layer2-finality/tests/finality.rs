@@ -450,3 +450,58 @@ fn a_certified_round_binds_the_receipt_it_committed_to() {
     assert!(fin.is_final(1));
     assert_eq!(fin.status(), Status::Running { last_certified: 1 });
 }
+
+/// crdt-05a: a resume must STICK. The evidence is designed to be unsuppressible and to
+/// keep propagating, so a node that re-halts on every re-delivery of a fork it has already
+/// reconciled can never resume at all -- ordinary gossip becomes a permanent denial of
+/// service, with no Byzantine participation required.
+#[test]
+fn a_reconciled_fork_redelivered_does_not_re_halt() {
+    let (ids, pki) = room(5);
+    let mut fin = Finality::new(1);
+    fin.observe(
+        cert_signed_by(tuple(1, "A", "a"), &[&ids[0], &ids[1]]),
+        &pki,
+    )
+    .unwrap();
+    let a = cert_signed_by(tuple(1, "A", "a"), &[&ids[0], &ids[1]]);
+    let b = cert_signed_by(tuple(1, "B", "b"), &[&ids[2], &ids[3]]);
+    let _ = fin.observe(b.clone(), &pki);
+    assert!(fin.is_halted());
+
+    fin.resume(RoundBudget::new(200)).unwrap();
+    assert!(!fin.is_halted(), "resume did not clear the halt");
+
+    // A peer re-gossips the very fork we just reconciled. This is normal operation.
+    let fork = CertFork::canonical(a, b).expect("a and b fork round 1");
+    assert!(
+        fin.observe_fork(fork.clone(), &pki),
+        "valid evidence is still accepted"
+    );
+    assert!(
+        !fin.is_halted(),
+        "re-delivery of an already-reconciled fork re-halted the node, so resume can never stick"
+    );
+    assert_eq!(fin.fork_history().len(), 1, "and the record is still there");
+}
+
+/// crdt-05b: evidence merges "by union", so the historical record must be idempotent.
+/// It was a Vec with an unconditional push, so every re-delivery grew it -- unbounded
+/// memory driven by exactly the propagation the design depends on.
+#[test]
+fn the_fork_record_is_idempotent_under_redelivery() {
+    let (ids, pki) = room(5);
+    let mut fin = Finality::new(1);
+    let a = cert_signed_by(tuple(1, "A", "a"), &[&ids[0], &ids[1]]);
+    let b = cert_signed_by(tuple(1, "B", "b"), &[&ids[2], &ids[3]]);
+    let fork = CertFork::canonical(a, b).expect("fork");
+
+    for _ in 0..50 {
+        assert!(fin.observe_fork(fork.clone(), &pki));
+    }
+    assert_eq!(
+        fin.fork_history().len(),
+        1,
+        "fifty deliveries of one fork stored fifty copies; a union is not a push"
+    );
+}

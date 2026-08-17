@@ -49,7 +49,22 @@ pub struct Finality {
     forks: BTreeMap<u64, CertFork>,
     /// Every fork ever observed, retained across a resume. A fork is never retracted:
     /// the evidence does not stop being true because the operator fixed the clock.
+    ///
+    /// DEDUPLICATED. This was a `Vec` with an unconditional `push`, so re-delivery of the
+    /// same fork -- which gossip guarantees, since the whole design is that evidence
+    /// propagates to everyone -- grew it without bound. Evidence merging "by union" has to
+    /// actually be a union.
     history: Vec<CertFork>,
+    /// Rounds at or below this have been reconciled by an explicit `resume`, so a fork at
+    /// or below it is HISTORY rather than a live halt.
+    ///
+    /// Without this, resume could not stick. `resume` cleared the blocking set, but any
+    /// peer re-gossiping the old fork -- ordinary behaviour, not an attack -- put it
+    /// straight back and halted the node again, forever. The evidence is unsuppressible by
+    /// design, so a design that halts on every re-delivery of unsuppressible evidence can
+    /// never resume. Recording the reconcile point separates "this happened" from "this is
+    /// blocking now", and keeps both true.
+    reconciled_through: u64,
     f: usize,
 }
 
@@ -73,6 +88,7 @@ impl Finality {
             certified,
             forks: BTreeMap::new(),
             history: Vec::new(),
+            reconciled_through: 0,
             f,
         }
     }
@@ -90,9 +106,12 @@ impl Finality {
             }
             if let Some(fork) = CertFork::canonical(existing.clone(), cert) {
                 if fork.is_valid(pki, self.f) {
-                    self.history.push(fork.clone());
-                    self.forks.insert(r, fork);
-                    return Err(Rejected::ForkedAt(r));
+                    self.record(fork.clone());
+                    if r > self.reconciled_through {
+                        self.forks.insert(r, fork);
+                        return Err(Rejected::ForkedAt(r));
+                    }
+                    return Err(Rejected::Invalid);
                 }
             }
             return Err(Rejected::Invalid);
@@ -107,9 +126,20 @@ impl Finality {
         if !fork.is_valid(pki, self.f) {
             return false;
         }
-        self.history.push(fork.clone());
-        self.forks.insert(fork.round(), fork);
+        self.record(fork.clone());
+        // A fork at or below the reconcile point is settled history. Re-halting on it would
+        // mean the node can never resume, because the evidence is designed to keep arriving.
+        if fork.round() > self.reconciled_through {
+            self.forks.insert(fork.round(), fork);
+        }
         true
+    }
+
+    /// Append to the historical record, once. Re-delivery is expected, not exceptional.
+    fn record(&mut self, fork: CertFork) {
+        if !self.history.contains(&fork) {
+            self.history.push(fork);
+        }
     }
 
     /// The last round certified uniquely and with no fork at or below it.
@@ -181,6 +211,15 @@ impl Finality {
         }
         let from = self.reconcile_point();
         self.certified.retain(|&r, _| r <= from);
+        // Record the point BEFORE clearing, so a re-gossiped copy of the fork we just
+        // reconciled is recognised as settled rather than treated as a fresh halt.
+        self.reconciled_through = self
+            .forks
+            .keys()
+            .next_back()
+            .copied()
+            .unwrap_or(from)
+            .max(from);
         self.forks.clear(); // no longer blocking; `history` keeps the record
         Ok(from)
     }
