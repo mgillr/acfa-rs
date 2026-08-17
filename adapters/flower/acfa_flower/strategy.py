@@ -123,6 +123,29 @@ def _flatten(arrays: Sequence[np.ndarray]) -> _Flat:
     )
 
 
+def output_dtype_holds_q16_16(dtype, magnitude: float) -> bool:
+    """Can `dtype` represent a Q16.16 grid value of this magnitude?
+
+    fl-14. The kernel computes on a Q16.16 grid whose step is 2^-16 = 1.53e-5, and
+    `_unflatten` casts the result back to the CLIENT's input dtype. Above a magnitude that
+    depends on the dtype, that cast cannot hold what the kernel computed, so the exactness
+    the whole stack exists to provide is discarded on the way OUT -- silently, after every
+    part engineered to protect it has already succeeded.
+
+    Measured first magnitude at which each dtype's spacing exceeds the Q16.16 step:
+
+        float16   from 0.03125     -- i.e. essentially always, for real updates
+        float32   from 256
+        float64   from 1.4e11      -- unreachable: Q16.16 saturates at +/-32768 first
+
+    NOT a refusal. float32 is the ordinary dtype of federated learning and refusing it
+    would break every real deployment; the loss is also the CALLER's own dtype choice, not
+    a defect in the aggregation. `AcfaStrategy.aggregate_fit` reports it instead, which is
+    the same disclosure route fl-11 uses for the select-all band.
+    """
+    return bool(np.spacing(np.asarray(magnitude, dtype=dtype)) <= 1.0 / Q_SCALE)
+
+
 def _unflatten(flat: np.ndarray, shapes: tuple, dtypes: tuple) -> list:
     out, i = [], 0
     for shape, dtype in zip(shapes, dtypes):
@@ -640,6 +663,14 @@ class AcfaStrategy(FedAvg):  # type: ignore[misc]
         # degraded round from an undefended one. Measured at n=7: f=3 selects and excludes an
         # adversary at 500.0; f=5 returns 72.29, which is FedAvg exactly.
         selected_all = self.rule is Rule.KRUM and n < self.f + 3
+
+        # fl-14. THE OUTPUT CAST CAN DISCARD THE EXACTNESS THE KERNEL JUST GUARANTEED.
+        # The result is cast back to the client's input dtype, and above a dtype-dependent
+        # magnitude that dtype cannot hold a Q16.16 grid value -- float16 from 0.03125,
+        # float32 from 256. Reported rather than refused: float32 is the ordinary dtype of
+        # federated learning, and the dtype is the caller's choice, not a defect here.
+        peak = max((float(np.max(np.abs(a))) if a.size else 0.0) for a in aggregated)
+        holds = all(output_dtype_holds_q16_16(a.dtype, peak) for a in aggregated)
         acfa_metrics = {
             "acfa_rule": self.rule.value,
             "acfa_f": self.f,
@@ -647,6 +678,9 @@ class AcfaStrategy(FedAvg):  # type: ignore[misc]
             "acfa_required_n": need,
             # True means NO ROBUST RULE RAN -- strictly worse than an unmet bound.
             "acfa_rule_selected_all": selected_all,
+            # False means the returned dtype cannot represent the Q16.16 value computed,
+            # so the bit-exactness claim does not survive the cast back to the caller.
+            "acfa_output_dtype_holds_q16_16": holds,
             # Surfaced on EVERY round, not only when it fails. A deployment that quietly
             # drops below its bound would otherwise look identical to a healthy one.
             "acfa_population_bound_met": population_bound_met,

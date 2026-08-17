@@ -20,7 +20,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from acfa_flower import AcfaAggregationError, Rule, aggregate  # noqa: E402
-from acfa_flower.strategy import _find_binary, annihilated_mask  # noqa: E402
+from acfa_flower.strategy import (  # noqa: E402
+    _find_binary,
+    annihilated_mask,
+    output_dtype_holds_q16_16,
+)
 
 
 def upd(*vals):
@@ -996,3 +1000,65 @@ def test_a_policy_refusal_is_not_reported_as_a_kernel_crash():
     msg = str(ei.value)
     assert msg.startswith("kernel refused: "), msg
     assert "kernel failed" not in msg, msg
+
+
+# ---------------------------------------------------------------- fl-14
+
+def test_the_output_dtype_predicate_matches_measured_spacing():
+    """fl-14. `_unflatten` casts the aggregate back to the CLIENT's dtype, and above a
+    dtype-dependent magnitude that dtype cannot hold a Q16.16 grid value -- so the
+    exactness the whole stack exists to provide is discarded on the way OUT, after every
+    part engineered to protect it has already succeeded.
+
+    Thresholds are asserted against numpy's own `spacing`, not against numbers typed here,
+    so the predicate is checked against the float format rather than against my arithmetic.
+    """
+    q = 1.0 / (1 << 16)
+    for dtype, boundary in ((np.float16, 0.03125), (np.float32, 256.0)):
+        assert float(np.spacing(np.asarray(boundary, dtype=dtype))) > q
+        assert float(np.spacing(np.asarray(boundary / 2, dtype=dtype))) <= q
+        assert output_dtype_holds_q16_16(dtype, boundary / 2) is True
+        assert output_dtype_holds_q16_16(dtype, boundary) is False
+    # float64 holds it across the whole Q16.16 range, which saturates at +/-32768.
+    assert output_dtype_holds_q16_16(np.float64, 32767.0) is True
+
+
+@requires_flwr
+def test_a_float32_round_that_cannot_hold_the_grid_is_reported():
+    """The disclosure, on the path that has a channel for it. Reported and NOT refused:
+    float32 is the ordinary dtype of federated learning, and the dtype is the caller's
+    choice rather than a defect here -- refusing would break every real deployment, which
+    is the mistake I made writing fl-11 as a raise.
+
+    FAILS ON THE UNFIXED CODE: `acfa_output_dtype_holds_q16_16` does not exist.
+    """
+    from flwr.common import Code, FitRes, Status, ndarrays_to_parameters
+
+    from acfa_flower import AcfaStrategy
+
+    class Proxy:
+        def __init__(self, cid):
+            self.cid = cid
+
+    def results_at(scale, dtype):
+        return [
+            (
+                Proxy(f"c{i}"),
+                FitRes(
+                    status=Status(code=Code.OK, message=""),
+                    parameters=ndarrays_to_parameters(
+                        [np.array([scale + i, scale - i], dtype=dtype)]
+                    ),
+                    num_examples=1,
+                    metrics={},
+                ),
+            )
+            for i in range(5)
+        ]
+
+    strat = AcfaStrategy(rule=Rule.MEAN, f=1)
+    _, small = strat.aggregate_fit(1, results_at(1.0, np.float32), [])
+    _, large = strat.aggregate_fit(1, results_at(1000.0, np.float32), [])
+
+    assert small["acfa_output_dtype_holds_q16_16"] is True
+    assert large["acfa_output_dtype_holds_q16_16"] is False
