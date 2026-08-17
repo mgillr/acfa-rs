@@ -21,6 +21,11 @@
 //! receipt whose bound is satisfied would pass whether or not the flag is wired to anything,
 //! which is the class of check this whole audit exists to eliminate -- so the premise is
 //! asserted rather than assumed.
+//!
+//! Each test writes to its OWN temp subdir. A first version shared one dir and one
+//! `pki.txt`, so the two tests raced under parallel `cargo test` and one intermittently
+//! read a half-written file -- a flake I introduced, and exactly the kind of
+//! non-deterministic failure this project exists to eliminate.
 
 use acfa_receipt::entry::Contribution;
 use acfa_receipt::hash::{enc_tensor, h};
@@ -98,7 +103,7 @@ fn run(receipt: &[u8], pki_file: &str, flag: &str) -> (i32, String) {
 
 #[test]
 fn every_accepted_spelling_of_require_bound_enforces_the_bound() {
-    let dir = std::env::temp_dir().join("acfa-require-bound-spellings");
+    let dir = std::env::temp_dir().join("acfa-require-bound-spellings-enforce");
     std::fs::create_dir_all(&dir).expect("tmpdir");
     let pki_file = dir.join("pki.txt");
     let (receipt, pki_text) = under_bound_receipt();
@@ -130,7 +135,7 @@ fn every_accepted_spelling_of_require_bound_enforces_the_bound() {
 
 #[test]
 fn a_value_require_bound_does_not_define_is_refused_rather_than_guessed() {
-    let dir = std::env::temp_dir().join("acfa-require-bound-spellings");
+    let dir = std::env::temp_dir().join("acfa-require-bound-spellings-refuse");
     std::fs::create_dir_all(&dir).expect("tmpdir");
     let pki_file = dir.join("pki.txt");
     let (receipt, pki_text) = under_bound_receipt();
