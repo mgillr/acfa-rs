@@ -84,6 +84,13 @@ pub struct Certificate {
     pub tuple: CertTuple,
     /// Signer -> signature. `BTreeMap` so the set is canonical and a signer cannot be
     /// double-counted toward the `f+1` threshold.
+    ///
+    /// MEMBERSHIP IS NOT PROOF. Anyone can append `(id, bytes)` to a carried certificate, so
+    /// a key in this map does not mean that identity signed. Every question of "who signed"
+    /// or "how many signed" must go through a reader that verifies against a `Pki`:
+    /// [`Certificate::verified_signers`] / [`Certificate::verified_signer_keys`] for a
+    /// certificate, and [`CertFork::attributable_verified`] for a fork. Reading `sigs.keys()`
+    /// directly is the framing vector crdt-05 and crypto-03 both closed.
     pub sigs: BTreeMap<u32, Sig>,
 }
 
@@ -335,6 +342,27 @@ impl CertFork {
     /// a FRAMING vector: an attacker appends entries naming honest nodes to both halves of
     /// a real fork, and those nodes are reported as having double-signed. Attribution is an
     /// accusation, so it must be read from verified signatures only.
+    ///
+    /// THE UNVERIFIED TWIN IS NOT PUBLIC, AND THIS DOC-TEST IS THE GUARD THAT SAYS SO.
+    /// `CertFork::attributable` is `pub(crate)` (crdt-05, third door), so a consumer cannot
+    /// call it on a decoded fork and name an honest node. A doc-test compiles as an EXTERNAL
+    /// crate, so `compile_fail` here fails the build the moment the visibility is widened
+    /// back to `pub` -- which the in-crate integration tests structurally cannot detect,
+    /// because from `tests/` a call to a `pub(crate)` method is a build break, not a test
+    /// failure. Verified both ways: this passes with `pub(crate)` and FAILS ("compiled
+    /// successfully, but marked `compile_fail`") the instant the method is made `pub`.
+    ///
+    /// ```compile_fail
+    /// use acfa_finality::{CertFork, CertTuple, Certificate};
+    /// use acfa_receipt::hash::h;
+    /// use acfa_receipt::identity::Identity;
+    /// let mut a = Certificate::new(CertTuple { round: 3, a_root: h(b"A"), e_cut_root: h(b"e"), rho: h(b"ra") });
+    /// a.sign(&Identity::from_secret(1, &[1u8; 32]));
+    /// let mut b = Certificate::new(CertTuple { round: 3, a_root: h(b"B"), e_cut_root: h(b"e"), rho: h(b"rb") });
+    /// b.sign(&Identity::from_secret(2, &[2u8; 32]));
+    /// let fork = CertFork::canonical(a, b).unwrap();
+    /// let _ = fork.attributable(); // pub(crate): must NOT be callable from outside the crate
+    /// ```
     pub fn attributable_verified(&self, pki: &Pki) -> BTreeSet<u32> {
         let a = self.a.verified_signers(pki);
         let b = self.b.verified_signers(pki);
