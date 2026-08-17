@@ -135,7 +135,45 @@ fn main() -> ExitCode {
         }
     }
 
-    let require_bound = args.iter().any(|a| a == "--require-bound");
+    // THE `=` FORM, AND WHY THIS LINE USED TO BE THE HOLE IN THE FIX ABOVE.
+    //
+    // `flag_value` accepts BOTH spellings -- it strips a `name=` prefix -- so `--pki=k.txt`,
+    // `--f=2` and `--rule=krum` all work. The unknown-flag guard above also accepts both,
+    // because it splits on `=` before comparing. This line did NOT: it was
+    // `args.iter().any(|a| a == "--require-bound")`, an exact match.
+    //
+    // So `--require-bound=true` -- the spelling every OTHER flag on this tool supports --
+    // passed the unknown-flag check as a KNOWN option and then evaluated to FALSE. The one
+    // security gate the verifier has was silently not applied, and the tool exited 0.
+    //
+    // That is the very defect the guard above was written to close (adv-03 / rust-07: a
+    // one-character typo disabling `--require-bound` and exiting 0), reintroduced in a new
+    // spelling by the fix itself. Closing the exact input a finding names while the mechanism
+    // stays reachable one keystroke sideways is the shape of eleven fixes reviewed today, and
+    // two of them were mine.
+    //
+    // A VALUE IS REFUSED RATHER THAN INTERPRETED. `--require-bound=false` is not treated as
+    // "off": guessing wrong in that direction is a silent security downgrade, and guessing
+    // wrong in the other ignores what the operator wrote. A boolean switch given a value it
+    // does not define should say so.
+    let mut require_bound = false;
+    for a in &args {
+        if a == "--require-bound" {
+            require_bound = true;
+        } else if let Some(v) = a.strip_prefix("--require-bound=") {
+            if v == "true" {
+                require_bound = true;
+            } else {
+                eprintln!(
+                    "acfa-verify: --require-bound is a switch, not a setting; {v:?} is not a \
+                     value it defines. Write --require-bound to enable it, or omit it entirely.\n"
+                );
+                eprint!("{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+
     let pki_path = flag_value(&args, "--pki");
     let f_override = flag_value(&args, "--f");
     let rule_want = flag_value(&args, "--rule");
