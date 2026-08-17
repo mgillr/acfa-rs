@@ -20,6 +20,69 @@ pub struct State {
     pub e: BTreeMap<[u8; 32], EquivProof>,
 }
 
+/// Largest contribution set `merge` will absorb from a peer.
+///
+/// Mirrors `acfa_aggregate::rules::MAX_CONTRIBUTIONS` and for the same reason one layer
+/// down: the receipt carrying a set grows LINEARLY while the work over it grows faster.
+/// That bound was recognised and enforced in layer 1 and was never carried across.
+pub const MAX_MERGE_CONTRIBUTIONS: usize = 4096;
+
+/// Largest proof set `merge` will produce.
+///
+/// THIS IS THE ONE THAT MATTERS, because the proof set is QUADRATIC IN THE PEER'S INPUT,
+/// not linear. Every contribution sharing a `(rnd, node_id)` with another conflicts with
+/// it, and `deliver` derives a proof per pair, so `k` contributions from one signer in one
+/// round yield `k(k-1)/2` proofs. MEASURED against the unfixed code: 200 contributions
+/// produced 19 900 proofs -- exactly `n(n-1)/2` -- in 2.0 s, with time rising 3.5x to 4.7x
+/// per doubling. Extrapolated, 4096 would be 8 386 560 proofs.
+///
+/// A peer sends `n` and the receiver stores `n^2/2`. That is amplification, not merely
+/// unbounded growth, and it is why a contribution cap alone does not close it.
+///
+/// 2^20 proofs at the struct's 192 bytes (`rnd`, `node_id`, two 32-byte hashes, two 64-byte
+/// signatures) is about 201 MB, ignoring allocator overhead. That is the point past which
+/// this stops being a merge and becomes a memory-exhaustion vector against any node that
+/// syncs with an untrusted replica.
+///
+/// GENEROUS BY DESIGN, and worth saying why the true requirement is far smaller:
+/// `convicted` collects `node_id` into a `BTreeSet`, so ONE valid proof per node already
+/// convicts and every further proof for that node changes no answer this crate returns.
+/// The cap is not set at that minimum because the proof set is a G-Set whose union defines
+/// the state root -- discarding redundant proofs would change `root()` and therefore the
+/// bytes two replicas must agree on. Refusing is available; thinning is not.
+pub const MAX_MERGE_PROOFS: usize = 1 << 20;
+
+/// Why a merge was refused. Refusing rather than truncating is not a preference: a
+/// partially-absorbed merge leaves two honest replicas holding different states from the
+/// same inputs, which is the exact property this module exists to provide.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum MergeError {
+    /// The combined contribution set would exceed `MAX_MERGE_CONTRIBUTIONS`.
+    TooManyContributions { would_be: usize, max: usize },
+    /// The combined proof set, INCLUDING the proofs this merge would derive, would exceed
+    /// `MAX_MERGE_PROOFS`. `would_be` is an upper bound computed before anything is
+    /// absorbed, so the state is untouched when this is returned.
+    TooManyProofs { would_be: usize, max: usize },
+}
+
+impl core::fmt::Display for MergeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            MergeError::TooManyContributions { would_be, max } => write!(
+                f,
+                "merging would hold {would_be} contributions, over the limit of {max}"
+            ),
+            MergeError::TooManyProofs { would_be, max } => write!(
+                f,
+                "merging would derive up to {would_be} equivocation proofs, over the limit \
+                 of {max}; the proof set is quadratic in a peer's contributions"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for MergeError {}
+
 impl State {
     pub fn new() -> Self {
         Self::default()
@@ -52,7 +115,55 @@ impl State {
     ///
     /// Deriving on merge restores it: the proof set becomes a function of the contribution
     /// set rather than of how the contributions arrived.
-    pub fn merge(&mut self, other: &State, pki: &Pki) {
+    /// BOUNDED, AND ALL-OR-NOTHING. Both caps are checked BEFORE anything is absorbed, so a
+    /// refusal leaves `self` byte-identical to what it was. Absorbing until a limit trips
+    /// would leave a partially-merged state, and two replicas that stopped at different
+    /// points hold different roots from the same inputs -- the failure this type exists to
+    /// exclude, arrived at by way of a protection.
+    ///
+    /// The proof bound is an UPPER bound, computed from group sizes rather than by trial:
+    /// proofs only ever arise between contributions sharing a `(rnd, node_id)`, so for each
+    /// such group of combined size `k` the derivable count is at most `k(k-1)/2`. Summing
+    /// those, plus the proofs both sides already hold, bounds the result without doing the
+    /// work. It over-estimates when contributions in a group are identical, and refusing on
+    /// an over-estimate is the safe direction.
+    pub fn merge(&mut self, other: &State, pki: &Pki) -> Result<(), MergeError> {
+        // --- contribution bound -------------------------------------------------------
+        // Union, not sum: leaves are content-addressed, so anything both sides hold counts
+        // once. Summing would refuse an idempotent re-merge of a state already held.
+        let mut union: BTreeSet<&[u8; 32]> = self.c.keys().collect();
+        union.extend(other.c.keys());
+        let would_be = union.len();
+        if would_be > MAX_MERGE_CONTRIBUTIONS {
+            return Err(MergeError::TooManyContributions {
+                would_be,
+                max: MAX_MERGE_CONTRIBUTIONS,
+            });
+        }
+
+        // --- proof bound --------------------------------------------------------------
+        let mut group: BTreeMap<(u64, u32), usize> = BTreeMap::new();
+        for leaf in &union {
+            let c = self.c.get(*leaf).or_else(|| other.c.get(*leaf));
+            if let Some(c) = c {
+                *group.entry((c.rnd, c.node_id)).or_insert(0) += 1;
+            }
+        }
+        let derivable: usize = group
+            .values()
+            .map(|&k| k.saturating_mul(k.saturating_sub(1)) / 2)
+            .sum();
+        let mut held: BTreeSet<&[u8; 32]> = self.e.keys().collect();
+        held.extend(other.e.keys());
+        let would_be = held.len().saturating_add(derivable);
+        if would_be > MAX_MERGE_PROOFS {
+            return Err(MergeError::TooManyProofs {
+                would_be,
+                max: MAX_MERGE_PROOFS,
+            });
+        }
+
+        // --- apply, only now that both bounds hold ------------------------------------
         // Deliver rather than insert, so conflicts are detected against everything already
         // held. `EquivProof::canonical` fixes the pair order, so the derived proof does not
         // depend on which half arrived first and merge stays commutative.
@@ -63,6 +174,7 @@ impl State {
         for (k, v) in &other.e {
             self.e.insert(*k, v.clone());
         }
+        Ok(())
     }
 
     /// Commitment trace over every leaf in the product state.
@@ -193,6 +305,135 @@ mod tests {
         ids.iter().map(|i| (i.node_id, i.public())).collect()
     }
 
+    /// crdt-08. `merge` absorbed a peer's contribution set with no ceiling at all -- I
+    /// grepped the unfixed file for MAX_, length comparisons and TooMany and there was
+    /// nothing. This is the cap, and it refuses rather than truncating: a partially
+    /// absorbed merge leaves two replicas with different roots from the same inputs.
+    #[test]
+    fn merge_refuses_a_contribution_set_over_the_cap() {
+        let a = ident(1);
+        let mut pki: Pki = BTreeMap::new();
+        pki.insert(1, a.public());
+
+        let mut peer = State::new();
+        for i in 0..(MAX_MERGE_CONTRIBUTIONS + 1) {
+            peer.add_contribution(contrib(&a, i as u64, &[i as i64]));
+        }
+        let mut mine = State::new();
+        assert_eq!(
+            mine.merge(&peer, &pki),
+            Err(MergeError::TooManyContributions {
+                would_be: MAX_MERGE_CONTRIBUTIONS + 1,
+                max: MAX_MERGE_CONTRIBUTIONS,
+            })
+        );
+        assert!(mine.c.is_empty(), "a refused merge must absorb NOTHING");
+    }
+
+    /// crdt-09, and the finding is an AMPLIFICATION rather than unbounded growth. Every
+    /// contribution sharing a `(rnd, node_id)` conflicts with every other, and `deliver`
+    /// derives a proof per pair, so `k` such contributions yield `k(k-1)/2` proofs. Measured
+    /// against the unfixed code: 200 contributions produced exactly 19 900 proofs in 2.0 s,
+    /// with time rising 3.5x to 4.7x per doubling. The peer sends `n`; the receiver stores
+    /// `n^2/2`. A contribution cap alone does not close that, which is why there are two.
+    #[test]
+    fn merge_refuses_the_quadratic_proof_amplification() {
+        let a = ident(1);
+        let mut pki: Pki = BTreeMap::new();
+        pki.insert(1, a.public());
+
+        // k(k-1)/2 must exceed MAX_MERGE_PROOFS; 1500 gives 1 124 250 against 1 048 576.
+        let k = 1500usize;
+        assert!(
+            k * (k - 1) / 2 > MAX_MERGE_PROOFS,
+            "precondition: this k must trip it"
+        );
+
+        let mut peer = State::new();
+        for i in 0..k {
+            // SAME round, SAME signer, different tensors: every pair conflicts.
+            peer.add_contribution(contrib(&a, 7, &[i as i64]));
+        }
+        let mut mine = State::new();
+        match mine.merge(&peer, &pki) {
+            Err(MergeError::TooManyProofs { would_be, max }) => {
+                assert_eq!(max, MAX_MERGE_PROOFS);
+                assert_eq!(
+                    would_be,
+                    k * (k - 1) / 2,
+                    "bound is k(k-1)/2, computed not tried"
+                );
+            }
+            other => panic!("expected a proof-bound refusal, got {other:?}"),
+        }
+        assert!(
+            mine.c.is_empty() && mine.e.is_empty(),
+            "refused merge must absorb NOTHING"
+        );
+    }
+
+    /// THE ALL-OR-NOTHING PROPERTY, asserted on the ROOT rather than on lengths, because
+    /// that is the thing two replicas must agree on. A merge that refused after absorbing
+    /// part of the peer would leave a state that still looks plausible and no longer matches
+    /// a replica that refused earlier or later.
+    #[test]
+    fn a_refused_merge_leaves_the_state_byte_identical() {
+        let a = ident(1);
+        let b = ident(2);
+        let mut pki: Pki = BTreeMap::new();
+        pki.insert(1, a.public());
+        pki.insert(2, b.public());
+
+        let mut mine = State::new();
+        mine.deliver(contrib(&b, 1, &[10, 20]), &pki);
+        let before_root = mine.root();
+        let before_len = (mine.c.len(), mine.e.len());
+
+        let mut peer = State::new();
+        for i in 0..(MAX_MERGE_CONTRIBUTIONS + 1) {
+            peer.add_contribution(contrib(&a, i as u64, &[i as i64]));
+        }
+        assert!(
+            mine.merge(&peer, &pki).is_err(),
+            "precondition: this merge must refuse"
+        );
+
+        assert_eq!(
+            mine.root(),
+            before_root,
+            "state root moved on a REFUSED merge"
+        );
+        assert_eq!((mine.c.len(), mine.e.len()), before_len);
+    }
+
+    /// The accepting side, so the two refusals above are not satisfied by a merge that
+    /// refuses everything. An ordinary merge must still absorb, still derive its proofs,
+    /// and still converge.
+    #[test]
+    fn an_ordinary_merge_still_absorbs_and_still_derives() {
+        let a = ident(1);
+        let mut pki: Pki = BTreeMap::new();
+        pki.insert(1, a.public());
+
+        let mut peer = State::new();
+        peer.add_contribution(contrib(&a, 7, &[1]));
+        peer.add_contribution(contrib(&a, 7, &[2])); // conflicts: one proof derivable
+
+        let mut mine = State::new();
+        mine.merge(&peer, &pki)
+            .expect("an ordinary merge must be accepted");
+        assert_eq!(mine.c.len(), 2, "contributions absorbed");
+        assert_eq!(
+            mine.e.len(),
+            1,
+            "the equivocation proof was derived, not skipped"
+        );
+        assert!(
+            mine.convicted(&pki).contains(&1),
+            "the equivocator is convicted"
+        );
+    }
+
     fn contrib(a: &Identity, rnd: u64, t: &[i64]) -> Contribution {
         let th = h(&enc_tensor(t));
         Contribution {
@@ -224,13 +465,13 @@ mod tests {
         let mut left = ab.clone();
         let mut only_z = State::new();
         only_z.deliver(z.clone(), &pki);
-        left.merge(&only_z, &pki);
+        left.merge(&only_z, &pki).expect("within bounds");
         let mut right = only_z.clone();
-        right.merge(&ab, &pki);
+        right.merge(&ab, &pki).expect("within bounds");
         assert_eq!(left.root(), right.root(), "associative");
 
         let before = left.root();
-        left.merge(&ab, &pki);
+        left.merge(&ab, &pki).expect("within bounds");
         assert_eq!(before, left.root(), "idempotent");
     }
 
@@ -345,7 +586,7 @@ mod tests {
         a.deliver(contrib(liar, 1, &[1, 1]), &pki);
         let mut b = State::new();
         b.deliver(contrib(liar, 1, &[2, 2]), &pki);
-        a.merge(&b, &pki);
+        a.merge(&b, &pki).expect("within bounds");
 
         assert_eq!(
             delivered.convicted(&pki),
@@ -376,16 +617,16 @@ mod tests {
         b.deliver(contrib(liar, 1, &[2, 2]), &pki);
 
         let mut ab = a.clone();
-        ab.merge(&b, &pki);
+        ab.merge(&b, &pki).expect("within bounds");
         let mut ba = b.clone();
-        ba.merge(&a, &pki);
+        ba.merge(&a, &pki).expect("within bounds");
 
         assert_eq!(ab.root(), ba.root(), "merge order changed the state root");
         assert_eq!(ab.convicted(&pki), ba.convicted(&pki));
 
         // Idempotence, since a grow-only join must absorb a repeat.
         let mut twice = ab.clone();
-        twice.merge(&b, &pki);
+        twice.merge(&b, &pki).expect("within bounds");
         assert_eq!(twice.root(), ab.root(), "merge is not idempotent");
     }
 }
