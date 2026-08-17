@@ -185,6 +185,16 @@ pub enum AggError {
     /// This is a REFUSAL, not a truncation. Silently aggregating a prefix would produce a
     /// plausible-looking result over a set the caller never chose, which is the same class
     /// of error as saturating an out-of-range value.
+    /// The requested aggregation would cost more coordinate-operations than
+    /// `MAX_COORDINATE_OPS` allows. See that constant for the arithmetic and for why the
+    /// participant caps do not subsume this one: the cost is a PRODUCT of `n` and `d`, and
+    /// capping `n` alone leaves `d` free.
+    ///
+    /// `work` is an upper bound computed BEFORE any of it is done.
+    TooMuchWork {
+        work: u128,
+        max: u128,
+    },
     TooManyContributions {
         n: usize,
         max: usize,
@@ -261,6 +271,12 @@ impl core::fmt::Display for AggError {
                 "beta trims {t} from each end of {n}, which trims nothing (needs 1 <= t \
                  and n > 2t), so the result would be the plain mean including any outliers"
             ),
+            AggError::TooMuchWork { work, max } => write!(
+                f,
+                "this aggregation would cost about {work} coordinate operations, over the \
+                 limit of {max}; the cost is quadratic or cubic in the contribution count \
+                 AND linear in the vector dimension, so reduce either"
+            ),
             AggError::TooManyContributions { n, max } => write!(
                 f,
                 "{n} contributions exceeds the limit of {max}; the distance matrix is \
@@ -295,6 +311,61 @@ pub const MAX_CONTRIBUTIONS: usize = 4096;
 /// byte selects this rule, so an attacker picks the exponent; the cap is what stops one
 /// byte buying an unbounded amount of a verifier's time.
 pub const MAX_CONTRIBUTIONS_BULYAN: usize = 512;
+
+/// THE CEILING THAT ACTUALLY BINDS: WORK, NOT PARTICIPANT COUNT.
+///
+/// rust-02 and rust-03 both cap `n`. The cost of both rules is a PRODUCT -- `n^2 * d` for
+/// the Krum path, `n^3 * d` for Bulyan -- and `d` was capped by nothing at all. Bounding one
+/// factor of a product bounds nothing, and the doc on `MAX_CONTRIBUTIONS_BULYAN` above names
+/// the product while the constant addresses only its first term.
+///
+/// MEASURED ON THE SHIPPED BINARY, `n` PINNED AT THE BULYAN CAP OF 512, ONLY `d` VARYING:
+///
+/// ```text
+///     d=2      21 KB      0.64 s     d=256    2.2 MB    48.02 s
+///     d=16    143 KB      3.33 s     d=512    4.5 MB   133 s
+///     d=64    561 KB     12.29 s     d=1024   8.9 MB   255 s
+/// ```
+///
+/// Every row `ok`. `f` is not the variable either: at `n=512, d=64`, every `f` from 0 to 126
+/// lands between 10.35 s and 11.93 s.
+///
+/// THE ARITHMETIC BEHIND THE NUMBER. Coordinate-operations were timed against wall clock on
+/// the calibration host, and the model was checked at two different `(n, d)` with the SAME
+/// product rather than only along one axis:
+///
+/// ```text
+///     krum    n=4096 d=16   and  n=2048 d=64   both 2.7e8 units   1.44 s / 1.24 s
+///     krum                                     ~5 ns per unit
+///     bulyan  n=512 d=16 and d=64              1.80 / 1.78 ns per unit
+/// ```
+///
+/// One billion units is therefore about **5 s of Krum or 1.8 s of Bulyan** on that host --
+/// a defensible ceiling for work done on behalf of a file from a stranger, and it is stated
+/// here in seconds precisely because a constant whose unit is "contributions" cannot be
+/// argued about operationally.
+///
+/// THIS WILL REFUSE SOME LEGITIMATE WORK AND THAT IS THE TRADE, NOT AN OVERSIGHT. Real
+/// federated learning has large `d` -- a model dimension in the millions puts any useful `n`
+/// far over this bound. Such deployments are already impractical through this crate's
+/// ASCII-over-stdin path (see `fl-08`), and an operator who wants more should raise this
+/// deliberately rather than discover the ceiling as a timeout. The refusal names the work it
+/// declined and the limit, so the number to raise is in the error itself.
+pub const MAX_COORDINATE_OPS: u128 = 1_000_000_000;
+
+/// Work the Krum path will do for `n` contributions of dimension `d`: the `n^2` distance
+/// matrix, each entry costing `d` coordinate operations.
+fn krum_work(n: usize, d: usize) -> u128 {
+    (n as u128)
+        .saturating_mul(n as u128)
+        .saturating_mul(d as u128)
+}
+
+/// Work Bulyan will do: it re-runs the Krum selection `theta = n - 2f` times over a
+/// shrinking pool, so `n^3 * d` is the upper bound the cap is stated against.
+fn bulyan_work(n: usize, d: usize) -> u128 {
+    krum_work(n, d).saturating_mul(n as u128)
+}
 
 /// Floor division by a POSITIVE denominator: rounds toward NEGATIVE INFINITY,
 /// matching the reference kernel. Refuses anything outside that domain.
@@ -621,7 +692,7 @@ fn krum_scores<'a>(
 /// there are too few contributions to defend, and the caller is expected to have
 /// checked `n >= 2f + 3` before relying on any robustness claim.
 pub fn multi_krum(cs: &[Contribution], f: usize) -> Result<Vec<usize>, AggError> {
-    check(cs)?;
+    let d = check(cs)?;
     let n = cs.len();
     // `u128`: `f` comes from an untrusted directive, and `f + 3` in `usize` WRAPPED for
     // large `f`, so the select-all convention silently failed to fire. As a dependency
@@ -639,6 +710,15 @@ pub fn multi_krum(cs: &[Contribution], f: usize) -> Result<Vec<usize>, AggError>
         return Err(AggError::TooManyContributions {
             n,
             max: MAX_CONTRIBUTIONS,
+        });
+    }
+    // rust-02/rust-03: the participant cap above bounds `n` and NOTHING bounds `d`, so it
+    // does not bound the product that is actually paid for. Refused before any of it is done.
+    let work = krum_work(n, d);
+    if work > MAX_COORDINATE_OPS {
+        return Err(AggError::TooMuchWork {
+            work,
+            max: MAX_COORDINATE_OPS,
         });
     }
 
@@ -672,7 +752,7 @@ pub fn krum_aggregate(cs: &[Contribution], f: usize) -> Result<Vec<i64>, AggErro
 /// `tie_key` then index, identically to `multi_krum`, so the ranking is still a
 /// function of the contribution set and not of arrival order.
 pub fn multi_krum_ranked(cs: &[Contribution], f: usize) -> Result<Vec<usize>, AggError> {
-    check(cs)?;
+    let d = check(cs)?;
     let n = cs.len();
     // The small-pool case must still come back in SCORE order. `multi_krum` may
     // return `0..n` there because its contract is an unordered canonical set, but
@@ -707,6 +787,15 @@ pub fn multi_krum_ranked(cs: &[Contribution], f: usize) -> Result<Vec<usize>, Ag
         return Err(AggError::TooManyContributions {
             n,
             max: MAX_CONTRIBUTIONS,
+        });
+    }
+    // rust-02/rust-03: the participant cap above bounds `n` and NOTHING bounds `d`, so it
+    // does not bound the product that is actually paid for. Refused before any of it is done.
+    let work = krum_work(n, d);
+    if work > MAX_COORDINATE_OPS {
+        return Err(AggError::TooMuchWork {
+            work,
+            max: MAX_COORDINATE_OPS,
         });
     }
     let scored = krum_scores(cs, n, m)?;
@@ -751,7 +840,7 @@ pub fn multi_krum_ranked(cs: &[Contribution], f: usize) -> Result<Vec<usize>, Ag
 /// in this crate -- this is the one place it is not, and a future reader who "restores
 /// parity" would be reintroducing the defect.
 pub fn bulyan_select(cs: &[Contribution], f: usize) -> Result<Vec<usize>, AggError> {
-    check(cs)?;
+    let d = check(cs)?;
     // Bulyan gets its OWN, lower cap: it drives the quadratic selection `theta` times, so
     // the cost is cubic and the per-call guard inside `multi_krum_ranked` would let a
     // caller buy `n` of them. One wire byte chooses this rule, so the bound has to be here.
@@ -759,6 +848,18 @@ pub fn bulyan_select(cs: &[Contribution], f: usize) -> Result<Vec<usize>, AggErr
         return Err(AggError::TooManyContributions {
             n: cs.len(),
             max: MAX_CONTRIBUTIONS_BULYAN,
+        });
+    }
+
+    // The cubic in the unit that varies. The cap above bounds `n`; `d` is bounded by
+    // nothing, and the doc on MAX_CONTRIBUTIONS_BULYAN names `O(n^3 * d)` while capping
+    // only the first term. Measured at n=512: d=64 is 12.29 s and d=1024 is 255 s, both
+    // accepted. Refused before any of the work.
+    let work = bulyan_work(cs.len(), d);
+    if work > MAX_COORDINATE_OPS {
+        return Err(AggError::TooMuchWork {
+            work,
+            max: MAX_COORDINATE_OPS,
         });
     }
     let n = cs.len();
