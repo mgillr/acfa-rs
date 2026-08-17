@@ -146,14 +146,38 @@ impl Receipt {
     /// Build a receipt for a round from a state the issuer holds.
     pub fn issue(state: &State, round: u64, pki: &Pki, f: usize, rule: Rule) -> Receipt {
         let r: Resolution = resolve(state, round, pki, f, rule);
+
+        // SCOPE THE CARRIED SET TO THIS ROUND, and commit to the root of what is carried.
+        //
+        // `recompute` refuses any contribution whose `rnd` differs from the receipt's, so
+        // carrying the issuer's whole state made every receipt from a state that had lived
+        // through more than one round unverifiable -- `issue` and `verify` disagreed about
+        // what a receipt is. Scoping here rather than relaxing the check there is the
+        // correct direction: a receipt is a statement about ONE round, and a verifier that
+        // accepted foreign-round entries would be checking a commitment over a set it never
+        // examined.
+        //
+        // Proofs are NOT scoped. Conviction is permanent -- the proof set is grow-only, and
+        // an identity that equivocated in round 1 is still convicted in round 5 -- so
+        // filtering proofs by round would silently un-convict across rounds. `resolve`
+        // already takes conviction from the whole proof set, and `recompute` round-checks
+        // contributions only, so this is the view both sides already agree on.
+        let mut carried = State::new();
+        for c in state.c.values().filter(|c| c.rnd == round) {
+            carried.add_contribution(c.clone());
+        }
+        for p in state.e.values() {
+            carried.add_proof(p.clone());
+        }
+
         Receipt {
             round,
             f,
             rule,
             pki: pki.clone(),
-            contributions: state.c.values().cloned().collect(),
-            proofs: state.e.values().cloned().collect(),
-            claimed_state_root: state.root(),
+            contributions: carried.c.values().cloned().collect(),
+            proofs: carried.e.values().cloned().collect(),
+            claimed_state_root: carried.root(),
             claimed_output_root: r.output_root,
             claimed_aggregate: r.aggregate,
         }
@@ -459,4 +483,54 @@ mod tests {
         assert_eq!(ra.claimed_output_root, rb.claimed_output_root);
         assert_eq!(crate::wire::encode(&ra), crate::wire::encode(&rb));
     }
+
+    /// crypto-05 / crdt-04: a state that has lived through more than one round must still
+    /// issue a verifiable receipt.
+    ///
+    /// `issue` carried the issuer's ENTIRE contribution map while `recompute` refuses any
+    /// contribution whose round differs from the receipt's. So the moment a node processed
+    /// a second round, every receipt it issued -- for any round, including the current one
+    /// -- failed with WrongRound. The two halves of the same type disagreed about what a
+    /// receipt contains, and no single-round test could see it.
+    #[test]
+    fn a_multi_round_state_still_issues_a_verifiable_receipt() {
+        let (ids, pki) = room(5);
+        let mut st = State::new();
+
+        for (i, id) in ids.iter().enumerate() {
+            st.deliver(contrib(id, 1, &[(i as i64 + 1) << 16, 0]), &pki);
+        }
+        let r1 = Receipt::issue(&st, 1, &pki, 1, Rule::Krum);
+        assert!(
+            r1.verify(&Policy::new(pki.clone(), 1)).is_ok(),
+            "single-round receipt must verify"
+        );
+
+        // Second round into the SAME state -- this is ordinary operation, not an attack.
+        for (i, id) in ids.iter().enumerate() {
+            st.deliver(contrib(id, 2, &[(i as i64 + 7) << 16, 0]), &pki);
+        }
+
+        let r1_again = Receipt::issue(&st, 1, &pki, 1, Rule::Krum);
+        assert!(
+            r1_again.verify(&Policy::new(pki.clone(), 1)).is_ok(),
+            "a round-1 receipt issued from a two-round state must still verify"
+        );
+        let r2 = Receipt::issue(&st, 2, &pki, 1, Rule::Krum);
+        assert!(
+            r2.verify(&Policy::new(pki.clone(), 1)).is_ok(),
+            "a round-2 receipt from the same state must verify"
+        );
+
+        // And it must carry only its own round, or the round check is vacuous.
+        assert!(
+            r2.contributions.iter().all(|c| c.rnd == 2),
+            "receipt carried a foreign round's contributions"
+        );
+        assert_ne!(
+            r1_again.claimed_state_root, r2.claimed_state_root,
+            "distinct rounds must commit to distinct state roots"
+        );
+    }
+
 }

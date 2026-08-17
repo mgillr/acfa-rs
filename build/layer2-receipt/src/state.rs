@@ -34,10 +34,32 @@ impl State {
     }
 
     /// Union x union. Idempotent, commutative, associative.
-    pub fn merge(&mut self, other: &State) {
-        for (k, v) in &other.c {
-            self.c.insert(*k, v.clone());
+    /// Merge another replica's state, DERIVING equivocation proofs exactly as `deliver`
+    /// does.
+    ///
+    /// WHY THE PKI ARGUMENT EXISTS. An earlier signature took only `&State` and unioned the
+    /// two maps, which looked like the textbook CRDT join and was wrong for this state.
+    /// `deliver` derives a proof when an arriving contribution conflicts with one already
+    /// held; a union does not. So a replica that learned both halves of an equivocation by
+    /// GOSSIP ended up holding both contributions and no proof, while a replica that
+    /// learned them by DELIVERY held the proof as well.
+    ///
+    /// That is not a cosmetic difference. Conviction feeds `admit`, so the two replicas
+    /// admit different sets and compute different aggregates -- and because the state root
+    /// commits to proof leaves as well as contribution leaves, their roots differ too. Two
+    /// honest replicas holding an IDENTICAL contribution set would disagree, which is
+    /// precisely the strong-eventual-consistency claim this type exists to make.
+    ///
+    /// Deriving on merge restores it: the proof set becomes a function of the contribution
+    /// set rather than of how the contributions arrived.
+    pub fn merge(&mut self, other: &State, pki: &Pki) {
+        // Deliver rather than insert, so conflicts are detected against everything already
+        // held. `EquivProof::canonical` fixes the pair order, so the derived proof does not
+        // depend on which half arrived first and merge stays commutative.
+        for c in other.c.values() {
+            self.deliver(c.clone(), pki);
         }
+        // Proofs are grow-only and self-authenticating, so a plain union is correct here.
         for (k, v) in &other.e {
             self.e.insert(*k, v.clone());
         }
@@ -181,13 +203,13 @@ mod tests {
         let mut left = ab.clone();
         let mut only_z = State::new();
         only_z.deliver(z.clone(), &pki);
-        left.merge(&only_z);
+        left.merge(&only_z, &pki);
         let mut right = only_z.clone();
-        right.merge(&ab);
+        right.merge(&ab, &pki);
         assert_eq!(left.root(), right.root(), "associative");
 
         let before = left.root();
-        left.merge(&ab);
+        left.merge(&ab, &pki);
         assert_eq!(before, left.root(), "idempotent");
     }
 
@@ -276,4 +298,71 @@ mod tests {
             "and it must not exclude the victim"
         );
     }
+
+    /// crdt-02: gossip and delivery must yield the SAME convicted set.
+    ///
+    /// Before the fix, `merge` unioned the maps without deriving proofs, so a replica that
+    /// learned both halves of an equivocation by gossip held both contributions and no
+    /// proof, while a replica that learned them by delivery held the proof. Same
+    /// contribution set, different convicted set, different aggregate, different state
+    /// root -- a strong-eventual-consistency violation with no Byzantine node involved in
+    /// the divergence.
+    #[test]
+    fn gossip_and_delivery_agree_on_conviction() {
+        let liar = ident(1);
+        let other = ident(2);
+        let pki = pki_of(&[&liar, &other]);
+        let liar = &liar;
+
+        // DELIVERY: one replica sees both halves arrive.
+        let mut delivered = State::new();
+        delivered.deliver(contrib(liar, 1, &[1, 1]), &pki);
+        delivered.deliver(contrib(liar, 1, &[2, 2]), &pki);
+
+        // GOSSIP: two replicas each hold one half, then merge.
+        let mut a = State::new();
+        a.deliver(contrib(liar, 1, &[1, 1]), &pki);
+        let mut b = State::new();
+        b.deliver(contrib(liar, 1, &[2, 2]), &pki);
+        a.merge(&b, &pki);
+
+        assert_eq!(
+            delivered.convicted(&pki),
+            a.convicted(&pki),
+            "gossip and delivery disagreed about who equivocated"
+        );
+        assert_eq!(
+            delivered.root(),
+            a.root(),
+            "identical contribution sets produced different state roots"
+        );
+        assert!(!a.convicted(&pki).is_empty(), "the equivocation was not detected at all");
+    }
+
+    /// The derived proof must not depend on merge order, or merge stops being a CRDT join.
+    #[test]
+    fn merge_is_commutative_over_derived_proofs() {
+        let liar = ident(1);
+        let other = ident(2);
+        let pki = pki_of(&[&liar, &other]);
+        let liar = &liar;
+        let mut a = State::new();
+        a.deliver(contrib(liar, 1, &[1, 1]), &pki);
+        let mut b = State::new();
+        b.deliver(contrib(liar, 1, &[2, 2]), &pki);
+
+        let mut ab = a.clone();
+        ab.merge(&b, &pki);
+        let mut ba = b.clone();
+        ba.merge(&a, &pki);
+
+        assert_eq!(ab.root(), ba.root(), "merge order changed the state root");
+        assert_eq!(ab.convicted(&pki), ba.convicted(&pki));
+
+        // Idempotence, since a grow-only join must absorb a repeat.
+        let mut twice = ab.clone();
+        twice.merge(&b, &pki);
+        assert_eq!(twice.root(), ab.root(), "merge is not idempotent");
+    }
+
 }
