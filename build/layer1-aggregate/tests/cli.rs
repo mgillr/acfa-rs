@@ -296,3 +296,54 @@ fn duplicate_and_missing_directives_are_refused() {
     assert_eq!(code, 0, "omitting the OPTIONAL beta must still succeed");
     assert!(stdout.starts_with("ok "));
 }
+
+#[test]
+fn a_directive_refuses_trailing_tokens_on_its_own_line() {
+    // The adv-10 fix refused a directive repeated on TWO LINES and left the SAME LINE open,
+    // because each arm took its argument with `it.next()` and never asked whether the
+    // iterator was exhausted. `rule mean krum` read `mean`, discarded `krum`, and ran.
+    //
+    // This is not a parsing nicety. MEASURED on honest [1.0, 2.0, 3.0] plus one adversary at
+    // 1000.0, every value inside Q16.16 range:
+    //     rule krum       -> ok 65536      (1.0, the robust answer)
+    //     rule mean       -> ok 16482304   (251.5, poisoned)
+    //     rule mean krum  -> ok 16482304   <-- the poisoned mean under Krum's NAME
+    // Exit 0, empty stderr, 251x poisoning from a single adversary, and nothing anywhere
+    // telling the caller the rule they asked for was not the rule that ran.
+    let data = "f 1\n01 3ff0000000000000\n02 4000000000000000\n                03 4008000000000000\n04 408f400000000000\n";
+
+    // The two rules must genuinely differ on this data, or the test below proves nothing --
+    // a poisoning test on data where mean and krum agree is a check that cannot fail.
+    let (_, krum_out, _) = run(&format!("rule krum\n{data}"));
+    let (_, mean_out, _) = run(&format!("rule mean\n{data}"));
+    assert_ne!(
+        krum_out, mean_out,
+        "the fixture must separate the rules, otherwise this test cannot detect substitution"
+    );
+
+    for bad in ["rule mean krum", "rule krum mean", "f 1 2", "beta 1 4 9"] {
+        let body = if bad.starts_with("beta") {
+            format!("rule trimmed\n{bad}\n{data}")
+        } else if bad.starts_with("f ") {
+            format!("rule mean\n{bad}\n01 3ff0000000000000\n02 4000000000000000\n")
+        } else {
+            format!("{bad}\n{data}")
+        };
+        let (code, stdout, stderr) = run(&body);
+        assert_eq!(code, 2, "{bad:?}: trailing tokens must be refused");
+        assert!(stdout.is_empty(), "{bad:?}: no aggregate may be produced");
+        assert!(
+            stderr.contains("trailing"),
+            "{bad:?}: the diagnostic must name the trailing token, got {stderr:?}"
+        );
+    }
+
+    // And the legitimate forms must still work, because a guard that protects the product by
+    // breaking it is the other failure direction.
+    let (code, stdout, _) = run(&format!("rule trimmed\nbeta 1 4\n{data}"));
+    assert_eq!(code, 0, "a well-formed beta must still be accepted");
+    assert!(stdout.starts_with("ok "));
+    let (code, stdout, _) = run(&format!("rule krum\n{data}"));
+    assert_eq!(code, 0);
+    assert_eq!(stdout, krum_out, "krum must still return krum's answer");
+}

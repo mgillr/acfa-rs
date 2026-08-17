@@ -46,6 +46,37 @@ fn die(code: u8, msg: &str) -> ExitCode {
     ExitCode::from(code)
 }
 
+/// Refuse anything left on a directive line after its arguments.
+///
+/// WHY THIS EXISTS, AND WHY THE EARLIER FIX WAS NOT ENOUGH. adv-10 closed the case where a
+/// directive is repeated on TWO LINES: `rule mean` then `rule krum` is refused, and a test
+/// pins it. It did not close the SAME LINE, because each arm took its argument with
+/// `it.next()` and never asked whether the iterator was exhausted. So `rule mean krum` read
+/// `mean`, silently discarded `krum`, and ran.
+///
+/// MEASURED on honest [1,2,3] plus one adversary at 1000, every value inside Q16.16 range:
+///     rule krum       -> ok 65536      (1.0, the robust answer)
+///     rule mean       -> ok 16482304   (251.5, poisoned)
+///     rule mean krum  -> ok 16482304   <-- the poisoned mean, exit 0, EMPTY stderr
+/// A caller who asked for Krum was handed the plain mean under Krum's name, with a 251x
+/// poisoning from a single adversary and nothing on any stream to say so.
+///
+/// The guard counted DIRECTIVES; the parser reads TOKENS. Closing the exact input a finding
+/// names, while the mechanism stays reachable one token sideways, is the shape of eleven of
+/// the fixes reviewed today -- and this one was mine.
+///
+/// Checking exhaustion rather than a token count means every directive is covered by
+/// construction, including any added later.
+fn trailing<'a>(it: &mut impl Iterator<Item = &'a str>, n: usize, name: &str) -> Option<String> {
+    it.next().map(|extra| {
+        format!(
+            "line {}: `{name}` takes its arguments and nothing else, found trailing {extra:?} \
+             -- refusing rather than silently ignoring it",
+            n + 1
+        )
+    })
+}
+
 fn parse_bits(tok: &str) -> Option<f64> {
     // ASCII FIRST, THEN SLICE. `&tok[i..i+2]` indexes a `&str` by BYTES and panics if the
     // boundary lands inside a multi-byte character, so any non-ASCII token aborted the
@@ -170,6 +201,9 @@ fn main() -> ExitCode {
                     Some(r) => rule = r.to_string(),
                     None => return die(2, &format!("line {}: rule needs a value", n + 1)),
                 }
+                if let Some(e) = trailing(&mut it, n, "rule") {
+                    return die(2, &e);
+                }
             }
             "f" => {
                 if saw_f {
@@ -185,6 +219,9 @@ fn main() -> ExitCode {
                         )
                     }
                 }
+                if let Some(e) = trailing(&mut it, n, "f") {
+                    return die(2, &e);
+                }
             }
             "beta" => {
                 if saw_beta {
@@ -198,6 +235,9 @@ fn main() -> ExitCode {
                 match (a, b) {
                     (Some(a), Some(b)) => beta = (a, b),
                     _ => return die(2, &format!("line {}: beta needs <num> <den>", n + 1)),
+                }
+                if let Some(e) = trailing(&mut it, n, "beta") {
+                    return die(2, &e);
                 }
             }
             tie_key_hex => {
