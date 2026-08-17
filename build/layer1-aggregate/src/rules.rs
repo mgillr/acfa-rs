@@ -104,7 +104,8 @@ pub const MAX_CONTRIBUTIONS: usize = 4096;
 /// byte buying an unbounded amount of a verifier's time.
 pub const MAX_CONTRIBUTIONS_BULYAN: usize = 512;
 
-/// Floor division: rounds toward NEGATIVE INFINITY, matching the reference kernel.
+/// Floor division by a POSITIVE denominator: rounds toward NEGATIVE INFINITY,
+/// matching the reference kernel. Refuses anything outside that domain.
 ///
 /// THIS IS NOT COSMETIC. Python's `//` floors; Rust's `/` truncates toward zero.
 /// They agree on non-negative values and DISAGREE on every negative non-exact
@@ -113,11 +114,41 @@ pub const MAX_CONTRIBUTIONS_BULYAN: usize = 512;
 /// reference on ordinary inputs -- and two conforming implementations disagreeing is
 /// indistinguishable from one of them being faulty, which is the exact failure the
 /// determinism property exists to exclude. The rounding rule is wire contract.
+///
+/// WHAT THIS COVERS AND WHAT IT DOES NOT. The domain is `denom > 0` and a quotient that
+/// fits `i64`; every other input is refused, not approximated. It does NOT implement
+/// Python's `//` for negative denominators, because no caller here has one and a branch
+/// that is dead by construction is a branch no test can keep honest. If a caller ever
+/// needs `denom < 0`, that is new behaviour to be written and tested, not assumed present.
+///
+/// `pub(crate)` and fallible, for the reason `fixed::sq_dist` is. While this was `pub`
+/// inside a `pub mod`, the only guard on the denominator was a `debug_assert`, which is
+/// COMPILED OUT of a release build, so a dependent crate reached the raw arithmetic. Three
+/// measured results, all from a release build of a consumer crate: `floor_div(-7, -2)`
+/// returned 4 where the floor is 3 (`div_euclid` floors only for a positive divisor --
+/// Euclidean division forces a non-negative remainder, so a negative divisor rounds toward
+/// POSITIVE infinity, contradicting the sentence above on all four sign combinations);
+/// `floor_div(i128::MAX, 1)` returned -1, the `as i64` cast truncating silently; and
+/// `floor_div(1, 0)` panicked, a division-by-zero abort reachable from safe code.
+///
+/// `None` rather than a saturated or truncated value: this function's product is an
+/// aggregate coordinate that goes on the wire, and a plausible wrong coordinate is worse
+/// than a refusal in a kernel whose whole claim is that the result is re-executable.
+///
+/// Callers map `None` to `AggError::ValueOutOfRange`. On every path inside this module
+/// that arm is UNREACHABLE and is a totality requirement, not a live check: `check`
+/// rejects the empty set, so `n >= 1` at each call site and each `kept` slice is
+/// non-empty; and `check` bounds every raw value to `+/-2^31`, so a coordinate sum over
+/// at most `MAX_CONTRIBUTIONS` terms is at most `2^43` and its quotient always fits.
+/// The refusals are exercised directly in this module's tests instead.
 #[inline]
-pub fn floor_div(numer: i128, denom: i128) -> i64 {
-    debug_assert!(denom > 0, "denominator must be positive");
-    let q = numer.div_euclid(denom);
-    q as i64
+pub(crate) fn floor_div(numer: i128, denom: i128) -> Option<i64> {
+    if denom <= 0 {
+        return None;
+    }
+    // `div_euclid` IS the floor for a positive divisor, and cannot overflow here:
+    // the sole overflowing case, `i128::MIN / -1`, needs a negative divisor.
+    i64::try_from(numer.div_euclid(denom)).ok()
 }
 
 fn check(cs: &[Contribution]) -> Result<usize, AggError> {
@@ -151,12 +182,13 @@ fn check(cs: &[Contribution]) -> Result<usize, AggError> {
 pub fn mean(cs: &[Contribution]) -> Result<Vec<i64>, AggError> {
     let d = check(cs)?;
     let n = cs.len() as i128;
-    Ok((0..d)
+    (0..d)
         .map(|k| {
             let s: i128 = cs.iter().map(|c| c.v[k] as i128).sum();
             floor_div(s, n)
         })
-        .collect())
+        .collect::<Option<Vec<i64>>>()
+        .ok_or(AggError::ValueOutOfRange)
 }
 
 /// Coordinate-wise trimmed mean. Drops `t = floor(n * beta_num / beta_den)` values
@@ -174,7 +206,7 @@ pub fn trimmed_mean(
         return Err(AggError::BetaDenominatorZero);
     }
     let t = (n * beta_num as usize) / beta_den as usize;
-    Ok((0..d)
+    (0..d)
         .map(|k| {
             let mut col: Vec<i64> = cs.iter().map(|c| c.v[k]).collect();
             col.sort_unstable();
@@ -185,7 +217,8 @@ pub fn trimmed_mean(
             let s: i128 = kept.iter().map(|&x| x as i128).sum();
             floor_div(s, kept.len() as i128)
         })
-        .collect())
+        .collect::<Option<Vec<i64>>>()
+        .ok_or(AggError::ValueOutOfRange)
 }
 
 /// Coordinate-wise median-trim: per coordinate keep the `theta - 2f` values closest
@@ -201,7 +234,7 @@ pub fn coord_median_trim(cs: &[Contribution], f: usize) -> Result<Vec<i64>, AggE
     let d = check(cs)?;
     let theta = cs.len();
     let keep = (theta.saturating_sub(2 * f)).max(1);
-    Ok((0..d)
+    (0..d)
         .map(|k| {
             let mut col: Vec<i64> = cs.iter().map(|c| c.v[k]).collect();
             col.sort_unstable();
@@ -212,7 +245,8 @@ pub fn coord_median_trim(cs: &[Contribution], f: usize) -> Result<Vec<i64>, AggE
             let s: i128 = kept.iter().map(|&x| x as i128).sum();
             floor_div(s, kept.len() as i128)
         })
-        .collect())
+        .collect::<Option<Vec<i64>>>()
+        .ok_or(AggError::ValueOutOfRange)
 }
 
 /// A scored contribution: (score, tie_key, index), ordered lexicographically so the
@@ -436,4 +470,108 @@ pub fn bulyan_aggregate(cs: &[Contribution], f: usize) -> Result<Vec<i64>, AggEr
     let sel = bulyan_select(cs, f)?;
     let picked: Vec<Contribution> = sel.iter().map(|&i| cs[i].clone()).collect();
     coord_median_trim(&picked, f)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Relocated from `tests/determinism.rs`, which reached this helper through the
+    /// crate's PUBLIC surface -- the very reachability that made the defects below
+    /// exploitable. An integration test is an external consumer; keeping the assertions
+    /// here is what lets the helper be `pub(crate)`. The rule-level half of that test
+    /// stays where it was, because it goes through the public API on purpose.
+    #[test]
+    fn floors_toward_negative_infinity_rather_than_truncating_toward_zero() {
+        // The regression this crate is most likely to suffer from a well-meaning port.
+        assert_eq!(floor_div(-7, 2), Some(-4), "must floor, not truncate toward zero");
+        assert_eq!(floor_div(7, 2), Some(3));
+        assert_eq!(floor_div(-1, 2), Some(-1));
+        assert_eq!(floor_div(-8, 2), Some(-4));
+    }
+
+    /// rust-11, first of three. `debug_assert!(denom > 0)` is COMPILED OUT of a release
+    /// build, so this was not a guard on any path a dependent crate could take. Measured
+    /// in release from a consumer crate before the fix: `floor_div(-7, -2)` returned 4,
+    /// where the floor is 3, and `floor_div(1, 0)` panicked with "attempt to divide by
+    /// zero". `div_euclid` floors only for a POSITIVE divisor -- Euclidean division
+    /// forces a non-negative remainder -- so the doc comment's flat claim was false on
+    /// all four negative-denominator sign combinations, not merely unenforced.
+    #[test]
+    fn refuses_a_denominator_it_cannot_floor_by() {
+        assert_eq!(floor_div(1, 0), None, "no quotient exists");
+        assert_eq!(floor_div(0, 0), None);
+        // Each of these returned a wrong number before the fix, not an error.
+        assert_eq!(floor_div(-7, -2), None, "returned 4; the floor is 3");
+        assert_eq!(floor_div(-1, -2), None, "returned 1; the floor is 0");
+        assert_eq!(floor_div(7, -2), None, "returned -3; the floor is -4");
+        assert_eq!(floor_div(1, -2), None, "returned 0; the floor is -1");
+    }
+
+    /// rust-11, second. The old body ended `q as i64`, an unchecked narrowing cast on a
+    /// value the signature invites to be as wide as `i128`. Measured in release before
+    /// the fix: `floor_div(i128::MAX, 1)` returned **-1**, and `i64::MAX as i128 + 1`
+    /// returned `i64::MIN`. Wrapping to a NEGATIVE aggregate coordinate is the same shape
+    /// of defect as the negative squared distance in `fixed::sq_dist`: not a large error,
+    /// a sign error, and one that goes on the wire looking ordinary.
+    #[test]
+    fn refuses_a_quotient_that_does_not_fit_the_return_type() {
+        assert_eq!(floor_div(i128::MAX, 1), None, "returned -1 before the fix");
+        assert_eq!(floor_div(i128::MIN, 1), None);
+        assert_eq!(
+            floor_div(i64::MAX as i128 + 1, 1),
+            None,
+            "returned i64::MIN before the fix"
+        );
+        assert_eq!(floor_div(i64::MIN as i128 - 1, 1), None);
+    }
+
+    /// GUARD THE GUARD, in the other direction. Every assertion above is satisfied
+    /// perfectly by a function that refuses unconditionally, so refusal tests alone
+    /// cannot distinguish this fix from a broken one. These pin the accepting side,
+    /// including both exact edges of the representable quotient.
+    #[test]
+    fn accepts_and_is_exact_across_the_whole_domain_it_claims() {
+        assert_eq!(floor_div(i64::MAX as i128, 1), Some(i64::MAX), "upper edge must PASS");
+        assert_eq!(floor_div(i64::MIN as i128, 1), Some(i64::MIN), "lower edge must PASS");
+        // A quotient that fits even though the numerator does not.
+        assert_eq!(floor_div(i128::MAX, i128::MAX), Some(1));
+
+        // Exhaustive agreement with the floor, computed independently, over both signs
+        // of the numerator and a range of positive denominators.
+        let mut checked = 0u32;
+        for numer in -400i128..=400 {
+            for denom in 1i128..=40 {
+                let mut expect = numer / denom;
+                if numer % denom != 0 && numer < 0 {
+                    expect -= 1;
+                }
+                assert_eq!(
+                    floor_div(numer, denom),
+                    Some(expect as i64),
+                    "floor_div({numer}, {denom})"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 30_000, "scan too small to be meaningful ({checked})");
+    }
+
+    /// The refusal must not be reachable through the rules themselves. `check` rejects
+    /// the empty set and bounds every raw value, so the `None` arm the three call sites
+    /// map to `ValueOutOfRange` is unreachable by construction -- this asserts that the
+    /// mapping did not accidentally become live for ordinary input, which would mean the
+    /// rules had started refusing work they used to do.
+    #[test]
+    fn the_new_refusal_path_is_not_reachable_through_any_rule() {
+        let cs: Vec<Contribution> = (0..7u8)
+            .map(|i| Contribution {
+                tie_key: vec![i],
+                v: vec![crate::fixed::MIN, crate::fixed::MAX, -1, 0, 1],
+            })
+            .collect();
+        assert!(mean(&cs).is_ok(), "mean refused ordinary bounded input");
+        assert!(trimmed_mean(&cs, 1, 4).is_ok(), "trimmed_mean refused it");
+        assert!(coord_median_trim(&cs, 1).is_ok(), "coord_median_trim refused it");
+    }
 }

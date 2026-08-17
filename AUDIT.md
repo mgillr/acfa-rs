@@ -8,7 +8,7 @@ This file records the ones that are **fixed**, with the commit that fixed each s
 is checkable rather than asserted. Two of the sixty were refuted outright; several more were
 partly confirmed and are recorded here at their real scope rather than as reported.
 
-Findings that are still open are tracked as GitHub issues. A small number are held back
+Findings that are still open are tracked as GitHub issues, labelled `audit`. A small number are held back
 until they are closed, because publishing an unfixed weakness in a system people may be
 running hands an attacker a recipe. That set is deliberately not enumerated here; its
 existence is stated rather than hidden, which is the honest half of that decision.
@@ -146,3 +146,25 @@ enforced while four were.
 Three of the fixes above were themselves wrong on the first attempt and were caught in
 review. That is recorded rather than tidied away, because a review process that never
 overturns its own author is not doing anything.
+
+---
+
+## Open findings
+
+Tracked as issues labelled [`audit`](https://github.com/mgillr/acfa-rs/issues?q=is%3Aissue+is%3Aopen+label%3Aaudit).
+The ones worth naming here because they bear on whether the system suits a given deployment:
+
+- **Q16.16 resolution may be unfit for realistic gradient magnitudes** (#6). The most
+  consequential open item, and a parameter-choice question rather than a bug. Exactness and
+  dynamic range are a trade, and this repository has documented the exactness side and not
+  the cost side. Being measured; the result will be published whichever way it falls.
+- **"Drop-in for FedAvg" is not accurate on non-IID data** (#8). Minority-distribution
+  clients are excluded with zero adversaries present -- expected for a distance-based rule,
+  and not what "drop-in" tells a reader.
+- **The ASCII-over-stdin integration path is impractical at model scale** (#9). The
+  single-implementation guarantee is deliberate; the constant factor it costs is not
+  documented.
+- **The `no-std` crate category is false** (#1), the **MSRV is declared but never exercised**
+  (#3), and **public error enums implement neither `Display` nor `Error`** (#2).
+
+Not listed: a small number of security findings, held until they are closed.
