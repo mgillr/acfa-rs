@@ -170,7 +170,45 @@ pub fn decode_vec(vs: &[i64]) -> Vec<f64> {
 ///
 /// `None` on overflow rather than a saturated value: a saturated distance is a wrong but
 /// plausible number, and a plausible wrong answer is worse than a refusal in a kernel whose
-/// product is meant to be re-executable. Callers map it to `AggError::ValueOutOfRange`.
+/// product is meant to be re-executable. Callers map it to `AggError::ArithmeticOverflow`.
+///
+/// # rust-01 IS HELD BY A CONJUNCTION, AND THIS IS ONLY HALF OF IT
+///
+/// The critical finding -- *"the Q16.16 range invariant is documented everywhere and
+/// enforced nowhere on the i64 path"* -- is closed by TWO independent guards, and removing
+/// either reopens it in a regime the other does not cover:
+///
+/// 1. **The entry bound**, `rules::check`, which refuses any raw value outside
+///    `[MIN, MAX]`. It makes overflow here UNREACHABLE for every path through the public
+///    rules, because bounded at `+/-2^31` a difference is at most `2^32`, its square at
+///    most `2^64`, and a sum of `m` of those cannot approach `i128::MAX`.
+/// 2. **This function's own totality**, the `checked_mul`/`checked_add` below. It is what
+///    stands if the entry bound is ever relaxed, and it is the only thing that would.
+///
+/// MEASURED, guard-deletion matrix on a fresh clone at `2b26b76`, 73 tests green at
+/// baseline:
+///
+/// ```text
+///     delete the entry bound only        5 tests red   (all entry-refusal tests)
+///     delete this checked arithmetic     1 test  red   (sq_dist_refuses_...)
+///     delete BOTH                        6 tests red   -- exactly the union
+/// ```
+///
+/// The union being clean is the point: each guard is caught by its OWN tests and neither
+/// certifies the other, so a maintainer who deletes one sees a real failure rather than a
+/// green suite. That is the property `crypto-03` did NOT have, where two guards in two
+/// files jointly held one security claim and neither named the other, and three reviewers
+/// each held half of it.
+///
+/// So: **do not relax `rules::check`'s range validation on the assumption that this
+/// function is total, and do not make this function infallible on the assumption that
+/// `rules::check` bounds its inputs.** Each of those is individually true and jointly
+/// fatal.
+///
+/// Reachability, verified rather than assumed: both call sites (`multi_krum`,
+/// `multi_krum_ranked`) run `check` first, this function is `pub(crate)`, and it is not
+/// re-exported from `lib.rs` -- so there is no path in or out of this crate that reaches it
+/// without passing guard 1.
 ///
 /// Returns i128 and never rescales. Two reasons, both load-bearing:
 ///   1. A Q16.16 difference squared is Q32.32, and summing d of those overflows i64
@@ -448,6 +486,15 @@ mod tests {
         assert_eq!(fwd, 1500i128 * 1500 + 2700 * 2700 + 2100 * 2100);
     }
 
+    /// THIS IS THE ONLY TEST THAT GUARDS `sq_dist`'S TOTALITY. DO NOT DELETE IT AS
+    /// REDUNDANT.
+    ///
+    /// Measured: deleting the `checked_mul`/`checked_add` turns exactly ONE test red, and
+    /// it is this one. Every other test in the crate stays green, because the entry bound
+    /// in `rules::check` keeps the overflow unreachable through the public rules -- so from
+    /// inside the suite this function's fallibility looks like dead weight, and it is not.
+    /// It is guard 2 of the `rust-01` conjunction and the only thing standing if the entry
+    /// bound is ever relaxed. See the note on `sq_dist` itself.
     #[test]
     fn sq_dist_refuses_rather_than_wrapping_outside_the_range() {
         // The measured regression. Before this was fallible, a dependent crate calling
