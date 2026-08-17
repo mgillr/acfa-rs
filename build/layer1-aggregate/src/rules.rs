@@ -874,7 +874,28 @@ pub fn bulyan_select(cs: &[Contribution], f: usize) -> Result<Vec<usize>, AggErr
     }
     // Safe: `n >= 4f + 3 > 2f` from the guard above.
     let theta = n - 2 * f;
+
+    // rust-03, HALF TWO. `theta == n` EXACTLY WHEN `f == 0`, and stage 1 then drains the
+    // whole pool: `selected` ends up holding every index, and the function sorts before
+    // returning, so THE ANSWER IS `(0..n)` NO MATTER WHAT THE SCORES SAY. The loop below
+    // would spend the full `O(n^3 * d)` computing a result that is determined before it
+    // starts. Measured at n=400: 5.11 s of work for an answer known in advance.
+    //
+    // Skipping is behaviour-preserving rather than a shortcut with a caveat: the loop has
+    // no reachable error path here -- `check` has already bounded every value, the pool is
+    // never empty, and every sub-call is smaller than the bulyan work bound already
+    // cleared above -- so it cannot turn an `Err` into an `Ok`.
+    if theta >= n {
+        return Ok((0..n).collect());
+    }
+
     let mut pool: Vec<usize> = (0..n).collect();
+    // rust-03, HALF ONE. `sub` used to be REBUILT BY CLONING THE WHOLE POOL on every
+    // iteration -- `theta` clones of up to `n` contributions of `d` coordinates each, so
+    // `O(theta * n * d)` of pure copying on top of the cubic. At n=512, d=1024 that is
+    // about 4 MB copied per iteration across ~510 iterations. Clone ONCE and shrink it in
+    // lockstep with `pool` instead: same indices removed, same order, one copy total.
+    let mut sub: Vec<Contribution> = cs.to_vec();
     let mut selected: Vec<usize> = Vec::new();
 
     // No `pool.len() >= f + 3` guard here. That guard existed because
@@ -883,9 +904,9 @@ pub fn bulyan_select(cs: &[Contribution], f: usize) -> Result<Vec<usize>, AggErr
     // for f < 2 and returned FEWER than theta candidates with no error at all --
     // measured shortfall of 2 at f=0 and 1 at f=1, at every n tested.
     while selected.len() < theta {
-        let sub: Vec<Contribution> = pool.iter().map(|&i| cs[i].clone()).collect();
         let best_local = multi_krum_ranked(&sub, f)?[0];
         selected.push(pool.remove(best_local));
+        sub.remove(best_local);
     }
     debug_assert_eq!(
         selected.len(),
