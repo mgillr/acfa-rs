@@ -56,6 +56,69 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
 
+  # MSRV. All three manifests declare `rust-version = "1.87"`, and until this job existed
+  # NOTHING BUILT AT 1.87 -- every other job installs `stable`. So the floor was a claim in
+  # a file, and a contributor using a 1.87 feature-of-the-month would have broken it with a
+  # fully green pipeline. Same shape as the rest of this audit: a check whose success is
+  # indistinguishable from its not running.
+  #
+  # TWO HALVES, and the second is the one that makes this a test rather than a decoration.
+  #
+  #   1. The floor BUILDS. `--all-targets` so tests and binaries are covered too, because a
+  #      library that compiles at the floor while its test suite does not is a floor nobody
+  #      can actually develop against. `--locked` so a dependency raising ITS msrv cannot
+  #      turn this red without a deliberate lockfile change -- the lockfiles are committed.
+  #
+  #   2. The floor BITES. One minor below must FAIL. If 1.86 compiles this tree, then 1.87
+  #      is not the minimum, the declaration is wrong in the direction that costs users
+  #      support, and -- more to the point -- half of this job is passing for a reason that
+  #      has nothing to do with what it claims to check. That is a failure, and it is
+  #      reported as one.
+  #
+  # The version is READ FROM the manifest, never hardcoded here. A hardcoded 1.87 in this
+  # file would certify a version the manifest no longer declares the moment someone bumps
+  # it, and the two would drift silently in exactly the way this whole job exists to stop.
+  msrv:
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [layer1-aggregate, layer2-receipt, layer2-finality]
+    runs-on: ubuntu-latest
+    name: msrv / ${{ matrix.crate }}
+    defaults:
+      run:
+        working-directory: build/${{ matrix.crate }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: read the declared floor out of Cargo.toml
+        id: floor
+        run: |
+          set -euo pipefail
+          msrv="$(sed -n 's/^rust-version *= *"\([0-9.]*\)".*/\1/p' Cargo.toml | head -1)"
+          # Refuse at empty. An unset variable here would install the DEFAULT toolchain and
+          # pass, which is the failure this job is named after.
+          [ -n "$msrv" ] || { echo "::error::no rust-version in $PWD/Cargo.toml"; exit 1; }
+          minor="${msrv#*.}"; minor="${minor%%.*}"
+          [ "$minor" -gt 0 ] || { echo "::error::cannot form a below-floor version from $msrv"; exit 1; }
+          echo "msrv=$msrv"                        >> "$GITHUB_OUTPUT"
+          echo "below=${msrv%%.*}.$((minor - 1))"  >> "$GITHUB_OUTPUT"
+          echo "floor $msrv, below-floor ${msrv%%.*}.$((minor - 1))"
+
+      - name: the declared floor builds
+        run: |
+          rustup toolchain install ${{ steps.floor.outputs.msrv }} --profile minimal
+          cargo +${{ steps.floor.outputs.msrv }} check --locked --all-targets
+
+      - name: and one minor below does NOT
+        run: |
+          rustup toolchain install ${{ steps.floor.outputs.below }} --profile minimal
+          if cargo +${{ steps.floor.outputs.below }} check --locked --all-targets 2>/dev/null; then
+            echo "::error::${{ steps.floor.outputs.below }} compiles this crate, so ${{ steps.floor.outputs.msrv }} is not the minimum. Either lower rust-version to the true floor, or the floor check above is passing for a reason unrelated to what it claims."
+            exit 1
+          fi
+          echo "confirmed: ${{ steps.floor.outputs.below }} fails, so the floor is discriminating"
+
   # The verifier is what a third party actually runs, so exercise it as a BINARY on real
   # inputs. Exit codes are the contract, and the forged-PKI case is the one that matters:
   # a tool that green-ticks a forged receipt is worse than no tool.
