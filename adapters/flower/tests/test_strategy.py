@@ -677,3 +677,70 @@ def test_trimmed_matches_a_standard_symmetric_trimmed_mean():
         # Positive control: the probe must be able to see a difference when there is one.
         plain = np.mean([u[0] for u in ups], axis=0)
         assert np.max(np.abs(got - plain)) > 10 * step, (n, "probe cannot discriminate")
+
+
+# ---------------------------------------------------------------- fl-10
+
+def _outlier_set():
+    """Six honest values near 1.0 and one adversary at 500.0, n=7."""
+    ups = [[np.array([v])] for v in (1.0, 1.01, 0.99, 1.02, 0.98, 1.03, 500.0)]
+    return ups, [bytes([i]) for i in range(7)]
+
+
+def test_a_beta_that_cannot_trim_is_refused_not_silently_a_plain_mean():
+    """fl-10. The kernel trims `t = min(floor(n*num/den), n)` from each end and trims at all
+    only when `n > 2t`. So there are TWO silent-no-trim regions, one at EACH end, and in both
+    the rule labelled TRIMMED returns exactly the FedAvg mean it exists to replace -- with no
+    error, no warning and no metric. At n=7 with one adversary at 500.0 the plain mean is
+    72.29 and a trimming run gives 1.01.
+
+    FAILS ON THE UNFIXED CODE: every case below returns 72.29 instead of raising.
+    """
+    ups, keys = _outlier_set()
+    for beta in ((1, 8), (3, 4), (9, 4)):
+        with pytest.raises(AcfaAggregationError, match="plain mean"):
+            aggregate(ups, rule=Rule.TRIMMED, f=1, tie_keys=keys, beta=beta)
+
+
+def test_a_non_integral_beta_is_refused_rather_than_floored_to_zero():
+    """`int(0.5)` is 0, so `beta=(0.5, 4)` silently asked for a 0/4 trim -- the small-end
+    no-trim region reached by a second route. Flooring a caller's fraction to zero is exactly
+    how a 12.5% trim request became a plain mean.
+
+    FAILS ON THE UNFIXED CODE: returns 72.29.
+    """
+    ups, keys = _outlier_set()
+    with pytest.raises(AcfaAggregationError, match="not an integer"):
+        aggregate(ups, rule=Rule.TRIMMED, f=1, tie_keys=keys, beta=(0.5, 4))
+
+
+def test_a_beta_of_the_wrong_length_is_refused_rather_than_partly_ignored():
+    """`beta[0]` and `beta[1]` were read and anything further dropped in silence.
+
+    FAILS ON THE UNFIXED CODE: aggregates using (1, 4) and ignores the 7.
+    """
+    ups, keys = _outlier_set()
+    with pytest.raises(AcfaAggregationError, match="pair"):
+        aggregate(ups, rule=Rule.TRIMMED, f=1, tie_keys=keys, beta=(1, 4, 7))
+
+
+def test_betas_that_do_trim_are_untouched_by_the_guard():
+    """COUNTER-TEST. A guard that protects the product by breaking it is the other failure
+    direction, and the trimming band is n-DEPENDENT: my first guess was that beta >= 1/2
+    never trims, and 1/2 trims fine at n=7 (t=3, 7 > 6). These must all still work, and must
+    still exclude the adversary.
+    """
+    ups, keys = _outlier_set()
+    for beta in ((1, 4), (2, 7), (1, 3), (2, 5), (1, 2)):
+        out = float(aggregate(ups, rule=Rule.TRIMMED, f=1, tie_keys=keys, beta=beta)[0][0])
+        assert abs(out - 1.0) < 0.5, (beta, out, "adversary was not excluded")
+
+
+def test_the_probe_can_see_the_failure_it_is_looking_for():
+    """POSITIVE CONTROL for the four tests above. They assert "not the plain mean", which is
+    worthless unless the plain mean is actually reachable and actually different. MEAN on the
+    same data returns 72.29, two orders of magnitude from the honest 1.01.
+    """
+    ups, keys = _outlier_set()
+    plain = float(aggregate(ups, rule=Rule.MEAN, f=1, tie_keys=keys)[0][0])
+    assert plain > 50.0, plain

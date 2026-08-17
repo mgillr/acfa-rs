@@ -328,7 +328,58 @@ def aggregate(
 
     lines = [f"rule {rule.value}", f"f {int(f)}"]
     if rule is Rule.TRIMMED:
-        lines.append(f"beta {int(beta[0])} {int(beta[1])}")
+        # fl-10. A BETA THAT CANNOT TRIM SILENTLY TURNS THIS RULE INTO A PLAIN MEAN.
+        #
+        # The kernel trims `t = min(floor(n * num / den), n)` from each end and trims AT ALL
+        # only when `n > 2t`. So there are TWO silent-no-trim regions, one at EACH end, and
+        # in both the rule labelled TRIMMED returns exactly the FedAvg mean it exists to
+        # replace -- with no error, no warning and no metric.
+        #
+        # Measured at n=7 against 6 honest values near 1.0 and one adversary at 500.0, where
+        # the plain mean is 72.29 and a trimming run gives 1.01:
+        #
+        #   beta 1/8  -> t=0        n>2t true    72.29   PLAIN MEAN, adversary through
+        #   beta 1/4  -> t=1        n>2t true     1.01   trims
+        #   beta 1/2  -> t=3        n>2t true     1.01   trims
+        #   beta 3/4  -> t=5        n>2t FALSE   72.29   PLAIN MEAN, adversary through
+        #   beta 9/4  -> t=7        n>2t FALSE   72.29   PLAIN MEAN, adversary through
+        #
+        # `beta=(0.5, 4)` reaches the small end by a second route: `int(0.5)` is 0, so a
+        # caller asking for a 12.5% trim silently asks for 0/4. Non-integral components are
+        # refused rather than floored, because flooring a fraction to zero is precisely how
+        # that case became a plain mean.
+        #
+        # The band is n-DEPENDENT, so this is computed rather than declared: my first guess
+        # was that `beta >= 1/2` never trims, and 1/2 trims fine at n=7. The condition is
+        # checked exactly as the kernel computes it.
+        if len(beta) != 2:
+            raise AcfaAggregationError(
+                f"beta must be a (numerator, denominator) pair; got {len(beta)} values. "
+                "Extra values were previously ignored silently."
+            )
+        for part, name in zip(beta, ("numerator", "denominator")):
+            if float(part) != int(part):
+                raise AcfaAggregationError(
+                    f"beta {name} {part!r} is not an integer. Truncating it toward zero "
+                    "would silently change the trim fraction -- (0.5, 4) becomes (0, 4), "
+                    "which trims NOTHING and returns a plain mean with no diagnostic."
+                )
+        beta_num, beta_den = int(beta[0]), int(beta[1])
+        if beta_den > 0:
+            n_updates = len(flats)
+            t = min((n_updates * beta_num) // beta_den, n_updates)
+            if beta_num >= 0 and (t == 0 or n_updates <= 2 * t):
+                why = "rounds down to trimming 0 values" if t == 0 else (
+                    f"trims {t} from each end of {n_updates}, so nothing is left to keep"
+                )
+                raise AcfaAggregationError(
+                    f"beta {beta_num}/{beta_den} at n={n_updates} {why}, so TRIMMED would "
+                    f"return exactly the plain mean -- the aggregate an adversary is trying "
+                    f"to move. Refusing rather than silently dropping the robustness. Pick a "
+                    f"beta with 1 <= floor(n*num/den) < n/2 (at n={n_updates}: "
+                    f"1/{n_updates} up to just under 1/2)."
+                )
+        lines.append(f"beta {beta_num} {beta_den}")
     for key, fl in zip(tie_keys, flats):
         lines.append(bytes(key).hex() + " " + " ".join(_bits(v) for v in fl.values))
     payload = "\n".join(lines) + "\n"
