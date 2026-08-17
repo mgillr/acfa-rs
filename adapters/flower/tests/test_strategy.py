@@ -1155,3 +1155,39 @@ def test_the_bound_goes_red_where_f_adversaries_actually_beat_trimmed():
     strat = AcfaStrategy(rule=Rule.TRIMMED, f=1, beta=(1, 4))
     params, metrics = strat.aggregate_fit(1, round_of(8, 1), [])
     assert metrics["acfa_population_bound_met"] is True, metrics
+
+
+def test_a_minority_distribution_client_is_excluded_with_zero_adversaries():
+    """fl-06. Every rule here selects by DISTANCE, so a client whose data is drawn from a
+    different distribution is far from the majority for the same reason an attacker is, and
+    the rule cannot tell them apart. CHARACTERISATION, not a guard: this is inherent to
+    distance-based robust aggregation and is the cost of the guarantee.
+
+    Its job is to stop the README's table drifting from behaviour, and to hold the CONTROL
+    that makes the table mean anything: MEAN excludes nobody, so it must retain ~100% of the
+    minority's proportional share. Without that row, "KRUM retains 3%" is unfalsifiable --
+    my first version of this measurement asked whether the aggregate was "closer to the
+    majority", which EVERY rule satisfies including MEAN, and so measured nothing at all.
+    """
+    rng = np.random.default_rng(11)
+    n = 20
+    expected_share = 3.0 / n
+
+    def retained(rule):
+        vals = []
+        for _ in range(30):
+            ups = [[rng.normal(3.0, 1.0, 32)]] + [
+                [rng.normal(0.0, 1.0, 32)] for _ in range(n - 1)
+            ]
+            keys = [bytes([i]) for i in range(n)]
+            vals.append(float(np.mean(aggregate(ups, rule=rule, f=1, tie_keys=keys)[0])))
+        return float(np.mean(vals)) / expected_share
+
+    mean_keeps = retained(Rule.MEAN)
+    krum_keeps = retained(Rule.KRUM)
+
+    # THE CONTROL FIRST: if this fails the comparison below is meaningless.
+    assert 0.8 < mean_keeps < 1.2, (mean_keeps, "MEAN must keep the minority's whole share")
+    # And the finding: KRUM removes essentially all of it, with no adversary present.
+    assert krum_keeps < 0.2, (krum_keeps, "KRUM should exclude the minority client")
+    assert krum_keeps < mean_keeps / 3, (krum_keeps, mean_keeps)

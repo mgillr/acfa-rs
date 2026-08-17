@@ -12,6 +12,11 @@ Drop-in for `FedAvg`. Sampling, configuration and evaluation are inherited uncha
 things differ: a minority of adversarial clients cannot drag the aggregate, and the result
 is byte-identical on every machine.
 
+**A third thing differs, and it is not a bug -- read "Non-IID data" below before you treat
+this as a transparent swap.** A robust rule cannot tell an adversary from a client whose data
+simply looks different, because both are far from the majority. On non-IID data that costs
+you the minority client's contribution, with no adversary present.
+
 `num_examples` is ignored. FedAvg weights by it, it is an unverifiable self-report, and
 weighting a robust rule by it hands back the guarantee.
 
@@ -111,6 +116,36 @@ of the non-zero coordinates would be destroyed -- which is reached near sigma `1
 If your updates are smaller, rescale upstream by a factor both parties already hold --
 multiplying by a fixed power of two is exact and reversible -- rather than lowering the
 threshold.
+
+## Non-IID data: a minority client is excluded, with zero adversaries
+
+fl-06. Every rule here selects by DISTANCE from the other clients. A client whose data is
+drawn from a different distribution is far from the majority for the same reason an attacker
+is, and the rule cannot distinguish the two -- so it excludes the honest minority. **This is
+inherent to distance-based robust aggregation, not a defect in this implementation**, and it
+is the cost of the guarantee rather than a bug to be fixed.
+
+Measured with **zero adversaries**: one client drawn from `N(3,1)`, the rest from `N(0,1)`,
+50 rounds per row. "Retained" is how much of that client's proportional share of the
+aggregate survives. `MEAN` excludes nobody, so it is the control -- it should read ~100%,
+and does:
+
+| clients | MEAN | KRUM | MEDIAN_TRIMMED | TRIMMED |
+|---|---|---|---|---|
+| 10 | 102% | **3%** | 42% | 48% |
+| 20 | 103% | **-0%** | 23% | 41% |
+| 40 | 98% | **0%** | 32% | 56% |
+
+**KRUM removes the minority client almost entirely at every size**, and the coordinate-wise
+rules remove between half and three quarters of it. The effect does not wash out as the
+cohort grows.
+
+What this means for you: if your clients are non-IID -- which is the usual reason to run
+federated learning at all -- the robust rules will systematically down-weight the clients
+whose data differs most, and those are often the ones the model most needs to see. `KRUM` is
+the strongest exclusion and `TRIMMED` the mildest, so the choice of rule is also a choice
+about how much minority signal you are willing to lose. `MEAN` keeps everything and defends
+nothing; that trade is the whole point of the table.
 
 ## The aggregate is biased DOWNWARD, and it accumulates
 
