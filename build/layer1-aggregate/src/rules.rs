@@ -137,6 +137,27 @@ pub enum AggError {
     /// supplied -- `acfa-agg` exited 101 on `beta <num> 0` where its own contract promises
     /// a typed refusal.
     BetaDenominatorZero,
+    /// adv-05. A `beta` that trims NOTHING, so `trimmed_mean` would return the plain mean.
+    ///
+    /// The trim is `t = min(floor(n * num / den), n)` and trimming happens only when
+    /// `n > 2t`, so there are TWO no-trim regions, one at EACH end: `t == 0`, and `t` large
+    /// enough that nothing survives. In both the rule labelled "trimmed" returns exactly the
+    /// untrimmed mean -- INCLUDING the outliers it was configured to remove -- at exit 0
+    /// with no diagnostic. Measured at n=7 with six honest values near 1.0 and one adversary
+    /// at 500.0, where the plain mean is 72.29 and any trimming run gives 1.01:
+    /// beta 1/8 -> 72.29, 1/4 -> 1.01, 1/2 -> 1.01, 3/4 -> 72.29, 9/4 -> 72.29.
+    ///
+    /// REFUSED rather than silently degraded, per the coordinator's ruling: returning the
+    /// poisoned aggregate at exit 0 is the worst available failure mode, and it is the same
+    /// defect as a rule directive being substituted without complaint. The band is
+    /// n-DEPENDENT, so `t` is reported rather than a fixed range: `beta >= 1/2` does NOT
+    /// always fail -- 1/2 trims correctly at n=7 (t=3, 7 > 6).
+    BetaTrimsNothing {
+        /// The trim count the configured beta produces at this `n`.
+        t: usize,
+        /// The contribution count the trim was computed against.
+        n: usize,
+    },
     /// More contributions than the rule will process. See `MAX_CONTRIBUTIONS` and
     /// `MAX_CONTRIBUTIONS_BULYAN` for the arithmetic behind each bound.
     ///
@@ -204,6 +225,11 @@ impl core::fmt::Display for AggError {
                     "beta denominator is zero, so the trim fraction is undefined"
                 )
             }
+            AggError::BetaTrimsNothing { t, n } => write!(
+                f,
+                "beta trims {t} from each end of {n}, which trims nothing (needs 1 <= t \
+                 and n > 2t), so the result would be the plain mean including any outliers"
+            ),
             AggError::TooManyContributions { n, max } => write!(
                 f,
                 "{n} contributions exceeds the limit of {max}; the distance matrix is \
@@ -429,6 +455,12 @@ pub fn trimmed_mean(
     // when `n > 2 * t`, so every `t >= n` already meant "trim nothing", and pinning it
     // at `n` keeps that while making the narrowing cast total.
     let t = ((n as u128 * beta_num as u128) / beta_den as u128).min(n as u128) as usize;
+    // adv-05. REFUSE A BETA THAT TRIMS NOTHING rather than returning the plain mean.
+    // Computed exactly as the trim below computes it, not declared as a range: the band is
+    // n-dependent and `beta >= 1/2` is NOT the boundary -- 1/2 trims correctly at n=7.
+    if t == 0 || n <= 2 * t {
+        return Err(AggError::BetaTrimsNothing { t, n });
+    }
     (0..d)
         .map(|k| {
             let mut col: Vec<i64> = cs.iter().map(|c| c.v[k]).collect();
@@ -1049,11 +1081,14 @@ mod tests {
     /// near 1.0 and ONE ADVERSARY AT 500.0: any trimming beta gives 1.01, and both no-trim
     /// regions give 72.29 -- the adversary passes through in full.
     ///
-    /// THIS PINS THE BEHAVIOUR AND DOES NOT ENDORSE IT. Whether a rule that cannot honour
-    /// its bound should refuse instead of silently returning an unprotected value is an
-    /// open specification question (adv-05, fl-10) and is not settled here. What is settled
-    /// is that BOTH regions now have a witness, so whichever way it is decided, the change
-    /// is visible rather than silent.
+    /// SETTLED, AND THIS TEST IS NOW INVERTED. Its previous form pinned the silent plain
+    /// mean and said in this comment that it did not endorse it: whether a rule that cannot
+    /// honour its bound should refuse was an open specification question (adv-05, fl-10),
+    /// left with a witness in BOTH regions "so whichever way it is decided, the change is
+    /// visible rather than silent". The coordinator has ruled REFUSE -- returning the
+    /// poisoned aggregate at exit 0 is the worst available failure mode. The witness did
+    /// its job: the ruling landed as a visible inversion of two named tests rather than as
+    /// a quiet edit, which is the whole reason a characterisation test is worth writing.
     #[test]
     fn a_trim_fraction_that_floors_to_zero_trims_nothing_and_says_nothing() {
         // n = 7, beta = 1/8 -> floor(7/8) = 0. The small-beta end.
@@ -1073,11 +1108,11 @@ mod tests {
         let t = (n * num) / den;
         assert_eq!(t, 0, "precondition: this beta must floor to a zero trim");
 
-        // Untrimmed: (1*6 + 500) / 7 = 506 / 7 = 72 by floor division.
+        // Was `Ok(vec![72])` -- the plain mean, outlier included, at exit 0. Now refused.
         assert_eq!(
             trimmed_mean(&cs, 1, 8),
-            Ok(vec![72]),
-            "t == 0 returns the plain mean -- the outlier is NOT trimmed"
+            Err(AggError::BetaTrimsNothing { t: 0, n: 7 }),
+            "t == 0 trims nothing, so it must refuse rather than return the plain mean"
         );
 
         // And a beta that does trim excludes it, which is the contrast that shows the
@@ -1125,11 +1160,12 @@ mod tests {
             "precondition: this beta must reach the untrimmed branch"
         );
 
-        // The whole column, floor-averaged: (1+2+3+4+1000)/5 = 1010/5 = 202.
+        // Was `Ok(vec![202])` -- the whole column including the 1000, at exit 0. The
+        // large-beta end of the same defect, and refused for the same reason.
         assert_eq!(
             trimmed_mean(&cs, 3, 5),
-            Ok(vec![202]),
-            "an untrimmable column must be kept WHOLE, not emptied or truncated"
+            Err(AggError::BetaTrimsNothing { t: 3, n: 5 }),
+            "an untrimmable beta must refuse, not return the untrimmed mean"
         );
 
         // And the outlier is still in there, which is the substance of adv-05: the caller
@@ -1137,10 +1173,14 @@ mod tests {
         // COMPUTED value rather than a literal -- `assert!(202 > 4)` compares two constants
         // and clippy is right that it can never fail, which is this repository's own
         // gates-that-cannot-fail defect appearing inside a test about coverage gaps.
-        let got = trimmed_mean(&cs, 3, 5).unwrap()[0];
+        // The contrast that gives the refusal meaning: a beta that DOES trim excludes the
+        // outlier, so the refusal above is not the rule simply failing on this fixture.
+        let trimmed = trimmed_mean(&cs, 1, 5).expect("beta 1/5 trims at n=5");
         assert!(
-            got > 100,
-            "the 1000 outlier survives into the result (got {got}) -- see adv-05"
+            trimmed[0] < 100,
+            "a trimming beta must exclude the 1000 (got {}) -- otherwise the refusal \
+             above proves nothing about adv-05",
+            trimmed[0]
         );
     }
 
