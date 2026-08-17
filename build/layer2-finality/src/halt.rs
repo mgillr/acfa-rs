@@ -76,6 +76,28 @@ pub struct Finality {
     /// close. `CertTuple::id()` covers the whole signed tuple and `canonical` already
     /// orients the pair by it, so the ordered pair of ids IS the conflict.
     reconciled: BTreeSet<([u8; 32], [u8; 32])>,
+    /// The ROUNDS at which a fork was ever observed. A round in this set is permanently
+    /// non-final, and that is a SAFETY property distinct from the liveness one `reconciled`
+    /// serves.
+    ///
+    /// WHY THIS IS SEPARATE FROM `reconciled`, AND WHY IT IS NEEDED. `reconciled` stops a
+    /// re-gossiped fork from re-HALTING a resumed node (liveness). It does nothing about
+    /// FINALITY. After a resume the forked round is dropped from `certified`, so an adversary
+    /// re-delivers the two halves in OPPOSITE order to two honest nodes: each certifies the
+    /// half that arrives first, the second half forms a fork whose key is already in
+    /// `reconciled` and is dropped as old news WITHOUT halting -- and `is_final` then reports
+    /// the round final on each node, on CONFLICTING states. Measured on the pre-fix code: node
+    /// X final on rho=a, node Y final on rho=b, neither halted, no adversary key required, only
+    /// delivery order. That is the module's headline property -- "never finalises two
+    /// conflicting states" -- broken.
+    ///
+    /// The audit's remedy was an epoch in the signed tuple so post-resume certificates cannot
+    /// be confused with pre-halt ones. That changes the signed preimage and would move the
+    /// cross-architecture fingerprint, which is fixed by construction. This is the fix that
+    /// does NOT touch the wire: a round that forked is tainted forever. Neither honest node
+    /// reports it final, so the divergence a consumer could observe cannot arise; progress
+    /// resumes on rounds ABOVE the fork, which is where `reconcile_point` already places it.
+    forked_rounds: BTreeSet<u64>,
     f: usize,
 }
 
@@ -114,6 +136,7 @@ impl Finality {
             forks: BTreeMap::new(),
             history: Vec::new(),
             reconciled: BTreeSet::new(),
+            forked_rounds: BTreeSet::new(),
             f,
         }
     }
@@ -210,6 +233,13 @@ impl Finality {
 
     /// Append to the historical record, once. Re-delivery is expected, not exceptional.
     fn record(&mut self, fork: CertFork) {
+        // A fork's two halves conflict at the SAME round by construction, so either tuple's
+        // round names it. Recording it here -- the single choke point every observed fork
+        // passes through, on both the `observe` and `observe_fork` paths -- is what makes the
+        // round permanently non-final, and it is recorded the moment the fork is SEEN rather
+        // than when it is reconciled, so the taint does not depend on an operator ever calling
+        // `resume`.
+        self.forked_rounds.insert(fork.a.tuple.round);
         if !self.history.contains(&fork) {
             self.history.push(fork);
         }
@@ -251,10 +281,20 @@ impl Finality {
 
     /// Is round `r` final on this node?
     ///
-    /// Final iff it is uniquely certified AND no fork exists at or before it. The
-    /// "or before" is what stops a later round inheriting finality across a hole.
+    /// Final iff it is uniquely certified, no fork exists at or before it, AND the round
+    /// itself never forked.
+    ///
+    /// The third clause is the safety fix for the post-resume divergence. `self.forks` holds
+    /// only the forks currently BLOCKING; a resume clears it. So the first two clauses alone
+    /// report a round final again once its fork has been reconciled and cleared -- and an
+    /// adversary who re-delivers the two halves in opposite order to two nodes gets each to
+    /// certify a different half and both to call the round final, on conflicting states.
+    /// `forked_rounds` is never cleared, so a round that ever forked stays non-final on every
+    /// honest node, which is exactly the property that stops the divergence.
     pub fn is_final(&self, r: u64) -> bool {
-        self.certified.contains_key(&r) && self.forks.keys().all(|&fr| fr > r)
+        self.certified.contains_key(&r)
+            && self.forks.keys().all(|&fr| fr > r)
+            && !self.forked_rounds.contains(&r)
     }
 
     /// Identities attributed by any observed fork -- the Byzantine-bridging signers.

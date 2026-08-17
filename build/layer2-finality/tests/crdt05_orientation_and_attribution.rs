@@ -140,3 +140,47 @@ fn a_forged_signature_entry_cannot_name_an_honest_node_through_observe_fork() {
         );
     }
 }
+
+/// crdt-05, the SAFETY half: two honest nodes must never finalise conflicting states for the
+/// same round after a legitimate resume.
+///
+/// Both nodes see the same fork at round 1, halt, and resume. An adversary with NO keys then
+/// re-gossips the two already-public halves in OPPOSITE order to the two nodes. Before the
+/// `forked_rounds` guard, each node certified whichever half arrived first, the second half
+/// was dropped as already-reconciled without halting, and `is_final(1)` returned true on both
+/// -- node X final on rho=a, node Y final on rho=b. Measured, not argued.
+///
+/// GUARD-DELETION: remove the `!self.forked_rounds.contains(&r)` clause from `is_final` and
+/// this test goes RED (both finalise); every other finality test stays green, so the clause is
+/// discriminating rather than a blanket refusal.
+#[test]
+fn two_honest_nodes_do_not_finalise_conflicting_states_after_resume() {
+    let (ids, pki) = room(5);
+    let a = || cert_signed_by(tuple(1, "A", "a"), &[&ids[0], &ids[1]]);
+    let b = || cert_signed_by(tuple(1, "B", "b"), &[&ids[2], &ids[3]]);
+
+    let mut x = Finality::new(1);
+    let mut y = Finality::new(1);
+    x.observe(a(), &pki).ok();
+    let _ = x.observe(b(), &pki);
+    y.observe(a(), &pki).ok();
+    let _ = y.observe(b(), &pki);
+    assert!(x.is_halted() && y.is_halted(), "both must halt on the fork");
+
+    x.resume(RoundBudget::new(200)).unwrap();
+    y.resume(RoundBudget::new(200)).unwrap();
+
+    // The adversary controls only delivery ORDER of already-public evidence.
+    let _ = x.observe(a(), &pki);
+    let _ = x.observe(b(), &pki); // X: a then b
+    let _ = y.observe(b(), &pki);
+    let _ = y.observe(a(), &pki); // Y: b then a
+
+    assert!(
+        !(x.is_final(1) && y.is_final(1)),
+        "DIVERGENCE: both honest nodes finalised round 1 on conflicting halves after resume"
+    );
+    // And the stronger statement: a round that forked is final on NEITHER node.
+    assert!(!x.is_final(1), "a forked round must not be final on X");
+    assert!(!y.is_final(1), "a forked round must not be final on Y");
+}
