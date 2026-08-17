@@ -55,7 +55,7 @@ impl core::fmt::Display for FixedError {
     }
 }
 
-impl std::error::Error for FixedError {}
+impl core::error::Error for FixedError {}
 
 /// Encode a float to Q16.16, refusing anything it cannot represent exactly-enough.
 ///

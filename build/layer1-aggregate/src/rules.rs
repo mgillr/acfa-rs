@@ -128,7 +128,7 @@ impl core::fmt::Display for AggError {
     }
 }
 
-impl std::error::Error for AggError {}
+impl core::error::Error for AggError {}
 
 /// Largest contribution count the distance-matrix rules will accept.
 ///
