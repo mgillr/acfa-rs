@@ -39,6 +39,39 @@ pub enum FixedError {
 /// Rounds half away from zero. The rounding rule is part of the wire contract: two
 /// implementations that round differently produce different aggregates from the same
 /// inputs, which is indistinguishable from one of them being faulty.
+///
+/// # THE CONTRACT A PORT MUST MEET, AND WHY IT IS STATED HERE RATHER THAN ASSUMED
+///
+/// Write `s = x * 2^16`. A conforming encoder returns the integer nearest `s`, with exact
+/// halves going AWAY FROM ZERO. Equivalently, and this is the single number every known
+/// non-conforming implementation has got wrong:
+///
+/// > **The annihilation threshold is HALF a raw unit, not one.** `|s| < 0.5` encodes to 0;
+/// > `0.5 <= |s| < 1.5` encodes to `±1`. Nothing in `[0.5, 1)` may vanish.
+///
+/// THREE INDEPENDENT IMPLEMENTATIONS HAVE GOT THIS WRONG IN THREE DIFFERENT WAYS, which is
+/// why it is now pinned by `a_conforming_encoder_rounds_half_away_from_zero` rather than
+/// described in prose that only a Rust reader ever opens:
+///
+///   - **Truncation toward zero** (`np.trunc`, `int(s)`, C's `(long)s`). Annihilates the
+///     whole band up to one raw unit, so its threshold is exactly TWICE the contract's.
+///     This is not a tie-breaking difference -- it disagrees on every non-integer `s`, and
+///     it fails 9 of the 12 conformance rows. Measured consequence when it appeared in the
+///     Flower adapter's annihilation guard: at sigma 2.0e-5 it predicted 55.5% of
+///     coordinates lost where the kernel loses 29.7%, over-refusing by 25.7 points, and the
+///     over-report PEAKS exactly in the band where the guard is consulted.
+///   - **Ties-to-even** (Python's `round`, IEEE roundTiesToEven, Rust's
+///     `format!("{:.0}")`). Agrees everywhere except at exact halves whose floor is even --
+///     `0.5 -> 0` and `2.5 -> 2` where the contract requires 1 and 3. Half the ties, and it
+///     fails 4 of the 12 rows. This is what the vendored reference's `fp_encode` does; see
+///     `reference/README.md`, where it is recorded as a deliberate, asserted divergence.
+///   - **`(s + 0.5).floor()`**, the usual hand-rolled "half away" idiom, which this crate
+///     itself shipped. The addition is a rounded operation, so at the largest double below
+///     0.5 it carries to exactly 1.0 and returns 1 where 0 is required. One double per
+///     sign in the whole range -- see the note on the implementation below.
+///
+/// `f64::round` is the contract; prefer your language's correctly-rounded half-away
+/// primitive over composing one.
 pub fn encode(x: f64) -> Result<i64, FixedError> {
     if !x.is_finite() {
         return Err(FixedError::NotFinite);
@@ -205,6 +238,64 @@ mod tests {
         let half = 0.5 / (SCALE as f64);
         assert_eq!(encode(half).unwrap(), 1);
         assert_eq!(encode(-half).unwrap(), -1);
+    }
+
+    /// THE CONFORMANCE TABLE FOR A PORT. Executable form of the contract documented on
+    /// `encode`, kept as a table because prose has now been misread three times.
+    ///
+    /// IT IS PROVEN TO DISCRIMINATE, which is the only thing that makes it worth having:
+    /// the same twelve rows were run against the two non-conforming rules seen in the
+    /// wild, and each is rejected, by different rows.
+    ///
+    ///   half-away (the contract)  PASSES 12/12
+    ///   truncation toward zero    FAILS 9/12 -- first at s=0.5 (gives 0, needs 1) and
+    ///                             s=0.9 (gives 0, needs 1); it loses the whole [0.5,1) band
+    ///   ties-to-even              FAILS 4/12 -- only at halves with an even floor,
+    ///                             s=0.5 (gives 0, needs 1) and s=2.5 (gives 2, needs 3)
+    ///
+    /// So a port that passes this cannot be doing either, and a port that fails it is told
+    /// by WHICH rows which mistake it made. Note the rows are chosen so that `s` is exactly
+    /// representable wherever it sits on a boundary (halves and integers are dyadic, and
+    /// dividing by `SCALE` is exact), so no row depends on float round-trip luck.
+    #[test]
+    fn a_conforming_encoder_rounds_half_away_from_zero() {
+        // (scaled value `s`, the only admissible output)
+        const TABLE: [(f64, i64); 12] = [
+            (0.5, 1),
+            (-0.5, -1),
+            (0.9, 1),
+            (-0.9, -1),
+            (1.5, 2),
+            (-1.5, -2),
+            (2.5, 3),
+            (-2.5, -3),
+            (0.49, 0),
+            (-0.49, 0),
+            (1.0, 1),
+            (3.5, 4),
+        ];
+        for (s, want) in TABLE {
+            let x = s / (SCALE as f64);
+            assert_eq!(
+                encode(x),
+                Ok(want),
+                "conformance: s={s} must encode to {want} (half away from zero)"
+            );
+        }
+
+        // The threshold itself, stated as the one number ports get wrong: half a raw
+        // unit, not one. Nothing in [0.5, 1) may vanish, and everything below 0.5 must.
+        let below = f64::from_bits((0.5f64 / (SCALE as f64)).to_bits() - 1);
+        assert_eq!(
+            encode(below),
+            Ok(0),
+            "just below half a unit must annihilate"
+        );
+        assert_eq!(
+            encode(0.999 / (SCALE as f64)),
+            Ok(1),
+            "0.999 of a raw unit must NOT annihilate -- truncation loses this whole band"
+        );
     }
 
     #[test]
