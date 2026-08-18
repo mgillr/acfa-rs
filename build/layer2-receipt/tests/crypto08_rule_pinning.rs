@@ -103,3 +103,65 @@ fn the_default_policy_is_fail_open_on_the_rule() {
          argument assumes Bulyan needs 7 and is told the population was sufficient."
     );
 }
+
+/// crypto-08, the CLI half: `acfa-verify` must NAME the aggregation rule in its VERIFIED
+/// output, and must flag when the rule was not pinned -- so an operator can tell whether the
+/// verified rule matches the one they assume. Before, VERIFIED never mentioned the rule.
+///
+/// GUARD-DELETION: remove the `println!("  rule ...")` line from acfa-verify and this goes RED.
+#[test]
+fn acfa_verify_names_the_rule_and_flags_when_it_is_not_pinned() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let (receipt, pki) = krum_receipt_at_five();
+    let dir = std::env::temp_dir().join("acfa_crypto08_cli");
+    std::fs::create_dir_all(&dir).unwrap();
+    let pki_file = dir.join("pki.txt");
+    let mut txt = String::new();
+    for (id, pk) in &pki {
+        txt.push_str(&format!(
+            "{id} {}\n",
+            pk.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        ));
+    }
+    std::fs::write(&pki_file, txt).unwrap();
+    let bytes = acfa_receipt::wire::encode(&receipt);
+
+    let run = |extra: &[&str]| -> String {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_acfa-verify"));
+        c.arg(format!("--pki={}", pki_file.display())).arg("--f=1");
+        for a in extra {
+            c.arg(a);
+        }
+        let mut ch = c
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        ch.stdin.as_mut().unwrap().write_all(&bytes).unwrap();
+        let o = ch.wait_with_output().unwrap();
+        String::from_utf8_lossy(&o.stdout).to_string()
+    };
+
+    // Not pinned: names the rule AND flags that it was not pinned.
+    let out = run(&[]);
+    assert!(out.contains("rule"), "VERIFIED must name the rule: {out}");
+    assert!(
+        out.contains("Krum"),
+        "the receipt's rule must appear: {out}"
+    );
+    assert!(
+        out.contains("NOT PINNED"),
+        "unpinned rule must be flagged: {out}"
+    );
+
+    // Pinned to the correct rule: named, no NOT PINNED flag.
+    let out = run(&["--rule=krum"]);
+    assert!(out.contains("Krum"));
+    assert!(
+        !out.contains("NOT PINNED"),
+        "a pinned rule must not be flagged: {out}"
+    );
+}

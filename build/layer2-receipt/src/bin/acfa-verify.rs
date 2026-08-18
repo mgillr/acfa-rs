@@ -393,6 +393,7 @@ silently change the aggregate"
         },
     };
 
+    let rule_was_pinned = rule_want.is_some();
     let mut policy = Policy::new(pki, f);
     if let Some(r) = rule_want {
         policy.rule = match r.as_str() {
@@ -427,6 +428,16 @@ silently change the aggregate"
                 }
             }
             println!("VERIFIED");
+            // crypto-08: NAME THE RULE. A receipt's robustness argument is a property of the
+            // aggregation rule it used, so a VERIFIED verdict that never says which rule that
+            // was leaves the operator unable to tell whether it matches the rule THEY assume.
+            println!("  rule         {:?}", receipt.rule);
+            if !rule_was_pinned {
+                println!(
+                    "               NOT PINNED -- verified against the receipt's OWN claimed \
+                     rule; pass --rule to require the rule you expect"
+                );
+            }
             println!("  round        {}", v.round);
             println!("  state root   {}", hex32(&v.state_root));
             if expect_root.is_some() {
