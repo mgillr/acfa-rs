@@ -61,6 +61,29 @@ Identical glibc 2.41, x86_64 vs aarch64, 600,000 samples:
 | raw libm (`exp`, `cos`, `ln`) | 293 (~1 in 2,047), each exactly 1 ULP |
 | same values through the Q16.16 boundary | 0 |
 
+**The second row is not evidence that the boundary absorbed the first, and the guarantee does
+not rest on it.** On this corpus the right-hand column reads `0` whether or not quantisation
+absorbs anything: an encoding changes only if the scaled value lies within the divergence of a
+rounding boundary, the closest sample sat **20,472 ULPs** away, and **0 of 600,000** were close
+enough for a 1-ULP difference to change the quantised result. One expected flip would need about
+6.9e10 samples, roughly 114,000x this corpus. Absorption is also the wrong word for what would
+happen: at a rounding boundary a 1-ULP divergence is not absorbed but **amplified** to a full
+Q16.16 unit -- rare and total rather than damped. Measured through the shipped kernel, on two
+doubles one ULP apart that straddle a boundary:
+
+```text
+0x3edfffffffffffff   scaled 0.49999999999999994   ->  ok 0
+0x3ee0000000000000   scaled 0.5                   ->  ok 1
+```
+
+A one-ULP difference in, a full Q16.16 unit out. So the table's juxtaposition invites the reader
+toward the opposite of the mechanism.
+
+What the two rows do show is the thing worth showing: raw libm differs across architectures, and
+these 293 differences did not reach the aggregate here. **The guarantee itself comes from
+construction, not from this null result** -- the aggregate is computed in integer fixed point, so
+it is an exact function of the input *set* however the inputs were produced.
+
 Numbers and method in [`build/DETERMINISM-RESULTS.md`](build/DETERMINISM-RESULTS.md); the
 smaller first probe that motivated it is in
 [`research/xarch-libm-divergence.md`](research/xarch-libm-divergence.md).
