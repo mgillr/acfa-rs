@@ -352,32 +352,44 @@ fn a_directive_refuses_trailing_tokens_on_its_own_line() {
 
 #[test]
 fn a_defended_rule_below_its_robustness_threshold_is_refused_at_the_cli() {
-    // adv-01. multi_krum returns the plain mean of ALL contributions when m = n-f-2 < 1
-    // (n < f+3) -- REFERENCE-FAITHFUL: reference/acfa.py returns list(range(n)) there, and
-    // byte-identity with the reference is load-bearing, so the LIBRARY value must NOT change.
-    // The defect is the CLI reporting that unguarded aggregate at exit 0. The fix is here: a
-    // defended rule (krum/bulyan) below n >= 2f+3 is REFUSED, exit 1, value withheld.
+    // adv-01, corrected threshold (D-2). multi_krum returns the plain mean of ALL
+    // contributions ONLY when m = n-f-2 < 1, i.e. n < f+3 -- REFERENCE-FAITHFUL: acfa.py
+    // returns list(range(n)) there. That select-all regime is the fully-poisoned value the CLI
+    // must refuse. Between f+3 and 2f+3 the rule GENUINELY SELECTS a subset (m >= 1); refusing
+    // it would break a regime the library and the Flower adapter deliberately serve, so the CLI
+    // must NOT refuse there. Bulyan is not in the CLI guard at all: below 4f+3 the library
+    // ERRORS, it never select-alls.
     //
-    // GUARD-DELETION: remove the matches!(rule,"krum"|"bulyan") && n<2f+3 refusal block from
-    // acfa-agg.rs and the undefended cases return `ok <mean>` at exit 0 again.
-    let undefended = "f 1\n01 3ff0000000000000\n02 4000000000000000\n03 4008000000000000\n";
-    for rule in ["krum", "bulyan"] {
-        let (code, stdout, stderr) = run(&format!("rule {rule}\n{undefended}"));
-        assert_eq!(
-            code, 1,
-            "{rule} below 2f+3 must be refused, not reported at exit 0"
-        );
-        assert_eq!(stdout, "refused undefended", "{rule}: {stdout:?}");
-        assert!(
-            stderr.contains("2f+3"),
-            "{rule}: name the threshold, got {stderr:?}"
-        );
-    }
+    // GUARD-DELETION: remove the `rule == "krum" && n < f+3` refusal block from acfa-agg.rs and
+    // the select-all case returns `ok <mean>` at exit 0 again.
+    let select_all = "f 1\n01 3ff0000000000000\n02 4000000000000000\n03 4008000000000000\n"; // n=3, f+3=4
+    let (code, stdout, stderr) = run(&format!("rule krum\n{select_all}"));
+    assert_eq!(code, 1, "krum below n=f+3 (select-all) must be refused, not reported at exit 0");
+    assert_eq!(stdout, "refused undefended", "{stdout:?}");
+    assert!(stderr.contains("f+3"), "name the threshold, got {stderr:?}");
+
+    // Regime 2: f+3 <= n < 2f+3. The rule SELECTS a subset; the CLI must NOT refuse it.
+    let regime2 = "f 1\n01 3ff0000000000000\n02 4000000000000000\n03 4008000000000000\n\
+                   04 4010000000000000\n"; // n=4, f=1: f+3=4 <= 4 < 5=2f+3
+    let (code, stdout, _) = run(&format!("rule krum\n{regime2}"));
+    assert_eq!(code, 0, "krum in regime 2 (selects, no formal guarantee) must NOT be refused");
+    assert!(stdout.starts_with("ok "), "regime 2 must return a value: {stdout:?}");
+
+    // Bulyan below its own precondition errors in the LIBRARY (not the CLI guard) -- a distinct,
+    // named refusal, not `refused undefended`.
+    let (code, stdout, _) = run(&format!("rule bulyan\n{select_all}"));
+    assert_eq!(code, 1, "bulyan below 4f+3 is refused by the library");
+    assert!(
+        stdout.starts_with("refused ") && stdout != "refused undefended",
+        "bulyan carries its own error, not the undefended one: {stdout:?}"
+    );
+
     let defended = "f 1\n01 3ff0000000000000\n02 4000000000000000\n03 4008000000000000\n\
                     04 4010000000000000\n05 4014000000000000\n";
     let (code, stdout, _) = run(&format!("rule krum\n{defended}"));
     assert_eq!(code, 0, "krum at n=2f+3 must run");
     assert!(stdout.starts_with("ok "));
+    let undefended = select_all;
     let (code, stdout, _) = run(&format!("rule mean\n{undefended}"));
     assert_eq!(
         code, 0,

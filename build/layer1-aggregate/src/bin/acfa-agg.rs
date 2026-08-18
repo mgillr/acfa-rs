@@ -397,18 +397,28 @@ fn main() -> ExitCode {
     // adv-01: a DEFENDED rule asked to run below its robustness threshold produces an
     // aggregate the caller must not trust. The reference (reference/acfa.py) returns the plain
     // mean of ALL contributions when `m = n - f - 2 < 1` (n < f+3), so the LIBRARY value stays
-    // reference-faithful and byte-identical -- this refusal lives ONLY at the CLI, where "the
-    // operator asked for a robust aggregate and the population cannot support one" is a
-    // refusal, not a value to hand back at exit 0. Krum's guarantee needs n >= 2f+3
-    // (Blanchard'17). `u128` because `2f+3` in `usize` wraps for an untrusted `f`. Undefended
-    // rules (mean/median/trimmed) make no robustness claim and are unaffected.
-    if matches!(rule.as_str(), "krum" | "bulyan") {
-        let required = 2u128 * f as u128 + 3;
+    // reference-faithful and byte-identical -- this refusal lives ONLY at the CLI. It fires
+    // at the SELECT-ALL regime, `n < f+3`, and ONLY there. That is the boundary at which
+    // `multi_krum` returns EVERY contribution (`m = n-f-2 < 1`), so `krum_aggregate` is the
+    // plain mean OF THE ADVERSARY INCLUDED -- the fully poisoned value at exit 0 that adv-01
+    // names. Between `f+3` and `2f+3` the rule GENUINELY SELECTS a subset (`m >= 1`); the
+    // formal Blanchard'17 guarantee is absent but a real robust estimate is returned, and
+    // refusing it would break a regime the library deliberately serves (and the Flower
+    // adapter's sole execution path, which must be able to REPORT an unmet bound without
+    // failing -- see fl-11). `u128` because `f+3` in `usize` wraps for an untrusted `f`.
+    //
+    // ONLY krum. Bulyan is NOT here: below its precondition `n >= 4f+3` the library ERRORS
+    // (`BulyanTooFewContributions`), it never select-alls, so there is no undefended value to
+    // refuse -- and putting it here made the CLI emit two different refusals for one condition
+    // and cite krum's `2f+3` at a bulyan caller whose real bound is `4f+3` (#61).
+    if rule.as_str() == "krum" {
+        let required = f as u128 + 3;
         if (cs.len() as u128) < required {
             println!("refused undefended");
             eprintln!(
-                "acfa-agg: {} needs n >= 2f+3 = {} contributions for its robustness guarantee,                  got {}; refusing rather than returning an aggregate that carries none",
-                rule,
+                "acfa-agg: krum below n = f+3 = {} returns the plain mean of every \
+                 contribution (the adversary included), got {}; refusing rather than \
+                 handing back a fully undefended aggregate at exit 0",
                 required.min(usize::MAX as u128),
                 cs.len()
             );
