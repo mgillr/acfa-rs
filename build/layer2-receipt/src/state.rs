@@ -392,7 +392,7 @@ mod tests {
         let mut pki: Pki = BTreeMap::new();
         pki.insert(1, a.public());
 
-        // k(k-1)/2 must exceed MAX_MERGE_PROOFS; 1500 gives 1 124 250 against 1 048 576.
+        // k(k-1)/2 must exceed MAX_MERGE_PROOFS; 1500 gives 1 124 250 against 8192.
         let k = 1500usize;
         assert!(
             k * (k - 1) / 2 > MAX_MERGE_PROOFS,
