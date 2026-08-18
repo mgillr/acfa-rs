@@ -132,3 +132,67 @@ fn the_participant_caps_are_not_superseded() {
         "the count cap must still bite where the work bound does not"
     );
 }
+
+/// BOTH CAPS AGAIN, ON `multi_krum_ranked`. The pair above guards `multi_krum` and
+/// `bulyan_select`; this function carries its OWN copy of both refusals and neither had a
+/// witness.
+///
+/// MEASURED by deleting each `return Err(...)` in the crate ONE AT A TIME -- 17 sites, and
+/// these two were the only survivors:
+///
+/// ```text
+///     delete the count cap in multi_krum_ranked -> 77 passed 0 failed
+///     delete the work  cap in multi_krum_ranked -> 77 passed 0 failed
+///     delete the count cap in multi_krum        -> 75 passed 2 FAILED   (control)
+/// ```
+///
+/// The control is the part that makes the other two mean something: the identical guard one
+/// function away IS witnessed, so the survivals are a gap in coverage rather than a mutation
+/// the suite cannot express. `the_participant_caps_are_not_superseded` is plural and covers
+/// one function.
+///
+/// THIS IS THE THIRD FINDING TODAY THAT SPLIT ACROSS SITES WITH ONE HALF WITNESSED -- after
+/// rust-05 and crypto-03, both of which guarded the certificate path and left the relay twin
+/// bare. A finding that appears at N call sites needs N witnesses; one passing test named for
+/// the property is evidence about one site and says nothing about its siblings.
+///
+/// `multi_krum_ranked` is `pub use`d from the crate root, so this is reachable API and not
+/// only an internal helper -- and `bulyan_select` documents relying on "the per-call guard
+/// inside `multi_krum_ranked`" while adding its own lower cap, so the guard is load-bearing
+/// by the code's own account.
+#[test]
+fn the_ranked_selection_carries_both_caps_too() {
+    // COUNT CAP. Sized so the WORK bound cannot be what refuses it, or this would pass for
+    // the wrong reason -- the same trap the sibling test's `const` assert exists to close.
+    let cs = set(MAX_CONTRIBUTIONS + 1, 1);
+    const { assert!((MAX_CONTRIBUTIONS as u128 + 1) * (MAX_CONTRIBUTIONS as u128 + 1) < MAX_COORDINATE_OPS) };
+    assert_eq!(
+        multi_krum_ranked(&cs, 1),
+        Err(AggError::TooManyContributions {
+            n: MAX_CONTRIBUTIONS + 1,
+            max: MAX_CONTRIBUTIONS
+        }),
+        "the count cap must bite on the ranked path too, where the work bound does not"
+    );
+
+    // WORK CAP. Under the count cap, so the refusal cannot be the count.
+    let cs = set(4096, 1024);
+    const { assert!(4096usize <= MAX_CONTRIBUTIONS) };
+    const { assert!(4096u128 * 4096 * 1024 > MAX_COORDINATE_OPS) };
+    assert_eq!(
+        multi_krum_ranked(&cs, 1),
+        Err(AggError::TooMuchWork {
+            work: 4096u128 * 4096 * 1024,
+            max: MAX_COORDINATE_OPS
+        }),
+        "the work bound must bite on the ranked path, with n inside the count cap"
+    );
+
+    // CONTROL: a set that violates NEITHER cap must still be selected, or both assertions
+    // above could be satisfied by a function that refuses everything.
+    let ok = set(8, 4);
+    assert!(
+        multi_krum_ranked(&ok, 1).is_ok(),
+        "a set inside both caps must still rank"
+    );
+}
