@@ -360,6 +360,19 @@ jobs:
         run: python3 tools/readme-commands.py
       - name: Coverage table must match what CI enforces
         run: python3 tools/coverage-claim-check.py
+      # fl-03 / fl-06 / fl-08 were each closed by a measured disclosure filed where the
+      # reader it was written for would never be standing -- "Drop-in for FedAvg" stated in
+      # three places and corrected in one, the model-size cost measured in one place and
+      # absent from both surfaces where the adapter is chosen, and the kernel's floor bias
+      # documented only in the adapter. The measurements were never the problem; placement
+      # was. Nothing stops the next quickstart or docstring from re-stating a claim and
+      # leaving its caveat three files away, so the pairing is enforced rather than
+      # remembered. --self-test runs FIRST because a claim/caveat rule with a typo in its
+      # pattern passes vacuously forever, which is the failure mode this whole audit is about.
+      - name: The claim/caveat check must be able to fail
+        run: python3 tools/claim-caveat-check.py --self-test
+      - name: Every guarded claim must carry its caveat
+        run: python3 tools/claim-caveat-check.py
       # adv-08. Needs the release binaries, and needs a real pty -- `cargo test` gives a
       # child a pipe, so `stdin().is_terminal()` is false and the branch is unreachable
       # from the Rust suites. Measured: deleting the guard in any of the three binaries
