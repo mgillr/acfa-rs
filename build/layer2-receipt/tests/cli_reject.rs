@@ -28,7 +28,7 @@ fn verify(args: &[&str]) -> i32 {
 
 #[test]
 fn a_large_non_receipt_is_refused_without_reading_it_all() {
-    let dir = std::env::temp_dir().join("acfa_adv09");
+    let dir = std::env::temp_dir().join("acfa_adv09_large");
     std::fs::create_dir_all(&dir).expect("tmpdir");
     let big = dir.join("not-a-receipt.bin");
 
@@ -54,7 +54,7 @@ fn a_file_too_short_to_hold_a_magic_does_not_panic() {
     // The header read must handle a file SHORTER than the magic. read_exact fails there,
     // and treating that as anything other than "not a receipt" would turn a two-byte file
     // into a crash.
-    let dir = std::env::temp_dir().join("acfa_adv09");
+    let dir = std::env::temp_dir().join("acfa_adv09_short");
     std::fs::create_dir_all(&dir).expect("tmpdir");
     for (name, body) in [("empty.bin", &b""[..]), ("two.bin", &b"AC"[..])] {
         let p = dir.join(name);
