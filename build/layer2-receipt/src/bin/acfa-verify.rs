@@ -19,7 +19,7 @@
 //!   2  unparseable
 //!   3  self-consistent only -- NOT a security verdict (no `--pki` given)
 
-use acfa_receipt::identity::{Pki, PubKey};
+use acfa_receipt::identity::{is_usable_pubkey, Pki, PubKey};
 use acfa_receipt::{decode, Invalid, Policy, Rule, WireError};
 use std::io::{IsTerminal, Read};
 use std::process::ExitCode;
@@ -66,6 +66,23 @@ fn parse_pki(text: &str) -> Result<Pki, String> {
             // ASCII, so reject rather than abort. See acfa-agg for the same guard.
             *b = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16)
                 .map_err(|_| format!("line {}: bad hex", n + 1))?;
+        }
+        // crypto-10, SECOND DOOR. `is_usable_pubkey` says in its own doc that it is
+        // "checked where keys ENTER, because by the time `verify` sees one the damage is a
+        // policy decision already made" -- and this is an entry. `wire::decode` calls it
+        // (wire.rs) and `acfa-finality` calls it at its `pki` directive; this door checked
+        // only length, ASCII and hex, so a small-order identity entered the trusted set
+        // here and every signature attributed to that node became one anybody could
+        // produce, with nothing said to the operator.
+        //
+        // The file is operator-supplied and therefore less adversarial than the wire, which
+        // is an argument about LIKELIHOOD, not about consequence: a weak key in a trusted
+        // PKI is exactly the case where nobody is looking.
+        if !is_usable_pubkey(&pk) {
+            return Err(format!(
+                "line {}: node {id} has an unusable public key (malformed or small-order)",
+                n + 1
+            ));
         }
         if pki.insert(id, pk).is_some() {
             return Err(format!("line {}: duplicate node id {id}", n + 1));

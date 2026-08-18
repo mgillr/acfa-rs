@@ -2,15 +2,21 @@
 // Copyright 2026 Ryan Gillespie
 //! `crypto02_key_strength` HALF 3 -- the CLI path.
 //!
-//! Halves 1 and 2 both live at DECODE time. The `acfa-verify` CLI never decodes its trust
-//! anchor: `parse_pki` reads it from a TEXT FILE, and that file has no key validation. So
-//! neither decode-time guard is reachable on the CLI path by itself.
+//! Halves 1 and 2 both live at DECODE time, and the `acfa-verify` CLI never decodes its trust
+//! anchor -- `parse_pki` reads it from a TEXT FILE. TWO independent layers now close the CLI
+//! path, and this test pins the second:
 //!
-//! What closes it is `Receipt::verify`'s full-PKI equality (`src/receipt.rs`, `PkiMismatch`),
-//! which compares ids AND keys, so an operator's trust file can only be USED if it is
-//! identical to the one the receipt carries -- and the carried one has already been
-//! through decode. That line is therefore a SECOND-half dependency of crypto-02 exactly
-//! as it is of crypto-03.
+//!   1. INGRESS (crypto-10). `parse_pki` calls `is_usable_pubkey` on every key, so a small-order
+//!      point is refused where it ENTERS -- the door crypto-10 added, symmetric with wire decode.
+//!   2. DOWNSTREAM (crypto-02, pinned here). `Receipt::verify`'s full-PKI equality
+//!      (`src/receipt.rs`, `PkiMismatch`) compares ids AND keys, so an operator's trust file can
+//!      only be USED if it is identical to the one the receipt carries -- and the carried one has
+//!      already been through decode. That line is a SECOND-half dependency of crypto-02 exactly
+//!      as it is of crypto-03.
+//!
+//! This test constructs the policy PKI DIRECTLY, bypassing `parse_pki`, so it isolates and pins
+//! the downstream layer -- which must hold on its own even though the ingress guard would also
+//! stop this key at the CLI.
 //!
 //! This test exists because `wire.rs::swapping_one_key_in_the_policy_is_enough_to_refuse`
 //! was the ONLY thing pinning that line, and it pins it under the FORGED-DEPLOYMENT story.
@@ -59,8 +65,10 @@ fn crypto02_half3_a_weak_key_trust_file_cannot_be_used_against_a_clean_receipt()
     let (_ids, clean) = room(3);
     let receipt = issued(&clean);
 
-    // The operator's text file: same identities, but node 3's key swapped for a
-    // small-order point. `parse_pki` would accept this file -- it validates ids only.
+    // The operator's text file: same identities, but node 3's key swapped for a small-order
+    // point. Since crypto-10 `parse_pki` REJECTS such a file at ingress; this test builds the
+    // policy PKI directly to isolate the downstream `PkiMismatch` layer, which closes the path
+    // even if the ingress guard were absent.
     let mut weak_file = clean.clone();
     weak_file.insert(3, unhex32(SMALL_ORDER));
     assert_ne!(weak_file, clean, "the fixture must actually differ");
