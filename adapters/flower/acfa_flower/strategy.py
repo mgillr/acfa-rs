@@ -119,6 +119,42 @@ def _why_unusable(path: str) -> Optional[str]:
     return None
 
 
+# THE KERNEL'S STDOUT TOKENS, NAMED ONCE (#64, third route).
+#
+# These were three string literals each paired with a hand-written slice length on the next
+# line -- `startswith("undefended ")` beside `out[11:]`. All three agreed, and nothing made
+# them agree: the number's only definition was the length of a string on an adjacent line.
+# That is the "derive it, do not quote it" defect in Python, and B's `undefended` token added
+# the third instance rather than introducing the pattern.
+#
+# THE FAILURE MODE IS #64's, REACHED BY A SECOND ROUTE. If a token and its length drift, the
+# slice cuts into the payload, `int()` receives a non-numeric fragment, and the ValueError
+# escapes -- the only `except` in this module is the Flower import guard, so nothing converts
+# it to AcfaAggregationError. A caller doing the documented `except AcfaAggregationError`
+# would not catch it. Slicing by `len(TOKEN)` removes the class: there is no number to drift.
+_OK = "ok "
+_UNDEFENDED = "undefended "
+_REFUSED = "refused "
+
+
+def _decode_values(payload: str, ref: "_Ref"):
+    """Q16.16 integers from a kernel stdout payload, or a NAMED refusal.
+
+    #64. Every malformed input to this adapter raises `AcfaAggregationError` -- except the
+    paths that reach numpy or `int()` directly, which used to leak their own exception type
+    through a public API documenting exactly one. A caller cannot be asked to catch
+    `AcfaAggregationError` and also whatever the parser happened to hit.
+    """
+    try:
+        ints = np.array([int(t) for t in payload.split()], dtype=np.int64)
+    except ValueError as e:
+        raise AcfaAggregationError(
+            f"kernel emitted a value that is not an integer: {e}. This is a wire-contract "
+            f"break between acfa-agg and this adapter, not a bad client update."
+        ) from e
+    return _unflatten(ints.astype(np.float64) / Q_SCALE, ref.shapes, ref.dtypes)
+
+
 def _find_binary(explicit: Optional[str] = None) -> str:
     """Locate the `acfa-agg` kernel binary.
 
@@ -196,6 +232,24 @@ class _Flat:
 
 
 def _flatten(arrays: Sequence[np.ndarray]) -> _Flat:
+    # #64. A client that contributes NO ARRAYS reached `np.concatenate([])` and escaped as
+    # `ValueError: need at least one array to concatenate` -- numpy's message, naming nothing,
+    # and NOT the `AcfaAggregationError` this package exports as its error type. Every other
+    # malformed input raises that: no updates, empty arrays, mismatched shapes, non-finite,
+    # out of range, duplicate tie keys. This one path leaked.
+    #
+    # IT IS REACHABLE FROM THE NETWORK, not just from the helper. Measured through
+    # `AcfaStrategy.aggregate_fit` -- the method Flower's server calls -- with a client whose
+    # `Parameters` carry an empty ndarray list. The updates arriving there are client-supplied
+    # by construction, so a server wrapping its aggregation in `except AcfaAggregationError`
+    # does not catch this and the round takes the process down instead of failing cleanly.
+    if not arrays:
+        raise AcfaAggregationError(
+            "a client contributed no arrays at all. Every other client's update is a list of "
+            "ndarrays; this one is empty, so there is nothing to aggregate for it. Refusing "
+            "rather than letting numpy's `need at least one array to concatenate` escape as a "
+            "type the caller was never told to catch."
+        )
     return _Flat(
         values=np.concatenate([np.asarray(a, dtype=np.float64).ravel() for a in arrays]),
         shapes=tuple(np.asarray(a).shape for a in arrays),
@@ -614,19 +668,17 @@ def aggregate(
         check=False,
     )
     out = proc.stdout.decode().strip()
-    if proc.returncode == 0 and out.startswith("ok "):
-        ints = np.array([int(t) for t in out[3:].split()], dtype=np.int64)
-        return _unflatten(ints.astype(np.float64) / Q_SCALE, ref.shapes, ref.dtypes)
+    if proc.returncode == 0 and out.startswith(_OK):
+        return _decode_values(out[len(_OK):], ref)
     # adv-01 x fl-11 (D-2). The SELECT-ALL band (krum, n < f+3) is emitted by the kernel as
     # `undefended <values>` -- the plain mean, under a DISTINCT token so it is never mistaken
     # for a defended `ok` result. The band is a real value the adapter must REPORT, not fail on
     # (fl-11's tested design), so it is unflattened like `ok` and its unmet bound is surfaced by
     # the caller through `acfa_population_bound_met`, computed from n and required_n independently.
-    if proc.returncode == 0 and out.startswith("undefended "):
-        ints = np.array([int(t) for t in out[11:].split()], dtype=np.int64)
-        return _unflatten(ints.astype(np.float64) / Q_SCALE, ref.shapes, ref.dtypes)
-    if out.startswith("refused "):
-        raise AcfaAggregationError(f"kernel refused: {out[8:]}")
+    if proc.returncode == 0 and out.startswith(_UNDEFENDED):
+        return _decode_values(out[len(_UNDEFENDED):], ref)
+    if out.startswith(_REFUSED):
+        raise AcfaAggregationError(f"kernel refused: {out[len(_REFUSED):]}")
     raise AcfaAggregationError(
         f"kernel failed (exit {proc.returncode}): {proc.stderr.decode().strip() or out}"
     )
@@ -643,8 +695,24 @@ try:  # pragma: no cover - exercised only when Flower is installed
     from flwr.server.strategy import FedAvg
 
     _HAVE_FLOWER = True
-except Exception:  # pragma: no cover
+    _FLOWER_IMPORT_ERROR = None
+except ImportError as e:  # pragma: no cover - flwr genuinely absent
     _HAVE_FLOWER = False
+    _FLOWER_IMPORT_ERROR = None
+    _FLOWER_ABSENT_REASON = str(e)
+    FedAvg = object  # type: ignore
+except Exception as e:  # pragma: no cover - flwr present but BROKEN
+    # #60. This used to be one broad `except Exception` that recorded a BROKEN install
+    # identically to an ABSENT one and discarded the cause. The user then met
+    # "flwr is required for AcfaStrategy; `pip install flwr`", ran pip, was told ALREADY
+    # SATISFIED, and was left with no information -- advice that is wrong for their case
+    # and a real exception thrown away at the one point it was still available.
+    #
+    # A version clash, a bad C extension or a partial install all raise something that is
+    # NOT ImportError. Keeping the cause is the whole fix: absent and broken need different
+    # actions, so they need different messages.
+    _HAVE_FLOWER = False
+    _FLOWER_IMPORT_ERROR = e
     FedAvg = object  # type: ignore
 
 
@@ -704,6 +772,14 @@ class AcfaStrategy(FedAvg):  # type: ignore[misc]
         **kwargs,
     ) -> None:
         if not _HAVE_FLOWER:  # pragma: no cover
+            if _FLOWER_IMPORT_ERROR is not None:
+                raise ImportError(
+                    "flwr IS installed but failed to import, so AcfaStrategy cannot subclass "
+                    f"FedAvg. The original failure was: "
+                    f"{type(_FLOWER_IMPORT_ERROR).__name__}: {_FLOWER_IMPORT_ERROR}. "
+                    "Reinstalling will not help -- fix that error, or check that flwr was "
+                    "installed for the interpreter running this code."
+                ) from _FLOWER_IMPORT_ERROR
             raise ImportError("flwr is required for AcfaStrategy; `pip install flwr`")
         super().__init__(*args, **kwargs)
         self.rule = Rule(rule)

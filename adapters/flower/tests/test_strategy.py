@@ -8,6 +8,7 @@ which is the determinism claim at the adapter level rather than in the kernel.
 """
 
 import os
+import re
 import pathlib
 import struct
 import subprocess
@@ -1316,3 +1317,114 @@ def test_an_unusable_acfa_agg_bin_is_refused_not_silently_replaced(tmp_path, mon
     assert Path(found).is_file(), "with nothing set, the implicit search must still resolve"
     monkeypatch.setenv("ACFA_AGG_BIN", found)
     assert _find_binary() == found, "a usable pin must be honoured verbatim"
+
+
+def test_a_client_contributing_no_arrays_is_refused_by_name_not_by_numpy():
+    """#64. Every malformed input raises AcfaAggregationError -- this one leaked numpy's.
+
+    MEASURED before the fix, through the PUBLIC api AND through `AcfaStrategy.aggregate_fit`
+    (the method Flower's server calls, where updates are client-supplied by construction):
+        ValueError: need at least one array to concatenate
+    numpy's message, naming nothing, and NOT the type this package exports. A server doing the
+    documented `except AcfaAggregationError` did not catch it, so one client sending empty
+    `Parameters` took down the aggregation path instead of failing the round.
+
+    The control matters: every OTHER malformed shape already refused correctly, so this asserts
+    a gap in one path rather than the absence of validation generally.
+    """
+    keys = [bytes([i]) for i in range(3)]
+    with pytest.raises(AcfaAggregationError, match="contributed no arrays"):
+        aggregate([[] for _ in range(3)], rule=Rule.MEAN, f=1, tie_keys=keys)
+
+    # CONTROL: the sibling malformed inputs still refuse with the SAME type, so the fix did not
+    # merely add one message to an otherwise leaky boundary.
+    with pytest.raises(AcfaAggregationError):
+        aggregate([], rule=Rule.MEAN, f=1)
+    ups = honest_set()
+    ups[0] = [np.array([1.0]), np.array([[1.0, 2.0]])]
+    with pytest.raises(AcfaAggregationError):
+        aggregate(ups, rule=Rule.KRUM, f=1)
+
+
+def test_the_kernel_tokens_are_sliced_by_length_not_by_a_quoted_number():
+    """#64, third route. The parser's slice offsets must DERIVE from the token, not repeat it.
+
+    `startswith("undefended ")` used to sit beside `out[11:]`, with nothing making the 11 and
+    the string agree. If they drift the slice cuts into the payload, `int()` gets a fragment,
+    and the ValueError escapes -- the only `except` in the module is the Flower import guard,
+    so nothing converts it to AcfaAggregationError.
+
+    This pins the property directly: for every token, the offset used is exactly its length.
+    A future token added with a hand-counted offset fails here rather than in a deployment.
+    """
+    from acfa_flower.strategy import _OK, _REFUSED, _UNDEFENDED, _decode_values
+
+    for tok in (_OK, _UNDEFENDED, _REFUSED):
+        assert tok.endswith(" "), f"{tok!r} must carry its separator, or len() slices short"
+
+    # CODE ONLY, NOT PROSE. The first version of this check grepped the whole file and failed
+    # on its own rationale: the comment explaining the fix has to quote `out[11:]` to describe
+    # what it replaced, and the docstring above does too. An absence-assertion over a file that
+    # must document the thing it forbids can never pass -- the check has to look where the
+    # defect could actually live.
+    src = Path(__file__).resolve().parents[1] / "acfa_flower" / "strategy.py"
+    code = [
+        l for l in src.read_text().split("\n")
+        if not l.lstrip().startswith("#")
+    ]
+    offenders = [
+        l.strip() for l in code
+        if re.search(r"out\[\s*\d+\s*:", l)
+    ]
+    assert not offenders, (
+        "a hand-counted slice offset is back in CODE; use out[len(TOKEN):] so the number "
+        f"cannot drift: {offenders}"
+    )
+
+    # And the decoder converts a wire-contract break into OUR error type rather than numpy's.
+    class _R:
+        shapes = ((1,),)
+        dtypes = (np.float64,)
+
+    with pytest.raises(AcfaAggregationError, match="not an integer"):
+        _decode_values("not-a-number", _R())
+
+
+def test_a_broken_flwr_is_reported_differently_from_an_absent_one(monkeypatch):
+    """#60. An installed-but-broken flwr used to be indistinguishable from a missing one.
+
+    The import was guarded by a broad `except Exception` that recorded BOTH as
+    `_HAVE_FLOWER = False` and discarded the cause. The user then met
+    "flwr is required for AcfaStrategy; `pip install flwr`", ran pip, was told ALREADY
+    SATISFIED, and was left with the real error thrown away at the one point it existed.
+
+    MEASURED before the fix, with a stub `flwr` whose __init__ raises RuntimeError:
+        find_spec("flwr")     True   -- findable, so the test gate does not skip
+        import flwr           raises
+        AcfaStrategy(...)     "flwr is required...; pip install flwr"  <- byte-identical
+                                                                          to the absent case
+    Two different failures, one message, and the advice wrong for one of them.
+
+    This drives the message logic directly rather than through a real broken import, because
+    the import runs at module load and cannot be re-run per test. Both branches are asserted:
+    a missing flwr must still say `pip install`, or the fix would have traded one wrong
+    message for another.
+    """
+    import acfa_flower.strategy as strat
+
+    monkeypatch.setattr(strat, "_HAVE_FLOWER", False)
+
+    # BROKEN: the cause is present, so the message must name it and NOT advise an install.
+    monkeypatch.setattr(strat, "_FLOWER_IMPORT_ERROR", RuntimeError("bad C extension"))
+    with pytest.raises(ImportError) as ei:
+        strat.AcfaStrategy(rule=Rule.KRUM, f=1)
+    msg = str(ei.value)
+    assert "IS installed but failed to import" in msg, msg
+    assert "bad C extension" in msg, "the original cause must survive, not be discarded"
+    assert "pip install flwr" not in msg, "pip is already satisfied here; advising it is wrong"
+
+    # ABSENT: no cause recorded, so the original advice is the correct one and must remain.
+    monkeypatch.setattr(strat, "_FLOWER_IMPORT_ERROR", None)
+    with pytest.raises(ImportError) as ei2:
+        strat.AcfaStrategy(rule=Rule.KRUM, f=1)
+    assert "pip install flwr" in str(ei2.value), str(ei2.value)
