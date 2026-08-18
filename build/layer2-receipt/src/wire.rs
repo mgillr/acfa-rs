@@ -44,6 +44,13 @@ pub enum WireError {
     /// reaches them is bounded, and an unbounded value reaching them overflowed the score
     /// accumulator -- a panic reachable from bytes an attacker chooses.
     ValueOutOfRange,
+    /// rust-12. A fault bound that does not fit the wire's `u32` field.
+    ///
+    /// ENCODE-SIDE ONLY. `decode` reads a `u32` and cannot produce this, but the enum is
+    /// shared by both directions so every `WireError` match must still cover it.
+    FaultBoundTooLarge {
+        f: usize,
+    },
 }
 
 impl core::fmt::Display for WireError {
@@ -63,6 +70,11 @@ impl core::fmt::Display for WireError {
             WireError::ValueOutOfRange => write!(
                 f,
                 "a tensor value lies outside the Q16.16 representable range (+/-2^31)"
+            ),
+            WireError::FaultBoundTooLarge { f: bound } => write!(
+                f,
+                "fault bound f = {bound} does not fit the wire's u32 field; refusing rather \
+                 than truncating, because a truncated bound changes the verdict"
             ),
         }
     }
@@ -127,12 +139,22 @@ impl W {
 /// `f` is the only one that can be enormous without allocating anything, which is why it
 /// is the one called out.
 ///
-/// WHY NO FIX HAS LANDED. Every candidate breaks something a consumer sees: `encode ->
-/// Result` changes a public signature, `f: usize -> u32` changes a public field, and
-/// writing `f` as a `u64` changes the wire format. That is a ruling, not a tidy-up, so it
-/// is with B rather than taken unilaterally. A COMMENT CANNOT FAIL, so this paragraph is
-/// not the guard -- the failing test lands WITH the fix, and until then this exists only so
-/// the next person to read these casts meets the measurement instead of rediscovering it.
+/// PARTLY FIXED, AND THE HALF THAT REMAINS IS DELIBERATE. Every candidate breaks something a
+/// consumer sees: `encode -> Result` changes a public signature used at 33 call sites across
+/// 11 files, `f: usize -> u32` changes a public field, and writing `f` as a `u64` changes the
+/// wire format.
+///
+/// So the fix is ADDITIVE: [`encode_checked`] is the same function with the one refusal it
+/// needs, and `encode` is left exactly as it is. A caller who needs bytes that mean what the
+/// receipt means now has a total path; a caller who does not is unaffected and no wire byte
+/// moved. WHAT IS NOT FIXED is that `encode` remains the obvious name and still truncates --
+/// closing that is the signature ruling, and it is still B's rather than taken unilaterally.
+///
+/// A COMMENT CANNOT FAIL, so this paragraph is not the guard. The guard is
+/// `tests/rust12_total_encode.rs`, which pins BOTH halves: that `encode_checked` refuses, and
+/// that `encode` still truncates and is still non-injective. The second is a characterisation
+/// test and says so -- when it goes red, `encode` became total and it should be inverted, not
+/// repaired.
 ///
 /// WHAT DOES AND DOES NOT WITNESS THIS FUNCTION. `examples/digest.rs` encodes each of the
 /// five fingerprint scenarios and hashes the RESULTING BYTES, and CI diffs those digests
@@ -148,6 +170,25 @@ impl W {
 ///
 /// The fingerprint is also blind to the truncation described above, because all five
 /// scenarios use a small `f`, so the case cannot arise in the digest's inputs.
+/// rust-12, THE TOTAL ENCODER. `encode` cannot refuse -- it is infallible by signature --
+/// so it truncates `f` modulo 2^32 and produces bytes that decode to a DIFFERENT receipt.
+/// This is the same function with the one refusal it needs.
+///
+/// USE THIS WHEREVER THE BYTES WILL BE COMPARED, RE-EXECUTED OR TRUSTED. `encode` is kept
+/// unchanged because 33 call sites across 11 files depend on its signature and the wire
+/// format is unaffected either way -- but every one of those is a site where a receipt with
+/// an out-of-range `f` would serialise to something that is not itself.
+///
+/// `u32::try_from` rather than `r.f > u32::MAX as usize`: on a 32-bit target that comparison
+/// is always false and the guard would be dead code, which is the `num-03` width-dependence
+/// class. `try_from` is correct at every width.
+pub fn encode_checked(r: &Receipt) -> Result<Vec<u8>, WireError> {
+    if u32::try_from(r.f).is_err() {
+        return Err(WireError::FaultBoundTooLarge { f: r.f });
+    }
+    Ok(encode(r))
+}
+
 pub fn encode(r: &Receipt) -> Vec<u8> {
     let mut w = W(Vec::new());
     w.raw(MAGIC);

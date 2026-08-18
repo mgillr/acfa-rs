@@ -247,6 +247,11 @@ fn main() -> ExitCode {
 (+/-2^31); refusing rather than saturating, because saturating would admit the receipt and \
 silently change the aggregate"
                     .to_string(),
+                // decode never produces this -- it is an ENCODE-side refusal for a fault bound
+                // that does not fit the wire -- but the shared enum makes the match exhaustive.
+                WireError::FaultBoundTooLarge { f } => {
+                    format!("fault bound f = {f} does not fit the wire (encode-side error)")
+                }
             };
             eprintln!("acfa-verify: UNPARSEABLE -- {why}");
             return ExitCode::from(2);
