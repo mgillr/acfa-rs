@@ -165,7 +165,11 @@ fn the_ranked_selection_carries_both_caps_too() {
     // COUNT CAP. Sized so the WORK bound cannot be what refuses it, or this would pass for
     // the wrong reason -- the same trap the sibling test's `const` assert exists to close.
     let cs = set(MAX_CONTRIBUTIONS + 1, 1);
-    const { assert!((MAX_CONTRIBUTIONS as u128 + 1) * (MAX_CONTRIBUTIONS as u128 + 1) < MAX_COORDINATE_OPS) };
+    const {
+        assert!(
+            (MAX_CONTRIBUTIONS as u128 + 1) * (MAX_CONTRIBUTIONS as u128 + 1) < MAX_COORDINATE_OPS
+        )
+    };
     assert_eq!(
         multi_krum_ranked(&cs, 1),
         Err(AggError::TooManyContributions {

@@ -349,3 +349,39 @@ fn a_directive_refuses_trailing_tokens_on_its_own_line() {
     assert_eq!(code, 0);
     assert_eq!(stdout, krum_out, "krum must still return krum's answer");
 }
+
+#[test]
+fn a_defended_rule_below_its_robustness_threshold_is_refused_at_the_cli() {
+    // adv-01. multi_krum returns the plain mean of ALL contributions when m = n-f-2 < 1
+    // (n < f+3) -- REFERENCE-FAITHFUL: reference/acfa.py returns list(range(n)) there, and
+    // byte-identity with the reference is load-bearing, so the LIBRARY value must NOT change.
+    // The defect is the CLI reporting that unguarded aggregate at exit 0. The fix is here: a
+    // defended rule (krum/bulyan) below n >= 2f+3 is REFUSED, exit 1, value withheld.
+    //
+    // GUARD-DELETION: remove the matches!(rule,"krum"|"bulyan") && n<2f+3 refusal block from
+    // acfa-agg.rs and the undefended cases return `ok <mean>` at exit 0 again.
+    let undefended = "f 1\n01 3ff0000000000000\n02 4000000000000000\n03 4008000000000000\n";
+    for rule in ["krum", "bulyan"] {
+        let (code, stdout, stderr) = run(&format!("rule {rule}\n{undefended}"));
+        assert_eq!(
+            code, 1,
+            "{rule} below 2f+3 must be refused, not reported at exit 0"
+        );
+        assert_eq!(stdout, "refused undefended", "{rule}: {stdout:?}");
+        assert!(
+            stderr.contains("2f+3"),
+            "{rule}: name the threshold, got {stderr:?}"
+        );
+    }
+    let defended = "f 1\n01 3ff0000000000000\n02 4000000000000000\n03 4008000000000000\n\
+                    04 4010000000000000\n05 4014000000000000\n";
+    let (code, stdout, _) = run(&format!("rule krum\n{defended}"));
+    assert_eq!(code, 0, "krum at n=2f+3 must run");
+    assert!(stdout.starts_with("ok "));
+    let (code, stdout, _) = run(&format!("rule mean\n{undefended}"));
+    assert_eq!(
+        code, 0,
+        "mean makes no robustness claim; population does not gate it"
+    );
+    assert!(stdout.starts_with("ok "));
+}

@@ -199,16 +199,6 @@ pub enum AggError {
         n: usize,
         max: usize,
     },
-    /// multi-Krum was asked to run below its robustness threshold. Krum tolerates `f`
-    /// adversaries only when `n >= 2f + 3`; below that the selection has no majority of honest
-    /// contributions to lean on, so any result it returns carries none of the guarantee the
-    /// caller is paying for. The code used to return ALL indices here, which makes
-    /// `krum_aggregate` the plain mean OF THE ADVERSARY INCLUDED, at exit 0 -- the single worst
-    /// failure mode, a fully poisoned aggregate reported as success.
-    KrumTooFewContributions {
-        n: usize,
-        required: usize,
-    },
 }
 
 /// `Display` and `Error`, because THIS CRATE'S PRODUCT IS ITS REFUSALS.
@@ -291,11 +281,6 @@ impl core::fmt::Display for AggError {
                 f,
                 "{n} contributions exceeds the limit of {max}; the distance matrix is \
                  quadratic in n and a prefix would aggregate a set the caller never chose"
-            ),
-            AggError::KrumTooFewContributions { n, required } => write!(
-                f,
-                "multi-Krum needs n >= 2f+3 = {required} contributions for its robustness \
-                 guarantee, got {n}; refusing rather than returning an unguarded aggregate"
             ),
         }
     }
@@ -713,20 +698,10 @@ pub fn multi_krum(cs: &[Contribution], f: usize) -> Result<Vec<usize>, AggError>
     // large `f`, so the select-all convention silently failed to fire. As a dependency
     // built in release this returned six of seven indices with no error; in a build with
     // overflow-checks it aborted with exit 101. Neither is the documented behaviour.
-    // REFUSE below the robustness threshold, do NOT select-all. Krum tolerates `f`
-    // adversaries only at `n >= 2f + 3`; below it the selection has no honest majority and
-    // returning all indices makes `krum_aggregate` the mean WITH the adversary, at exit 0 --
-    // a fully poisoned aggregate reported as success (adv-01). `u128` because `2f + 3` in
-    // `usize` wraps for an untrusted `f`, which is how the old `f + 3` convention silently
-    // failed to fire in the first place.
-    let required_u = 2u128 * f as u128 + 3;
-    if (n as u128) < required_u {
-        return Err(AggError::KrumTooFewContributions {
-            n,
-            required: required_u.min(usize::MAX as u128) as usize,
-        });
+    if (n as u128) < f as u128 + 3 {
+        return Ok((0..n).collect());
     }
-    // Safe: `n >= 2f + 3 >= f + 2`, so this cannot underflow.
+    // Safe: the guard above establishes `n >= f + 3`, so this cannot underflow.
     let m = n - f - 2;
 
     // Refuse before allocating: the matrix is the amplification, so the check has to
@@ -1079,7 +1054,7 @@ mod tests {
             })
             .collect();
 
-        // n < 2f + 3 holds for every f this large, so the robustness guard refuses (adv-01).
+        // n < f + 3 holds for every f this large, so the select-all convention fires.
         // Written width-independently ON PURPOSE, and the first draft was not: it used
         // `1usize << 62`, which does not even COMPILE on a 32-bit target. A test for
         // width independence that is itself width-dependent is worth nothing, and the
@@ -1091,15 +1066,10 @@ mod tests {
             usize::MAX / 2 + 1,
             usize::MAX / 4 + 1,
         ] {
-            // The guard must FIRE cleanly for a huge `f` rather than WRAP -- `2f+3` is
-            // computed in u128 precisely so it does not. It refuses (adv-01) instead of the
-            // old select-all, which returned the poisoned mean at exit 0.
-            assert!(
-                matches!(
-                    multi_krum(&cs, f),
-                    Err(AggError::KrumTooFewContributions { .. })
-                ),
-                "multi_krum must refuse (not wrap, not select-all) when it cannot defend (f={f})"
+            assert_eq!(
+                multi_krum(&cs, f).map(|s| s.len()),
+                Ok(7),
+                "multi_krum must select all when it cannot defend (f={f})"
             );
             assert!(
                 coord_median_trim(&cs, f).is_ok(),

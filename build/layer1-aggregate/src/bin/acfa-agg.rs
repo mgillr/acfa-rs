@@ -365,6 +365,28 @@ fn main() -> ExitCode {
         );
     }
 
+    // adv-01: a DEFENDED rule asked to run below its robustness threshold produces an
+    // aggregate the caller must not trust. The reference (reference/acfa.py) returns the plain
+    // mean of ALL contributions when `m = n - f - 2 < 1` (n < f+3), so the LIBRARY value stays
+    // reference-faithful and byte-identical -- this refusal lives ONLY at the CLI, where "the
+    // operator asked for a robust aggregate and the population cannot support one" is a
+    // refusal, not a value to hand back at exit 0. Krum's guarantee needs n >= 2f+3
+    // (Blanchard'17). `u128` because `2f+3` in `usize` wraps for an untrusted `f`. Undefended
+    // rules (mean/median/trimmed) make no robustness claim and are unaffected.
+    if matches!(rule.as_str(), "krum" | "bulyan") {
+        let required = 2u128 * f as u128 + 3;
+        if (cs.len() as u128) < required {
+            println!("refused undefended");
+            eprintln!(
+                "acfa-agg: {} needs n >= 2f+3 = {} contributions for its robustness guarantee,                  got {}; refusing rather than returning an aggregate that carries none",
+                rule,
+                required.min(usize::MAX as u128),
+                cs.len()
+            );
+            return ExitCode::from(1);
+        }
+    }
+
     let out = match rule.as_str() {
         "krum" => krum_aggregate(&cs, f),
         "bulyan" => bulyan_aggregate(&cs, f),
