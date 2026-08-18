@@ -99,11 +99,25 @@ fn run(receipt: &[u8], pki_file: &str, flag: &str) -> (i32, String) {
     // into it, and `.expect("write receipt")` turned that into a panic -- asserting a
     // contract the binary should not honour.
     //
-    // NOT OBSERVED FLAKING HERE, and I am fixing it anyway rather than waiting for it. The
-    // receipt this file builds is small enough that the write usually completes before the
-    // child exits, so the race is won almost every time; `rust08` writes a larger one and
-    // lost it 9 runs in 12. That difference is timing, not correctness -- the same defect
-    // sitting under a smaller load. A race that has not fired is not a race that cannot.
+    // IT FIRES ONLY UNDER CONTENTION, WHICH IS WHY IT LOOKED CLEAN. The receipt this file
+    // builds is small, so the write usually completes before the child exits and the race is
+    // won almost every time; `rust08` writes a larger one and lost it 9 runs in 12.
+    //
+    // MEASURED on the pre-fix file, same binary, same 25 runs, ONE variable changed:
+    //
+    //     quiet box                    0 / 25 red
+    //     under load (8 CPU burners)   2 / 25 red
+    //         panicked at tests/require_bound_spellings.rs:96:10
+    //         thread 'a_value_require_bound_does_not_define_is_refused_rather_than_guessed'
+    //
+    // To reproduce: start `for j in $(seq 1 8); do (while :; do :; done) & done` before the
+    // loop and kill them after. Two of us measured this file on the same commit and got 0/25
+    // and 3/25; neither was wrong, and the disagreement was entirely machine load. A quiet
+    // laptop is the WORST place to look for this class of defect, and CI is not a quiet
+    // laptop.
+    //
+    // This comment first read "not observed flaking here" -- true of the observations behind
+    // it, false as a statement about the code, and the file is what the next reader leans on.
     //
     // Any OTHER write error still fails loudly.
     if let Err(e) = child.stdin.as_mut().expect("stdin").write_all(receipt) {
