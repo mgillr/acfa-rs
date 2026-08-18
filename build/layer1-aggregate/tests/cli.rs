@@ -364,7 +364,10 @@ fn a_defended_rule_below_its_robustness_threshold_is_refused_at_the_cli() {
     // the select-all case returns `ok <mean>` at exit 0 again.
     let select_all = "f 1\n01 3ff0000000000000\n02 4000000000000000\n03 4008000000000000\n"; // n=3, f+3=4
     let (code, stdout, stderr) = run(&format!("rule krum\n{select_all}"));
-    assert_eq!(code, 1, "krum below n=f+3 (select-all) must be refused, not reported at exit 0");
+    assert_eq!(
+        code, 1,
+        "krum below n=f+3 (select-all) must be refused, not reported at exit 0"
+    );
     assert_eq!(stdout, "refused undefended", "{stdout:?}");
     assert!(stderr.contains("f+3"), "name the threshold, got {stderr:?}");
 
@@ -372,8 +375,14 @@ fn a_defended_rule_below_its_robustness_threshold_is_refused_at_the_cli() {
     let regime2 = "f 1\n01 3ff0000000000000\n02 4000000000000000\n03 4008000000000000\n\
                    04 4010000000000000\n"; // n=4, f=1: f+3=4 <= 4 < 5=2f+3
     let (code, stdout, _) = run(&format!("rule krum\n{regime2}"));
-    assert_eq!(code, 0, "krum in regime 2 (selects, no formal guarantee) must NOT be refused");
-    assert!(stdout.starts_with("ok "), "regime 2 must return a value: {stdout:?}");
+    assert_eq!(
+        code, 0,
+        "krum in regime 2 (selects, no formal guarantee) must NOT be refused"
+    );
+    assert!(
+        stdout.starts_with("ok "),
+        "regime 2 must return a value: {stdout:?}"
+    );
 
     // Bulyan below its own precondition errors in the LIBRARY (not the CLI guard) -- a distinct,
     // named refusal, not `refused undefended`.
