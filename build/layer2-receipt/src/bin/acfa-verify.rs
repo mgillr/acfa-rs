@@ -117,7 +117,36 @@ Verifies an ACFA Layer 2 receipt offline. Reads stdin when FILE is absent.
 Exit: 0 verified, 1 invalid, 2 unparseable, 3 self-consistent only (no --pki).";
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // rust-04. `std::env::args()` PANICS on an argument that is not valid Unicode. Every
+    // one of these binaries documents "2 unreadable input" and all three ABORTED AT 101
+    // instead, with a rustc-internal message an operator cannot act on. Measured before
+    // this change, one argument of `--pki=\xff\xfe`: acfa-agg 101, acfa-verify 101,
+    // acfa-finality 101.
+    //
+    // `args_os` cannot panic, so the refusal becomes ours to write -- which is the point:
+    // an abort is not a refusal, and the contract promised a refusal. Same shape as num-05,
+    // where the CLI aborted at 101 on well-typed input its own contract said was exit 1.
+    //
+    // The message names the POSITION, not the bytes: the argument is by definition not
+    // printable, and "argument 2" is what the operator can act on.
+    let args: Vec<String> = {
+        let mut collected = Vec::new();
+        for (i, a) in std::env::args_os().skip(1).enumerate() {
+            match a.into_string() {
+                Ok(s) => collected.push(s),
+                Err(_) => {
+                    eprintln!(
+                        "acfa-verify: argument {} is not valid UTF-8; refusing rather than \
+                         aborting.\n",
+                        i + 1
+                    );
+                    eprint!("{USAGE}");
+                    return ExitCode::from(2);
+                }
+            }
+        }
+        collected
+    };
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
