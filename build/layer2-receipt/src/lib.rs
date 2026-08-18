@@ -45,7 +45,9 @@
 //!
 //! Given a policy, a valid receipt proves the issuer computed honestly **over the set it
 //! showed you**. It does not by itself prove the issuer showed you everything it held --
-//! that requires comparing `state_root` against an independently obtained root. And a
+//! that requires comparing `state_root` against an independently obtained root -- pass it to
+//! the verifier as `acfa-verify --expect-state-root <64-hex>`, which exits 1 on a mismatch.
+//! And a
 //! receipt can be valid and `population_bound_met == false` at the same time: correct arithmetic over
 //! too small a population to carry any Byzantine guarantee.
 //!

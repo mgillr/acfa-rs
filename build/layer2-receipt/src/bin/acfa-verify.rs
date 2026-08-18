@@ -107,6 +107,12 @@ Verifies an ACFA Layer 2 receipt offline. Reads stdin when FILE is absent.
   --require-bound       fail a receipt whose admitted population is below the rule's
                         stated bound. NOTE this is a POPULATION check, not a safety
                         check: meeting the bound does not make a round safe.
+  --expect-state-root <64-hex>
+                        the state root you obtained INDEPENDENTLY of this receipt.
+                        Refuses (exit 1) if the receipt's root differs. This is the
+                        only check that detects WITHHOLDING: verification proves the
+                        issuer computed honestly over the set it SHOWED, never that
+                        it showed everything it held.
 
 Exit: 0 verified, 1 invalid, 2 unparseable, 3 self-consistent only (no --pki).";
 
@@ -122,7 +128,15 @@ fn main() -> ExitCode {
     // `--require-bound`, so the check the operator asked for was never applied and the tool
     // exited 0. A verifier that ignores what it was asked to do is worse than one that
     // refuses, because the operator has no way to notice.
-    const KNOWN: [&str; 6] = ["--pki", "--f", "--rule", "--require-bound", "--help", "-h"];
+    const KNOWN: [&str; 7] = [
+        "--pki",
+        "--f",
+        "--rule",
+        "--require-bound",
+        "--expect-state-root",
+        "--help",
+        "-h",
+    ];
     for a in &args {
         if !a.starts_with('-') {
             continue;
@@ -178,7 +192,34 @@ fn main() -> ExitCode {
     let f_override = flag_value(&args, "--f");
     let rule_want = flag_value(&args, "--rule");
 
-    let flag_names = ["--pki", "--f", "--rule"];
+    // rust-08. THE MITIGATION THIS TOOL DOCUMENTS BUT DID NOT IMPLEMENT. Three places --
+    // SECURITY.md, lib.rs and this binary's own closing note -- tell the operator to
+    // "compare the state root against an independently obtained one", and there was no way
+    // to supply one. Advice a tool gives and cannot accept is not a mitigation.
+    //
+    // Malformed input is refused rather than interpreted, for the same reason
+    // `--require-bound=false` is: a root that is not 32 bytes of hex cannot match anything,
+    // so silently failing the comparison would report WITHHOLDING for a typo.
+    let expect_root = match flag_value(&args, "--expect-state-root") {
+        None => None,
+        Some(h) => {
+            let h = h.trim().to_ascii_lowercase();
+            let ok = h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit());
+            if !ok {
+                eprintln!(
+                    "acfa-verify: --expect-state-root takes 64 hex characters (32 bytes); \
+                     got {} character(s). Refusing rather than comparing against a value \
+                     that cannot match any root.\n",
+                    h.len()
+                );
+                eprint!("{USAGE}");
+                return ExitCode::from(2);
+            }
+            Some(h)
+        }
+    };
+
+    let flag_names = ["--pki", "--f", "--rule", "--expect-state-root"];
     let mut consumed: Vec<usize> = Vec::new();
     for (i, a) in args.iter().enumerate() {
         if flag_names.contains(&a.as_str()) {
@@ -271,6 +312,23 @@ silently change the aggregate"
                 println!("carries. That set is chosen by whoever wrote the receipt, so a");
                 println!("forgery built from freshly minted keys reaches this same result.");
                 println!("Supply --pki with identities you independently trust.");
+                if let Some(want) = &expect_root {
+                    if &hex32(&sc.state_root) != want {
+                        eprintln!();
+                        eprintln!(
+                            "acfa-verify: STATE ROOT MISMATCH -- the receipt does not describe \
+                             the state you expected."
+                        );
+                        eprintln!("  expected {want}");
+                        eprintln!("  receipt  {}", hex32(&sc.state_root));
+                        eprintln!(
+                            "  This is the withholding check: the issuer may have computed \
+                             honestly over a set it chose to show you."
+                        );
+                        return ExitCode::from(1);
+                    }
+                    println!("  state root MATCHES the one you supplied.");
+                }
                 ExitCode::from(3)
             }
             Err(e) => {
@@ -320,9 +378,31 @@ silently change the aggregate"
 
     match receipt.verify(&policy) {
         Ok(v) => {
+            // rust-08: check BEFORE printing VERIFIED. A mismatch means this is not the
+            // receipt you were promised, and printing the success banner first and the
+            // refusal after would leave a scrollback where VERIFIED is the eye-catching line.
+            if let Some(want) = &expect_root {
+                if &hex32(&v.state_root) != want {
+                    eprintln!(
+                        "acfa-verify: STATE ROOT MISMATCH -- the receipt does not describe the \
+                         state you expected."
+                    );
+                    eprintln!("  expected {want}");
+                    eprintln!("  receipt  {}", hex32(&v.state_root));
+                    eprintln!(
+                        "  Every signature may still be genuine. This is the WITHHOLDING check: \
+                         verification proves the issuer computed honestly over the set it \
+                         SHOWED, never that it showed everything it held."
+                    );
+                    return ExitCode::from(1);
+                }
+            }
             println!("VERIFIED");
             println!("  round        {}", v.round);
             println!("  state root   {}", hex32(&v.state_root));
+            if expect_root.is_some() {
+                println!("               MATCHES the root you supplied independently.");
+            }
             println!("  output root  {}", hex32(&v.output_root));
             match &v.aggregate {
                 None => println!("  aggregate    NONE (no admissible contribution)"),
@@ -361,7 +441,8 @@ silently change the aggregate"
             println!("Checked against the identities in {pki_path} and f = {f}.");
             println!("This establishes that the issuer computed honestly over the set shown.");
             println!("It does NOT establish that the issuer showed every entry it held --");
-            println!("compare the state root against an independently obtained one for that.");
+            println!("compare the state root against an independently obtained one for that --");
+            println!("pass it as --expect-state-root <64-hex> and a mismatch exits 1.");
             println!();
             println!("Meeting the population bound is NOT a safety guarantee. A colluding");
             println!("within-norm adversary can be selected while the bound holds and move");

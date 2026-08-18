@@ -65,7 +65,9 @@ Reporting these is welcome but they are known scope limits, documented in the RE
 - **Sybil resistance** is delegated to whatever issues the PKI.
 - **Withholding.** A valid receipt proves honest computation over the set it showed you,
   not that it showed you everything it held. Detecting withholding requires comparing the
-  state root against an independently obtained one.
+  state root against an independently obtained one, and the verifier performs that
+  comparison for you: `acfa-verify --expect-state-root <64-hex>` exits 1 on a mismatch.
+  Until `rust-08` this paragraph named a mitigation the shipped tool had no way to accept.
 - **Round finality** is provided by `acfa-finality` and is IN scope: a certificate that
   verifies on evidence it should reject, or a synchrony violation that does not produce
   transferable evidence, are both reportable. What is NOT claimed is liveness under an
