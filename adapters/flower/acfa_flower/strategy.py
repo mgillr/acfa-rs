@@ -101,15 +101,68 @@ class AcfaAggregationError(RuntimeError):
     """
 
 
+def _why_unusable(path: str) -> Optional[str]:
+    """Why `path` cannot be run as the kernel, or None if it can.
+
+    Named rather than inlined so the refusal below can SAY which check failed. "not found"
+    and "found but not executable" send an operator to different fixes, and collapsing them
+    into one message costs the reader the half of the answer they did not already have.
+    """
+    if not os.path.exists(path):
+        return "no such file"
+    if os.path.isdir(path):
+        return "it is a directory"
+    if not os.path.isfile(path):
+        return "it is not a regular file"
+    if not os.access(path, os.X_OK):
+        return "it is not executable (chmod +x)"
+    return None
+
+
 def _find_binary(explicit: Optional[str] = None) -> str:
-    """Locate the `acfa-agg` kernel binary."""
-    for cand in (
-        explicit,
-        os.environ.get("ACFA_AGG_BIN"),
-        shutil.which("acfa-agg"),
+    """Locate the `acfa-agg` kernel binary.
+
+    AN EXPLICIT CHOICE IS AN INSTRUCTION, NOT A HINT (sweep-c-03).
+    This used to be one fallback chain -- `explicit`, `ACFA_AGG_BIN`, `which`, then two
+    repo-relative `target/` paths -- with NO failure branch. A setting that failed
+    `isfile && X_OK` did not raise and did not warn; the loop simply moved to the next
+    candidate and ran something else.
+    MEASURED before this fix, with `acfa-agg` absent from PATH, so every case fell all the
+    way through to a build directory:
+        ACFA_AGG_BIN = a non-executable file  -> ran build/layer1-aggregate/target/release/acfa-agg
+        ACFA_AGG_BIN = a nonexistent path     -> ran the same
+        ACFA_AGG_BIN = a directory            -> ran the same
+    and `aggregate(...)` returned a normal-looking `[array([1., 2.])]` with no diagnostic.
+
+    That is the failure this package's own docstring says it exists to prevent, one level up:
+    there is no pure-Python fallback because a second implementation could silently disagree
+    -- and silently running a DIFFERENT BINARY than the operator pinned is that same failure.
+    The triggers are ordinary: a typo in a manifest, a lost `+x` after a copy, a path correct
+    on the build host and absent in the container. `shutil.which` also sits ABOVE the repo
+    paths, so on a machine with any `acfa-agg` earlier in PATH a failed pin resolves to that.
+
+    So: if the caller expressed a preference, honour it or REFUSE. The implicit search below
+    is unchanged and still correct for the case where nobody expressed one -- there, falling
+    through candidates is the whole point rather than a bug.
+    """
+    for label, cand in (
+        ("the `binary=` argument", explicit),
+        ("ACFA_AGG_BIN", os.environ.get("ACFA_AGG_BIN")),
     ):
-        if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
+        if cand:
+            why = _why_unusable(cand)
+            if why is not None:
+                raise AcfaAggregationError(
+                    f"{label} is set to {cand!r}, but {why}. Refusing rather than falling "
+                    "back to another binary: you pinned a kernel, and running a different "
+                    "one would be exactly the silent-disagreement failure the fixed-point "
+                    "kernel exists to remove. Fix the path, or unset it to search PATH."
+                )
             return cand
+
+    cand = shutil.which("acfa-agg")
+    if cand and os.path.isfile(cand) and os.access(cand, os.X_OK):
+        return cand
     here = os.path.dirname(os.path.abspath(__file__))
     for rel in (
         "../../../build/layer1-aggregate/target/release/acfa-agg",

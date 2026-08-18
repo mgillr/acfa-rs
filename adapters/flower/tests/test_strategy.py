@@ -193,8 +193,16 @@ def test_no_updates_is_refused():
 
 
 def test_there_is_no_silent_python_fallback(monkeypatch):
-    """A fallback would drop robustness exactly when something unusual happened."""
-    monkeypatch.setenv("ACFA_AGG_BIN", "/nonexistent/acfa-agg")
+    """A fallback would drop robustness exactly when something unusual happened.
+
+    NOTE ON THE SCENARIO. This used to set `ACFA_AGG_BIN` to a nonexistent path. Since
+    sweep-c-03 that input takes an EARLIER and more specific branch -- a pinned kernel that
+    cannot be run is refused by name rather than searched past -- so setting it here would
+    no longer exercise the exhausted-search path this test is about. The variable is now
+    explicitly UNSET so the search genuinely runs out of candidates, which is the state
+    that must still cite the no-fallback rationale.
+    """
+    monkeypatch.delenv("ACFA_AGG_BIN", raising=False)
     monkeypatch.setattr("shutil.which", lambda _: None)
     monkeypatch.setattr(
         "acfa_flower.strategy.os.path.isfile", lambda p: False
@@ -1261,3 +1269,50 @@ def test_the_ascii_wire_cost_is_the_documented_structural_ratio():
     # And the per-value encoding is exactly 16 hex characters, which is what makes it exact.
     assert len(_bits(0.1)) == 16
     assert len(_bits(-1e300)) == 16
+
+
+def test_an_unusable_acfa_agg_bin_is_refused_not_silently_replaced(tmp_path, monkeypatch):
+    """sweep-c-03. A pinned kernel that cannot be run must REFUSE, not fall through.
+
+    `_find_binary` was one fallback chain with no failure branch, so an `ACFA_AGG_BIN` that
+    failed `isfile && X_OK` was discarded in silence and the next candidate ran instead.
+    MEASURED before the fix, with `acfa-agg` absent from PATH: all three cases below
+    executed `build/layer1-aggregate/target/release/acfa-agg`, and the full `aggregate(...)`
+    call returned `[array([1., 2.])]` with no diagnostic at all.
+
+    THE EXISTING SUITE COULD NOT SEE THIS. `test_there_is_no_silent_python_fallback` covers
+    the case where NOTHING resolves and the chain raises. The silent path needs the setting
+    to be unusable WHILE A LATER CANDIDATE SUCCEEDS -- the gap between "set correctly" and
+    "not set at all" -- and no test constructed that state.
+
+    Each case asserts the REASON, not just the refusal: "no such file" and "not executable"
+    send an operator to different fixes.
+    """
+    noexec = tmp_path / "noexec"
+    noexec.write_text("#!/bin/sh\nexit 0\n")
+    noexec.chmod(0o644)
+    a_dir = tmp_path / "adir"
+    a_dir.mkdir()
+
+    cases = [
+        (str(tmp_path / "nope"), "no such file"),
+        (str(a_dir), "is a directory"),
+        (str(noexec), "not executable"),
+    ]
+    for path, expect in cases:
+        monkeypatch.setenv("ACFA_AGG_BIN", path)
+        with pytest.raises(AcfaAggregationError, match=expect):
+            _find_binary()
+        # And through the PUBLIC api, which is where it actually bit: this returned a
+        # plausible aggregate before the fix.
+        with pytest.raises(AcfaAggregationError, match=expect):
+            aggregate(honest_set(), rule=Rule.MEAN, f=1)
+
+    # CONTROL: a USABLE pin is still honoured, and an UNSET variable still searches. Without
+    # these the test would pass against a `_find_binary` that refused everything, which is
+    # the failure mode a refusal-shaped fix invites.
+    monkeypatch.delenv("ACFA_AGG_BIN", raising=False)
+    found = _find_binary()
+    assert Path(found).is_file(), "with nothing set, the implicit search must still resolve"
+    monkeypatch.setenv("ACFA_AGG_BIN", found)
+    assert _find_binary() == found, "a usable pin must be honoured verbatim"
