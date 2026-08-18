@@ -27,12 +27,29 @@ fn run(receipt: &[u8], args: &[&str]) -> (i32, String, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn acfa-verify");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin")
-        .write_all(receipt)
-        .expect("write");
+    // A BROKEN PIPE HERE IS THE TEST PASSING, NOT AN ERROR.
+    //
+    // Two of these cases are refused during ARGUMENT PARSING -- a malformed
+    // `--expect-state-root` and an unknown option -- so the child exits 2 without ever
+    // reading stdin. That is the CORRECT behaviour and the desirable one: a verifier should
+    // not swallow an arbitrarily large receipt it has already decided to reject. The pipe
+    // then closes while this thread is still writing into it.
+    //
+    // The original `.expect("write")` made that a panic, so the test asserted a contract the
+    // binary should not honour. Measured on the shipped tree with cargo's default
+    // parallelism: 9 of 12 runs red, 0 of 12 serially -- and `ci.yml` passes no
+    // `--test-threads`, so main was intermittently red from the moment rust-08 landed.
+    // Under load the child wins the race more often, which is why parallelism changes the
+    // rate and not the mechanism.
+    //
+    // Any OTHER write error still fails loudly.
+    if let Err(e) = child.stdin.as_mut().expect("stdin").write_all(receipt) {
+        assert_eq!(
+            e.kind(),
+            std::io::ErrorKind::BrokenPipe,
+            "unexpected error writing the receipt to the child: {e}"
+        );
+    }
     let out = child.wait_with_output().expect("wait");
     (
         out.status.code().unwrap_or(-1),
