@@ -411,20 +411,15 @@ fn main() -> ExitCode {
     // (`BulyanTooFewContributions`), it never select-alls, so there is no undefended value to
     // refuse -- and putting it here made the CLI emit two different refusals for one condition
     // and cite krum's `2f+3` at a bulyan caller whose real bound is `4f+3` (#61).
-    if rule.as_str() == "krum" {
-        let required = f as u128 + 3;
-        if (cs.len() as u128) < required {
-            println!("refused undefended");
-            eprintln!(
-                "acfa-agg: krum below n = f+3 = {} returns the plain mean of every \
-                 contribution (the adversary included), got {}; refusing rather than \
-                 handing back a fully undefended aggregate at exit 0",
-                required.min(usize::MAX as u128),
-                cs.len()
-            );
-            return ExitCode::from(1);
-        }
-    }
+    // adv-01 x fl-11 (D-2 final). At the SELECT-ALL band (krum, n < f+3) multi_krum returns
+    // EVERY contribution, so the aggregate is the plain mean -- the rule did not run. adv-01
+    // required that this not be handed back SILENTLY as `ok`. The Flower adapter's fl-11 design
+    // (strategy.py) requires that the band still produce a value it can REPORT distinctly, with
+    // a test. Both are satisfied by a DISTINCT TOKEN: the value is emitted, but under
+    // `undefended ` rather than `ok `, so a caller reading the leading token (the documented
+    // contract) cannot mistake it for a defended result, and the adapter parses `undefended`
+    // to report band three. Computed below with the value; this flag selects the token.
+    let undefended_band = rule.as_str() == "krum" && (cs.len() as u128) < f as u128 + 3;
 
     let out = match rule.as_str() {
         "krum" => krum_aggregate(&cs, f),
@@ -439,7 +434,18 @@ fn main() -> ExitCode {
     match out {
         Ok(v) => {
             let parts: Vec<String> = v.iter().map(|x| x.to_string()).collect();
-            println!("ok {}", parts.join(" "));
+            if undefended_band {
+                // Distinct token: the value, but NOT `ok`. See the D-2 comment above.
+                println!("undefended {}", parts.join(" "));
+                eprintln!(
+                    "acfa-agg: krum at n = {} < f+3 = {} SELECTED EVERY contribution (the rule \
+                     did not run); this is the plain mean and carries NO Byzantine guarantee",
+                    cs.len(),
+                    f + 3
+                );
+            } else {
+                println!("ok {}", parts.join(" "));
+            }
             ExitCode::SUCCESS
         }
         // Layer 1 refuses rather than guessing. Surfacing the refusal as a distinct exit

@@ -617,6 +617,14 @@ def aggregate(
     if proc.returncode == 0 and out.startswith("ok "):
         ints = np.array([int(t) for t in out[3:].split()], dtype=np.int64)
         return _unflatten(ints.astype(np.float64) / Q_SCALE, ref.shapes, ref.dtypes)
+    # adv-01 x fl-11 (D-2). The SELECT-ALL band (krum, n < f+3) is emitted by the kernel as
+    # `undefended <values>` -- the plain mean, under a DISTINCT token so it is never mistaken
+    # for a defended `ok` result. The band is a real value the adapter must REPORT, not fail on
+    # (fl-11's tested design), so it is unflattened like `ok` and its unmet bound is surfaced by
+    # the caller through `acfa_population_bound_met`, computed from n and required_n independently.
+    if proc.returncode == 0 and out.startswith("undefended "):
+        ints = np.array([int(t) for t in out[11:].split()], dtype=np.int64)
+        return _unflatten(ints.astype(np.float64) / Q_SCALE, ref.shapes, ref.dtypes)
     if out.startswith("refused "):
         raise AcfaAggregationError(f"kernel refused: {out[8:]}")
     raise AcfaAggregationError(
