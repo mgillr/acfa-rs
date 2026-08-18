@@ -49,7 +49,7 @@
 
 use acfa_finality::wire::{decode_cert, decode_fork, encode_fork};
 use acfa_finality::{Finality, Rejected, Status};
-use acfa_receipt::identity::{Pki, PubKey};
+use acfa_receipt::identity::{is_usable_pubkey, Pki, PubKey};
 use std::io::Read;
 use std::process::ExitCode;
 
@@ -196,6 +196,9 @@ fn main() -> ExitCode {
                 let Ok(key) = <PubKey>::try_from(raw.as_slice()) else {
                     return bad(n + 1, "pubkey must be 32 bytes");
                 };
+                if !is_usable_pubkey(&key) {
+                    return bad(n + 1, "pubkey is unusable (malformed or small-order)");
+                }
                 if pki.insert(id, key).is_some() {
                     return bad(n + 1, "duplicate node_id in pki");
                 }
