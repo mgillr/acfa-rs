@@ -88,12 +88,31 @@ fn run(receipt: &[u8], pki_file: &str, flag: &str) -> (i32, String) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn acfa-verify");
-    child
-        .stdin
-        .as_mut()
-        .expect("stdin")
-        .write_all(receipt)
-        .expect("write receipt");
+    // A BROKEN PIPE HERE IS THE TEST PASSING, NOT AN ERROR. Same shape as the one that made
+    // main intermittently red in `rust08_expected_state_root.rs` (fixed in 4f7a56b), and
+    // this file is the second site of it.
+    //
+    // FOUR of the cases below are refused during ARGUMENT PARSING -- `--require-bound=false`,
+    // `=0`, `=` and the `--require-bounds` typo -- so `acfa-verify` exits 2 without ever
+    // reading stdin, which is the CORRECT behaviour: a verifier must not swallow a receipt
+    // it has already decided to reject. The pipe closes while this thread is still writing
+    // into it, and `.expect("write receipt")` turned that into a panic -- asserting a
+    // contract the binary should not honour.
+    //
+    // NOT OBSERVED FLAKING HERE, and I am fixing it anyway rather than waiting for it. The
+    // receipt this file builds is small enough that the write usually completes before the
+    // child exits, so the race is won almost every time; `rust08` writes a larger one and
+    // lost it 9 runs in 12. That difference is timing, not correctness -- the same defect
+    // sitting under a smaller load. A race that has not fired is not a race that cannot.
+    //
+    // Any OTHER write error still fails loudly.
+    if let Err(e) = child.stdin.as_mut().expect("stdin").write_all(receipt) {
+        assert_eq!(
+            e.kind(),
+            std::io::ErrorKind::BrokenPipe,
+            "unexpected error writing the receipt to the child: {e}"
+        );
+    }
     let out = child.wait_with_output().expect("wait");
     (
         out.status.code().unwrap_or(-1),
