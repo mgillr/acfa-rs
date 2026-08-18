@@ -76,6 +76,32 @@ pub const MAX_MERGE_CONTRIBUTIONS: usize = 4096;
 /// available; thinning is not.
 pub const MAX_MERGE_PROOFS: usize = 8192;
 
+/// Upper bound on how many equivocation proofs `deliver`-ing `cs` can DERIVE.
+///
+/// For each `(round, node_id)` group of size `k`, delivery can form at most `k(k-1)/2`
+/// pairs, and each pair costs a signature verification. This is the quantity that makes
+/// derivation quadratic in a set the sender chooses, so it is the quantity that must be
+/// bounded BEFORE any of the work is done.
+///
+/// EXTRACTED SO THE TWO DOORS SHARE ONE IMPLEMENTATION. `merge` bounded this and
+/// `Receipt::verify` did not, which left the untrusted door open while the trusted one
+/// was shut -- measured at 81.4 KB of input to 67.4 s of verifier CPU with verdict Ok.
+/// A second copy of this arithmetic in `receipt.rs` would drift from this one; a shared
+/// function cannot.
+pub fn derivable_proof_bound<'a, I>(cs: I) -> usize
+where
+    I: IntoIterator<Item = &'a Contribution>,
+{
+    let mut group: BTreeMap<(u64, u32), usize> = BTreeMap::new();
+    for c in cs {
+        *group.entry((c.rnd, c.node_id)).or_insert(0) += 1;
+    }
+    group
+        .values()
+        .map(|&k| k.saturating_mul(k.saturating_sub(1)) / 2)
+        .sum()
+}
+
 /// Why a merge was refused. Refusing rather than truncating is not a preference: a
 /// partially-absorbed merge leaves two honest replicas holding different states from the
 /// same inputs, which is the exact property this module exists to provide.

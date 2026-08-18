@@ -93,6 +93,11 @@ pub struct SelfConsistent {
 /// invalid" is not actionable and "the aggregate does not match the admitted set" is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Invalid {
+    /// The carried contributions could derive more equivocation proofs than the verifier
+    /// will do work for. Each derivable proof costs a signature verification and the count
+    /// is quadratic in how often one node id repeats, so an unbounded verify is a remote
+    /// denial of service on a door that accepts input from anyone.
+    TooMuchDerivableWork { would_be: usize, max: usize },
     /// The receipt's identity set is not the one the checker expects. This is the
     /// fabricated-PKI case and it is the most important rejection in the enum.
     PkiMismatch,
@@ -124,6 +129,12 @@ fn hex8(b: &[u8; 32]) -> String {
 impl core::fmt::Display for Invalid {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Invalid::TooMuchDerivableWork { would_be, max } => write!(
+                f,
+                "the carried contributions could derive up to {would_be} equivocation \
+                 proofs, over the limit of {max}; each costs a signature verification and \
+                 the count is quadratic in how often one node id repeats"
+            ),
             Invalid::PkiMismatch => write!(
                 f,
                 "the receipt's PKI is not the checker's trust file: it describes a different \
@@ -410,6 +421,19 @@ impl Receipt {
             .map(|c| c.node_id)
             .collect();
         admitted.sort_unstable();
+
+        // THE UNTRUSTED DOOR. `deliver` runs detection against everything accumulated so
+        // far, so this loop is QUADRATIC in a contribution set the SENDER chooses. Measured
+        // before the bound: 81.4 KB of receipt to 67.4 s of verifier CPU, verdict Ok, wire
+        // linear while work quadrupled per doubling. `State::merge` already bounded exactly
+        // this quantity; verify did not, so the cap was on the trusted door only.
+        let derivable = crate::state::derivable_proof_bound(&self.contributions);
+        if derivable > crate::state::MAX_MERGE_PROOFS {
+            return Err(Invalid::TooMuchDerivableWork {
+                would_be: derivable,
+                max: crate::state::MAX_MERGE_PROOFS,
+            });
+        }
 
         // Derive convictions from the carried contributions. `add_contribution` above is
         // a raw insert that runs no detection, so this is information the receipt holds

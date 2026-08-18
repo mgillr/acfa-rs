@@ -505,6 +505,13 @@ silently change the aggregate"
 fn report_invalid(e: &Invalid) {
     eprintln!("INVALID");
     match e {
+        Invalid::TooMuchDerivableWork { would_be, max } => {
+            eprintln!("  this receipt would cost more work to check than it is allowed to");
+            eprintln!("  up to {would_be} equivocation proofs derivable, limit {max}");
+            eprintln!("  each derivable proof is a signature verification, and the count is");
+            eprintln!("  quadratic in how often a single node id repeats -- so a small file");
+            eprintln!("  can buy a large amount of your CPU. Refused before doing the work.");
+        }
         Invalid::PkiMismatch => {
             eprintln!("  the receipt's identity set is NOT the one you supplied");
             eprintln!("  every signature in it may still be genuine -- for keys you do not trust");
