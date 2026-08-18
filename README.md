@@ -118,7 +118,7 @@ flowchart TB
 
 ## Install
 
-Nothing is published to crates.io or PyPI. Everything installs from this repository.
+The Rust crates are not published to crates.io -- install them from this repository (below). The Python adapter **is published to PyPI** as [`acfa-flower`](https://pypi.org/project/acfa-flower/).
 
 Rust 1.87+ (`is_multiple_of`). Layer 1 has zero dependencies.
 
@@ -139,19 +139,23 @@ acfa-receipt   = { git = "https://github.com/mgillr/acfa-rs" }
 acfa-finality  = { git = "https://github.com/mgillr/acfa-rs" }
 ```
 
-Python:
+Python (from PyPI):
+
+```sh
+pip install acfa-flower               # the adapter + numpy
+pip install "acfa-flower[flower]"     # add the Flower strategy (pulls flwr)
+```
+
+The adapter shells out to `acfa-agg` for the byte-identical kernel, so install the CLI too
+(the `cargo install` above) and it is found on PATH; set `ACFA_AGG_BIN` to point at a specific
+binary. There is no pure-Python fallback: a second implementation could silently disagree,
+which is the failure the fixed-point kernel exists to remove.
+
+To install the adapter straight from the repository instead (e.g. an unreleased commit):
 
 ```sh
 pip install "git+https://github.com/mgillr/acfa-rs#subdirectory=adapters/flower"
 ```
-
-That installs the adapter itself, and pulls numpy. Add `flwr` for the Flower strategy:
-`pip install "acfa-flower[flower] @ git+https://github.com/mgillr/acfa-rs#subdirectory=adapters/flower"`.
-
-The Python package shells out to `acfa-agg` so every language gets identical bytes, and
-finds it on PATH after the `cargo install` above. Set `ACFA_AGG_BIN` to override. There is
-no pure-Python fallback: a second implementation could silently disagree, which is the
-failure the fixed-point kernel exists to remove.
 
 ## Quickstart
 

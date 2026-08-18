@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "acfa-flower"
-version = "0.1.0"
+version = "0.2.0"
 description = "Byzantine-robust, bit-reproducible aggregation for Flower federated learning"
 readme = "README.md"
 requires-python = ">=3.9"
