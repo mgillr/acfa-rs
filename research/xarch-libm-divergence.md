@@ -86,16 +86,55 @@ platforms:
 differing encoded values : 0 / 1,000,000
 ```
 
+**CORRECTION (num-02): THIS PROBE CANNOT PRODUCE ANY OTHER NUMBER.** `0 / 1,000,000` is what
+this corpus returns whether quantisation absorbs anything or not, so it is not evidence of
+absorption.
+
+An encoding changes only if the scaled value lies within **half a ULP** of a rounding
+boundary, and every divergence measured here is *exactly 1 ULP*. Measured over the 600,000
+-sample corpus that `examples/xarch_absorb.rs` builds:
+
+```
+closest sample to a rounding boundary : 20,472 ULPs
+samples a 1-ULP divergence could flip : 0 of 600,000
+expected flips                        : 8.7e-06
+samples needed for ONE expected flip  : 6.9e10  (about 114,000x this corpus)
+```
+
+The corpus never comes near the only place the two rules can disagree, so `enc` matches
+whatever libm does. To give the probe power the inputs must be *boundary-adjacent* -- see
+`build/layer1-aggregate/tests/quantisation_power.rs`, which carries both the measurement and
+a corpus that can fail. That change is not made here because `xarch_absorb`'s output is
+hashed and compared across eight architectures, so it moves a published fingerprint and may
+legitimately turn that job red -- which would be the experiment finally working.
+
 ## Result
 
 Cross-architecture byte-identity is **not** a tautology inherited from CPython. The float layer
 genuinely diverges across architectures -- measured, same libc version, 1 ULP, ~1 in 1,050 on `exp`.
-Quantisation absorbs it -- measured, 0 in 1,000,000. Byte-identity is therefore a **contraction
-property of the fixed-point boundary**, and it is now measured rather than argued, which is the word
-the paper used.
+Quantisation did **not** absorb it, and this section previously said it did.
 
-This is a stronger result than a bare matching root. A matching root alone cannot distinguish
-*absorbed a real divergence* from *nothing diverged in the first place*.
+Byte-identity here is **not** a demonstrated contraction property: no sample in the corpus is
+within 20,472 ULPs of a rounding boundary, so a 1-ULP divergence could not have changed any
+encoding and `0` was forced. Worse, the property as stated is false in the other direction --
+quantisation does not absorb a 1-ULP divergence, it makes one **rare and total**. At a
+boundary one ULP of input produces a FULL Q16.16 unit of output. Verified against the shipped
+encoder rather than a re-implementation of it:
+
+```
+encode(2.2888183593749997e-5) = 1      encode(nextafter(v)) = 2
+encode(5.340576171874999e-5)  = 3      encode(nextafter(v)) = 4
+encode(1.1444091796874999e-4) = 7      encode(nextafter(v)) = 8
+```
+
+What survives is the *first* half of this section, which is sound and was always the harder
+measurement: the float layer genuinely diverges across architectures. The cross-architecture
+determinism claim rests on the eight-way fingerprint agreement, not on absorption.
+
+A matching root alone cannot distinguish *absorbed a real divergence* from *nothing diverged
+in the first place*. That sentence was right, and the control built from it checked the wrong
+side: it verified that the **input** diverged, never that the **output could have**. Only the
+second question is about power, and it was not asked.
 
 ## Consequence for how the headline run must be executed
 

@@ -113,9 +113,35 @@ Every divergence, on both libcs, is **exactly 1 ULP** in integer encoding space 
 larger. Example (glibc, `exp`, index 936): amd64 `3f8aa7263dfa19b2` vs arm64
 `3f8aa7263dfa19b1` (0.013014124647509149 vs 0.013014124647509147).
 
-**Result:** absorption is **demonstrated on the tested corpus and tested functions** --
-not proved as a property. The boundary absorbed 293 real divergences rather than
-absorbing nothing.
+**Result (CORRECTED, num-02):** absorption is **not demonstrated by this table**, and the
+previous wording -- "the boundary absorbed 293 real divergences rather than absorbing
+nothing" -- was wrong in a way the hedge did not cover.
+
+The `0 / 600 000` column is forced. An encoding changes only if the scaled value lies within
+half a ULP of a rounding boundary, and every divergence above is *exactly 1 ULP*. Measured
+over this corpus:
+
+| | |
+|---|---|
+| closest sample to a rounding boundary | **20,472 ULPs** |
+| samples a 1-ULP divergence could flip | **0 of 600,000** |
+| expected flips | 8.7e-06 |
+| samples for ONE expected flip | 6.9e10, about 114,000x this corpus |
+
+So the right-hand column reads `0` whether or not quantisation absorbs anything, and the 293
+raw divergences were never near the only place the encodings could differ. The scoping hedge
+("tested corpus and tested functions") is true and insufficient: the corpus is not merely
+narrow, it cannot reach the effect.
+
+The property is also false as stated. Quantisation does not absorb a 1-ULP divergence; at a
+rounding boundary it **amplifies** one to a full Q16.16 unit -- rare and total, not absorbed.
+Pinned in `build/layer1-aggregate/tests/quantisation_power.rs`, which carries the measurement,
+the refutation against the shipped encoder, and a boundary-adjacent corpus that *can* fail.
+
+**What is unaffected:** the left-hand columns. That libm genuinely diverges across
+architectures, at exactly 1 ULP, is the harder measurement and it stands. The
+cross-architecture determinism claim rests on the eight-way fingerprint agreement in sec. 1,
+which never depended on absorption.
 
 ### The full environment matrix -- and the axis that actually dominates
 
