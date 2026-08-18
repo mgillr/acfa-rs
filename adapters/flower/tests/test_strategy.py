@@ -7,6 +7,8 @@ property the adapter exists to provide -- and `test_aggregate_is_a_function_of_t
 which is the determinism claim at the adapter level rather than in the kernel.
 """
 
+import os
+import pathlib
 import struct
 import subprocess
 import sys
@@ -234,23 +236,60 @@ def test_float_inputs_still_aggregate_after_the_dtype_guard():
 
 # Gate ONLY the wiring tests on flwr. A module-level importorskip aborts the whole
 # module import, which silently skipped ALL 26 tests -- including the 16 that never
-# touch flwr -- in any environment without it. CI installs flwr so this was never a
-# CI-integrity problem (pytest exits 5 on "no tests collected", so a missing flwr
-# turns CI RED, verified), but it made every local run vacuous.
+# touch flwr -- in any environment without it, making every local run vacuous.
 # The REASON STRING NAMES THE LOST COVERAGE AND THE REMEDY, because a skip is silent by
 # design and this suite exits 0 with 13 of 52 tests not run. Those 13 are the only guards
 # for fl-09 (three of them) and fl-11 (one), so a validator who clones, runs pytest without
 # installing, and reads the green line concludes the guards pass when they never executed --
 # and reverting either fix leaves the suite green, so a fails-without-the-fix check cannot
-# fire either. `pip install -e ".[dev]"` pulls flwr and is what the README already says; the
-# hazard is running pytest WITHOUT the documented install, not a gap in the project.
+# fire either. `pip install -e ".[dev]"` pulls flwr and is what the README already says.
+#
+# AND THAT PER-TEST GATE REMOVED THE PROTECTION THE MODULE-LEVEL ONE GAVE CI. This comment
+# used to argue the point away: "CI installs flwr so this was never a CI-integrity problem
+# (pytest exits 5 on 'no tests collected', so a missing flwr turns CI RED, verified)". That
+# was true of `importorskip` -- nothing collected, exit 5, red. It stopped being true the
+# moment the gate moved onto individual tests, because 39 tests still collect and pass.
+# MEASURED here, in an environment with no flwr: 47 passed, 16 skipped, EXIT CODE 0.
+# So the fix for the local-vacuity problem silently traded away the CI signal, and the
+# justification for it outlived the mechanism it described -- which is the same defect the
+# suite exists to catch, sitting in the suite's own scaffolding.
+#
+# ACFA_REQUIRE_FLWR turns the skip back into a failure where a skip must never be tolerated.
+# CI sets it. The environments differ in what they can assume, so the gate is one expression
+# with two dispositions rather than two expressions that can drift apart:
+#   developer laptop, no flwr -> SKIP, loudly explained, the rest of the suite still useful
+#   CI                        -> FAIL, because a guard that did not run is not a guard
+_HAVE_FLWR = importlib.util.find_spec("flwr") is not None
+_REQUIRE_FLWR = os.environ.get("ACFA_REQUIRE_FLWR") == "1"
+
+# COUNT THE GATE, DO NOT QUOTE IT. This disclosure previously read "13 of 52 tests are
+# gated this way" and the measured figures were 16 of 63 -- the suite grew and the sentence
+# describing it did not. A number written by hand into a warning is a claim that stops being
+# checked the moment it is written, and this one was already wrong by three tests in the
+# numerator and eleven in the denominator. Deriving both from the source text means the
+# warning cannot drift from the thing it warns about, and nobody has to remember to update
+# it. Read from the file rather than the namespace because the decorators below have not
+# been applied yet at import time.
+_SRC = pathlib.Path(__file__).read_text()
+_GATED = _SRC.count("\n@requires_flwr")
+_TOTAL = _SRC.count("\ndef test_")
+
+if _REQUIRE_FLWR and not _HAVE_FLWR:
+    raise RuntimeError(
+        f"ACFA_REQUIRE_FLWR=1 but flwr is not importable, so the {_GATED} tests gated on it "
+        "-- the only guards for fl-09 and fl-11 -- would have been SKIPPED and this run "
+        "would have exited 0. Failing at collection instead. If pip reported success, it "
+        "installed for a different interpreter than the one running pytest."
+    )
+
 requires_flwr = pytest.mark.skipif(
-    importlib.util.find_spec("flwr") is None,
+    not _HAVE_FLWR,
     reason=(
         "flwr is not installed, so this test DID NOT RUN -- it is not passing. "
-        "13 of 52 tests are gated this way, including the only guards for fl-09 and "
-        'fl-11. Run `pip install -e ".[dev]"` (the documented install, which pulls flwr) '
-        "before treating this suite as coverage."
+        f"{_GATED} of {_TOTAL} tests are gated this way, including the only guards for "
+        'fl-09 and fl-11. Run `pip install -e ".[dev]"` (the documented install, which '
+        "pulls flwr) before treating this suite as coverage. Set ACFA_REQUIRE_FLWR=1 to "
+        "make this a hard failure instead of a skip, which is what CI does."
     ),
 )
 

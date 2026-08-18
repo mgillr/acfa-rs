@@ -187,9 +187,31 @@ jobs:
       - working-directory: adapters/flower
         env:
           ACFA_AGG_BIN: ${{ github.workspace }}/build/layer1-aggregate/target/release/acfa-agg
+          # A SKIPPED TEST IS A GREEN CHECK THAT VERIFIED NOTHING, and 16 of this suite's 63
+          # tests skip themselves when flwr is not importable -- among them the only guards
+          # for fl-09 and fl-11. The suite then exits 0. MEASURED locally without flwr:
+          # "47 passed, 16 skipped", exit code 0.
+          #
+          # That used to be safe here by accident. The gate was a module-level importorskip,
+          # so a missing flwr collected NOTHING and pytest exited 5, turning CI red. Moving
+          # the gate onto individual tests fixed local runs being vacuous and, in the same
+          # stroke, removed the signal CI depended on -- 39 tests still collect and pass.
+          # Nothing failed, so nothing said so.
+          #
+          # This makes the absence loud again, and does it at the point where a skip is
+          # genuinely intolerable rather than everywhere: with the flag set, the suite
+          # refuses AT COLLECTION if flwr cannot be imported. Verified in both directions --
+          # flwr absent + flag set -> exit 2 at collection; flwr importable + flag set ->
+          # guard silent, 0 skipped, all 63 collected and run.
+          ACFA_REQUIRE_FLWR: '1'
         run: |
           python -m pip install --quiet --upgrade pip
-          python -m pip install --quiet flwr numpy pytest
+          # The DOCUMENTED install, not a hand-copied package list. The README and the skip
+          # message both tell a validator to run `pip install -e ".[dev]"`; CI listing its
+          # own three packages meant the two could drift, and a dev dependency added to
+          # pyproject would simply never be installed here. Installing what we document also
+          # means CI exercises the instruction we give other people.
+          python -m pip install --quiet -e ".[dev]"
           python -m pytest tests/ -q
 
   # THE CLAIM. Each target emits the receipt fingerprint; the final job diffs them.
