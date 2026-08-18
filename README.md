@@ -218,6 +218,16 @@ grows. That is inherent to distance-based robust aggregation rather than a defec
 it changes who the model learns from. Full table and the milder rules:
 [adapters/flower/README.md](adapters/flower/README.md#non-iid-data-a-minority-client-is-excluded-with-zero-adversaries).
 
+**This adapter suits models up to roughly a hundred thousand parameters.** Values cross to
+the kernel as hex ASCII over stdin -- a structural 2.13x wire cost, arithmetic on the format
+rather than something to tune away. Measured at 30.9 ms per 1,000 parameters with n=10
+clients, that extrapolates to **~6 minutes per round for ResNet-18** (11.7M params) and
+**~57 minutes for BERT-base** (110M), and the cost grows with the client count too. The Rust
+kernel itself is fast and the determinism guarantee is unaffected -- this is the text
+boundary, not the aggregation. Above that size, call the kernel directly instead of through
+this adapter. Measurements:
+[adapters/flower/README.md](adapters/flower/README.md#model-size-this-path-is-for-small-models-and-here-is-where-it-stops).
+
 Direct call:
 
 ```python

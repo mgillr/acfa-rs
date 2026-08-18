@@ -608,6 +608,15 @@ class AcfaStrategy(FedAvg):  # type: ignore[misc]
     class on non-IID data CHANGES WHO THE MODEL LEARNS FROM. See "Non-IID data" in
     adapters/flower/README.md for the full table.
 
+    AND IT IS FOR SMALL MODELS (fl-08). Values cross to the kernel as hex ASCII over stdin:
+    a structural 2.13x wire cost, arithmetic on the format rather than something to tune
+    away. Measured at 30.9 ms per 1,000 parameters with n=10 clients, which extrapolates to
+    ~6 minutes per round for ResNet-18 (11.7M params) and ~57 minutes for BERT-base (110M),
+    growing with the client count too. Roughly a hundred thousand parameters is where this
+    path stops being reasonable. The Rust kernel is fast and determinism is unaffected --
+    this is the text boundary, not the aggregation -- so above that size call the kernel
+    directly rather than through this adapter. Table in adapters/flower/README.md.
+
     `num_examples` is deliberately IGNORED. FedAvg weights by it, which hands an attacker
     a free amplifier: claim a large `num_examples` and your update dominates, with no way
     for the server to check the claim. A robust rule that then weighted by an unverifiable
