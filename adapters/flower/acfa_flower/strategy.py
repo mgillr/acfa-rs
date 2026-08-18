@@ -591,11 +591,22 @@ class AcfaStrategy(FedAvg):  # type: ignore[misc]
     """FedAvg with the aggregation step replaced by the ACFA kernel.
 
     Everything else -- client sampling, configuration, evaluation -- is inherited
-    unchanged, so this is a drop-in swap:
+    unchanged, so the WIRING is a drop-in swap:
 
     ```python
     strategy = AcfaStrategy(rule=Rule.KRUM, f=1, min_fit_clients=5)
     ```
+
+    THE WIRING IS DROP-IN; THE BEHAVIOUR IS NOT (fl-06). A robust rule selects by DISTANCE
+    from the other clients, and a client whose data is drawn from a different distribution
+    is far from the majority for the same reason an attacker is. The rule cannot tell them
+    apart, so it excludes the honest minority. Measured with ZERO adversaries, one client
+    from `N(3,1)` and the rest from `N(0,1)`: `KRUM` retains 3%, -0% and 0% of that
+    client's proportional share at 10, 20 and 40 clients, against `MEAN`'s ~100% control.
+    The effect does not wash out as the cohort grows. This is inherent to distance-based
+    robust aggregation rather than a defect here, but it means swapping `FedAvg` for this
+    class on non-IID data CHANGES WHO THE MODEL LEARNS FROM. See "Non-IID data" in
+    adapters/flower/README.md for the full table.
 
     `num_examples` is deliberately IGNORED. FedAvg weights by it, which hands an attacker
     a free amplifier: claim a large `num_examples` and your update dominates, with no way

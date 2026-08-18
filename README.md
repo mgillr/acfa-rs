@@ -204,9 +204,19 @@ from acfa_flower import AcfaStrategy, Rule
 strategy = AcfaStrategy(rule=Rule.KRUM, f=1, min_fit_clients=5)
 ```
 
-Drop-in for `FedAvg`. Sampling, config and evaluation are inherited. `num_examples` is
-ignored: FedAvg weights by it, it is an unverifiable self-report, and weighting a robust
-rule by it hands back the guarantee.
+Drop-in for `FedAvg` **as wiring**. Sampling, config and evaluation are inherited.
+`num_examples` is ignored: FedAvg weights by it, it is an unverifiable self-report, and
+weighting a robust rule by it hands back the guarantee.
+
+**It is not a drop-in for FedAvg's BEHAVIOUR on non-IID data.** Every robust rule here
+selects by distance from the other clients, and a client whose data comes from a different
+distribution is far from the majority for the same reason an attacker is -- the rule cannot
+tell them apart. Measured with **zero adversaries**, one client drawn from `N(3,1)` and the
+rest from `N(0,1)`, `KRUM` retains 3% / -0% / 0% of that client's proportional share at 10 /
+20 / 40 clients, against `MEAN`'s ~100% control; the effect does not wash out as the cohort
+grows. That is inherent to distance-based robust aggregation rather than a defect here, but
+it changes who the model learns from. Full table and the milder rules:
+[adapters/flower/README.md](adapters/flower/README.md#non-iid-data-a-minority-client-is-excluded-with-zero-adversaries).
 
 Direct call:
 
