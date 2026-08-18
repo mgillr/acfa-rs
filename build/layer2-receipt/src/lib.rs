@@ -88,4 +88,7 @@ pub use identity::{Identity, Pki, PubKey, Sig};
 pub use receipt::{Invalid, Policy, Receipt, SelfConsistent, Verified};
 pub use resolve::{resolve, Resolution, Rule};
 pub use state::State;
-pub use wire::{decode, encode, WireError};
+// `encode_checked` is re-exported beside `encode` DELIBERATELY: rust-12 is that the
+// truncating function is the obvious one, and leaving the total one reachable only at
+// `wire::encode_checked` would keep it that way.
+pub use wire::{decode, encode, encode_checked, WireError};

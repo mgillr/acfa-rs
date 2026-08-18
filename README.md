@@ -200,7 +200,7 @@ Receipts:
 use acfa_receipt::{Receipt, Policy, Rule, State};
 
 let receipt = Receipt::issue(&state, round, &pki, f, Rule::Krum);
-let bytes   = acfa_receipt::encode(&receipt);
+let bytes   = acfa_receipt::encode_checked(&receipt)?;  // refuses an f the wire cannot carry
 
 // Verification needs a policy you obtained independently, not the receipt's own.
 let verified = receipt.verify(&Policy::new(trusted_pki, f))?;
@@ -350,7 +350,9 @@ answer. Multi-Krum is `O(n^2 d)`, so participant count dominates, not dimension.
 
 - A valid receipt proves honest computation over the set it showed you. It does not prove the
   issuer showed you everything it held. Compare the state root against an independently
-  obtained one for that.
+  obtained one for that: `acfa-verify --expect-state-root <64-hex>` performs the comparison
+  and exits 1 on a mismatch. This is the only check that addresses withholding -- a withheld
+  entry leaves no trace in the receipt that omits it, so the root has to come from elsewhere.
 - `n >= 2f+3` is a population bound, not a safety guarantee. At n=10, f=3, where it holds, a
   colluding adversary near the honest mean is selected in 30/30 trials and moves the aggregate
   1.74x past the honest floor while staying inside the honest spread. Bulyan does not help
@@ -360,6 +362,10 @@ answer. Multi-Krum is `O(n^2 d)`, so participant count dominates, not dimension.
 - Q16.16 fixes range at +/-2^15, resolution 2^-16. Out-of-range values are refused, not
   saturated, because saturation would make the result depend on which replica saturated first.
   Rescale upstream with a factor both parties hold.
+- `wire::encode` is infallible by signature and writes the fault bound `f` as a `u32`, so a
+  `usize` beyond `2^32` truncates silently and the bytes decode to a different receipt. Use
+  `wire::encode_checked`, which refuses instead. `encode` is kept unchanged because 33 call
+  sites depend on its signature; closing that is an API decision, not a defect fix.
 - Sybil resistance is delegated to the PKI.
 - Krum is Euclidean and admits coordinate-concentrated attacks inside the honest spread.
   Bulyan defends that shape specifically, at `n >= 4f+3`.
