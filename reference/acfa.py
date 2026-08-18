@@ -13,6 +13,7 @@ is a function of the converged state. That is the whole theorem (Product Lifting
 """
 from __future__ import annotations
 import hashlib
+import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
@@ -24,8 +25,18 @@ from cryptography.exceptions import InvalidSignature
 Q_FRAC_BITS = 16                       # Q16.16
 
 def fp_encode(x: float) -> int:
-    """Boundary-only float->fixed conversion; the kernel never sees floats."""
-    return int(round(x * (1 << Q_FRAC_BITS)))
+    """Boundary-only float->fixed conversion; the kernel never sees floats.
+
+    Rounds HALF AWAY FROM ZERO, matching the Rust kernel's `f64::round` and the wire
+    contract documented in `build/layer1-aggregate/src/fixed.rs`. This was `int(round(...))`
+    -- Python's round is ties-to-even, which disagreed with the implementation at exact
+    midpoints (num-01: ~13% of rounds on float32 gradients). The rounding rule is part of the
+    wire contract, so the reference is corrected to the canonical rule rather than the other
+    way round, which would break the cross-architecture fingerprint. Golden generation feeds
+    the kernel integers and never calls this, so no golden or fingerprint moves.
+    """
+    s = x * (1 << Q_FRAC_BITS)
+    return math.floor(s + 0.5) if s >= 0 else math.ceil(s - 0.5)
 
 def fp_decode(v: int) -> float:
     return v / (1 << Q_FRAC_BITS)
