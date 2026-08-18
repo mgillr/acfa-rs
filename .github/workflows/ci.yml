@@ -56,6 +56,17 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
 
+
+  # REVERT GUARD. Fails if a landed fix, its guard test, or the cross-architecture fingerprint
+  # is reverted. The full suite already reds when a FIX is reverted (each fix has a
+  # guard-deletion test); this additionally catches a revert that deletes the guard test too,
+  # and a silent fingerprint change. "We do not revert."
+  regression-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: bash tools/regression-guard.sh
+
   # MSRV. All three manifests declare `rust-version = "1.87"`, and until this job existed
   # NOTHING BUILT AT 1.87 -- every other job installs `stable`. So the floor was a claim in
   # a file, and a contributor using a 1.87 feature-of-the-month would have broken it with a
