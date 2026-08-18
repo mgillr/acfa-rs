@@ -183,6 +183,17 @@ let agg = bulyan_aggregate(&cs, 1)?;      // needs n >= 4f+3, refuses below
 `tie_key` breaks exact score ties. It must be stable per contributor and is never
 interpreted. Out-of-range and non-finite values are refused, not saturated.
 
+**Averaging floors, so the aggregate is biased DOWNWARD and the bias accumulates.** Every
+rule that averages loses a fraction of an LSB per round, always in the same direction:
+`(n-1)/2n` LSB, measured at 400 trials per row against the closed form (`n=2`: -0.231,
+`n=5`: -0.396, `n=16`: -0.472). Round-to-nearest would cancel over many rounds; floor does
+not, so over training it drifts linearly rather than averaging out. This is deliberate and
+not tunable here -- the rounding rule is wire contract, because the vendored Python
+reference floors (`//`) and byte-identity with it is the property this kernel exists to
+provide. Round-half-to-even would be both deterministic and unbiased, and changing to it
+costs the reference pin. Sizes and the drift-over-rounds table:
+[adapters/flower/README.md](adapters/flower/README.md#the-aggregate-is-biased-downward-and-it-accumulates).
+
 Receipts:
 
 ```rust
