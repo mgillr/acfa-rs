@@ -384,13 +384,17 @@ The reference implementation is vendored at [`reference/acfa.py`](reference/acfa
 hash pinned. CI regenerates both layers' golden vectors from it and requires byte-identity, so
 the Rust is checked against a second, independently written implementation.
 
-One divergence is deliberate. The reference's Bulyan stage-1 loop draws at most `n-f-2`
-candidates while `theta = n-2f`; those differ exactly when `f < 2`, so at `f = 1` it selects
-one fewer than its own theta. This implementation refuses below `n >= 4f+3` and otherwise
-draws exactly theta. The suite asserts the divergence and asserts it is still present, so a corrected
-reference fails CI. No result in the
-paper is affected: its one Bulyan experiment runs at `n=16, f=3`, re-run unmodified to its
-published numbers.
+One divergence is deliberate, and it is worth stating precisely because it changes the
+selected SET, not merely a count. The reference's Bulyan stage-1 loop draws at most `n-f-2`
+candidates while `theta = n-2f`; those differ exactly when `f < 2`, so at `f in {0, 1}` the
+reference stops one or two candidates short of its own theta. A shorter selection is not just
+fewer indices -- it is a DIFFERENT candidate set feeding stage 2, so at `f = 1` this
+implementation and a paper-faithful clamped selection admit different members, not only a
+different number of them (measured to differ on a substantial fraction of random `f = 1`
+trials). This implementation refuses below `n >= 4f+3` and otherwise draws exactly theta; the
+suite asserts the divergence and asserts it is still present, so a corrected reference fails
+CI. No result in the paper is affected: its one Bulyan experiment runs at `n = 16, f = 3`,
+where the two agree, re-run unmodified to its published numbers.
 
 ## Layout
 
