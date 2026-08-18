@@ -218,19 +218,29 @@ fn median_trim_discards_a_coordinate_concentrated_outlier_that_krum_admits() {
 }
 
 #[test]
-fn select_all_convention_fires_exactly_when_undefended() {
-    // n <= f + 2 means m < 1: the rule is undefined and everything is selected.
-    for (n, f) in [(3usize, 1usize), (4, 2), (2, 0)] {
+fn multi_krum_refuses_below_its_robustness_threshold_rather_than_selecting_all() {
+    // adv-01. Krum tolerates `f` adversaries only at `n >= 2f + 3`. Below that the code used
+    // to return ALL indices, which makes `krum_aggregate` the plain mean OF THE ADVERSARY
+    // INCLUDED, at exit 0 -- a fully poisoned aggregate reported as success. It now REFUSES.
+    for (n, f) in [(3usize, 1usize), (4, 2), (2, 0), (4, 1)] {
         let cs = corpus(n, 4, 5);
-        let sel = multi_krum(&cs, f).unwrap();
-        assert_eq!(sel.len(), n, "n={n} f={f} should select all");
+        match multi_krum(&cs, f) {
+            Err(AggError::KrumTooFewContributions { n: gn, required }) => {
+                assert_eq!(gn, n);
+                assert_eq!(required, 2 * f + 3, "the threshold reported must be 2f+3");
+            }
+            other => panic!("n={n} f={f} must refuse below 2f+3, got {other:?}"),
+        }
     }
-    // One more contribution and the rule engages.
-    let cs = corpus(6, 4, 5);
-    assert!(
-        multi_krum(&cs, 1).unwrap().len() < 6,
-        "rule should engage at n=6,f=1"
-    );
+    // At EXACTLY 2f+3 the rule engages and selects a strict subset.
+    for (n, f) in [(3usize, 0usize), (5, 1), (7, 2)] {
+        let cs = corpus(n, 4, 5);
+        let sel = multi_krum(&cs, f).expect("n=2f+3 must run");
+        assert!(
+            sel.len() < n,
+            "n={n} f={f} (=2f+3) must select a strict subset, not all"
+        );
+    }
 }
 
 #[test]

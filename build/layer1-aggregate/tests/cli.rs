@@ -310,7 +310,9 @@ fn a_directive_refuses_trailing_tokens_on_its_own_line() {
     //     rule mean krum  -> ok 16482304   <-- the poisoned mean under Krum's NAME
     // Exit 0, empty stderr, 251x poisoning from a single adversary, and nothing anywhere
     // telling the caller the rule they asked for was not the rule that ran.
-    let data = "f 1\n01 3ff0000000000000\n02 4000000000000000\n                03 4008000000000000\n04 408f400000000000\n";
+    // n = 5 so multi-Krum runs at f=1 (needs n >= 2f+3 = 5, adv-01): honest 1,2,3,4 plus one
+    // adversary at 1000. Krum excludes the outlier; the plain mean is dragged by it.
+    let data = "f 1\n                01 3ff0000000000000\n                02 4000000000000000\n                03 4008000000000000\n                04 4010000000000000\n                05 408f400000000000\n";
 
     // The two rules must genuinely differ on this data, or the test below proves nothing --
     // a poisoning test on data where mean and krum agree is a check that cannot fail.
