@@ -86,7 +86,9 @@ pub mod wire;
 
 pub use entry::{Contribution, EquivProof};
 pub use identity::{Identity, Pki, PubKey, Sig};
-pub use receipt::{Invalid, Policy, Receipt, SelfConsistent, Verified};
+pub use receipt::{
+    Invalid, Policy, Receipt, SelfConsistent, Verified, DEFAULT_MAX_VERIFY_COORDINATES,
+};
 pub use resolve::{resolve, Resolution, Rule};
 pub use state::State;
 // `encode_checked` is re-exported beside `encode` DELIBERATELY: rust-12 is that the

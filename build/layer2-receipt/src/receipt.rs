@@ -36,6 +36,73 @@ pub struct Receipt {
     pub claimed_aggregate: Option<Vec<i64>>,
 }
 
+/// Default ceiling on the tensor COORDINATES a verifier will do work over: the sum of
+/// `tensor.len()` across the carried contributions, i.e. the `n * d` product.
+///
+/// THE OTHER TWO BOUNDS CAP INPUTS; THIS ONE CAPS WORK, AND THAT IS THE WHOLE POINT.
+/// `MAX_MERGE_PROOFS` bounds the derivable-proof count and `MAX_MERGE_CONTRIBUTIONS` bounds
+/// `n`. Verification cost is a PRODUCT of `n` and `d`, and `d` was bounded by nothing at all
+/// except `filesize / 8`. Bounding one factor of a product bounds nothing -- the same
+/// sentence `MAX_COORDINATE_OPS` one layer down already says about `MAX_CONTRIBUTIONS`.
+///
+/// MEASURED ON THE SHIPPED CODE, RELEASE, WITH EVERY EXISTING GUARD PASSING AND THE VERDICT
+/// `Ok`. CPU time (`getrusage`, user+sys), because the calibration host was shared and its
+/// wall clock moved 4x under load while CPU did not:
+///
+/// ```text
+///   n      d       receipt      verify CPU   peak RSS   derivable   carried   kernel
+///    256     64      0.15 MiB      0.11 s        3 MiB    0/8192    256/4096  ran
+///    256   1024      2.04 MiB      1.11 s       19 MiB    0/8192    256/4096  ran
+///    256   8192     16.09 MiB      8.72 s      114 MiB    0/8192    256/4096  ran
+///    256  16384     32.03 MiB     11.78 s      194 MiB    0/8192    256/4096  REFUSED
+///   1024   1024      8.11 MiB      3.58 s       65 MiB    0/8192   1024/4096  REFUSED
+///   4096   1024     32.45 MiB     16.18 s      217 MiB    0/8192   4096/4096  REFUSED
+///   4096   2048     64.45 MiB     31.54 s      401 MiB    0/8192   4096/4096  REFUSED
+/// ```
+///
+/// Every row returned `Ok`. Read the `n = 256` rows first: the contribution count is at
+/// SIXTEENTH of its cap and the derivable-proof bound is ZERO, so neither existing guard is
+/// anywhere near firing, and 32 MiB still buys 11.8 seconds. The count cap is not a
+/// near-miss here; it is irrelevant here.
+///
+/// AND THE KERNEL'S OWN BOUND DOES NOT SAVE THE VERIFIER. `MAX_COORDINATE_OPS` fires on the
+/// four rows marked REFUSED -- and `resolve` treats a kernel refusal as a legitimate
+/// DETERMINISTIC OUTCOME (`Err(_) =>` a `"refused|"` output root), which is correct for
+/// determinism and useless as a DoS guard: the refusal arrives after the work, not instead
+/// of it. Worse, the `n = 256, d = 8192` row shows the kernel bound cannot be reused here
+/// even in principle -- its quantity is `n^2 * d = 5.4e8`, comfortably UNDER the `1e9` cap,
+/// while the verifier burned 8.7 s. The kernel's number is small exactly where the
+/// verifier's is large.
+///
+/// WHY 262 144. Two independent constraints meet there, and it is picked from measurement
+/// rather than from a tidy binary figure:
+///
+///   * it is about **one second** of verify CPU on the calibration host (measured 153k-290k
+///     coordinates/second across the grid above), which is the same budget
+///     `MAX_MERGE_PROOFS` was set against ("8192 puts the worst accepted merge at about one
+///     second"); and
+///   * it is the smallest power of two that still admits every shape this crate's own
+///     `examples/scale.rs` treats as legitimate -- the largest being `n = 25, d = 10 000`
+///     at 250 000 coordinates.
+///
+/// The headroom over that example is 5%, which is thin, and that thinness is the argument
+/// for the budget being caller-supplied rather than the argument for a bigger constant.
+///
+/// THIS WILL REFUSE REAL FEDERATED SHAPES AND THAT IS WHY IT IS A DEFAULT AND NOT A LAW.
+/// `n = 10` clients at a 10M-parameter model is `1e8` coordinates, 380x this. That
+/// deployment must raise the budget -- [`Policy::with_max_coordinates`], or `acfa-verify
+/// --max-coordinates` -- and the refusal names the exact number to raise it to, so the
+/// figure an operator needs is in the error rather than in this file.
+///
+/// WHAT IT DOES NOT BOUND. It bounds the term that was UNBOUNDED. It does not tighten the
+/// kernel's own `MAX_COORDINATE_OPS` allowance, so a receipt with a small `n * d` and a
+/// large `n^2 * d` can still buy the seconds that ceiling already grants (measured:
+/// `n = 2048, d = 64` is 131 072 coordinates, inside this budget, and 2.31 s). It does not
+/// bound `decode`, which does its own linear pass before `verify` is ever called (measured
+/// 0.91 s on the 32 MiB receipt). And it does not bound the CARRIED PROOF count, which is a
+/// separate unbounded quantity on this same door.
+pub const DEFAULT_MAX_VERIFY_COORDINATES: u128 = 262_144;
+
 /// What the checker independently knows, obtained from somewhere other than the receipt.
 ///
 /// **THIS TYPE IS THE TRUST BOUNDARY, AND WITHOUT IT VERIFICATION IS CIRCULAR.** A receipt
@@ -56,6 +123,25 @@ pub struct Policy {
     pub f: usize,
     /// The rule the checker expects, if it cares. `None` accepts either.
     pub rule: Option<Rule>,
+    /// **The checker's WORK budget, in tensor coordinates.** See
+    /// [`DEFAULT_MAX_VERIFY_COORDINATES`] for the measurements behind the default.
+    ///
+    /// WHY THIS IS CALLER-SUPPLIED AND NOT A CONSTANT. Every other bound in this crate is a
+    /// compile-time number, and that is right for them: they are properties of the FORMAT
+    /// (what a receipt may contain) and every checker agrees about them. This one is a
+    /// property of the CHECKER (how much of its own CPU it will spend on a file from a
+    /// stranger), and checkers genuinely disagree: a public paste-a-receipt endpoint wants
+    /// tens of milliseconds, an operator batch-checking their own deployment's rounds wants
+    /// minutes. `MAX_COORDINATE_OPS` is the worked example of one constant failing to serve
+    /// both -- it sits EXACTLY at `n = 10` clients on a 10M-parameter model and refuses
+    /// ResNet-18 at the same `n` by 17%, while simultaneously granting an untrusted receipt
+    /// several seconds. The number belongs beside `pki` and `f`, which are already the
+    /// checker's own knowledge rather than the receipt's claims.
+    ///
+    /// Raising it is an explicit, greppable act. Leaving it alone is safe, which is the
+    /// property `Policy::new` must have and the reason the constant does not simply
+    /// disappear into an argument.
+    pub max_coordinates: u128,
 }
 
 impl Policy {
@@ -68,12 +154,37 @@ impl Policy {
     ///
     /// Use `.expecting(rule)` unless you genuinely accept both. Making that mandatory is a
     /// public API change and is with B (crypto-08).
+    ///
+    /// FAIL-CLOSED ON WORK, unlike the rule. The work budget defaults to
+    /// [`DEFAULT_MAX_VERIFY_COORDINATES`] rather than to "unlimited", so a checker built
+    /// this way -- which is every checker that never thought about it -- has a bounded door.
+    /// The two defaults point in opposite directions ON PURPOSE: an unpinned rule weakens a
+    /// verdict the caller still gets, an unbounded work budget denies the caller service
+    /// altogether, and only one of those is recoverable by reading the output.
     pub fn new(pki: Pki, f: usize) -> Policy {
-        Policy { pki, f, rule: None }
+        Policy {
+            pki,
+            f,
+            rule: None,
+            max_coordinates: DEFAULT_MAX_VERIFY_COORDINATES,
+        }
     }
 
     pub fn expecting(mut self, rule: Rule) -> Policy {
         self.rule = Some(rule);
+        self
+    }
+
+    /// Raise (or lower) the work budget this checker will spend on one receipt.
+    ///
+    /// The unit is tensor COORDINATES -- the `n * d` product -- because that is the quantity
+    /// the door's cost is proportional to and the quantity nothing else bounds. It is not
+    /// bytes and not seconds: bytes are a decoder's concern, and seconds cannot be used
+    /// because the verdict must be a function of the receipt and not of machine load.
+    /// [`Invalid::TooMuchCoordinateWork`] reports the count it refused, so the value to pass
+    /// here comes out of the refusal.
+    pub fn with_max_coordinates(mut self, max_coordinates: u128) -> Policy {
+        self.max_coordinates = max_coordinates;
         self
     }
 }
@@ -107,6 +218,21 @@ pub enum Invalid {
     /// bound. `State::merge` caps this exact quantity on the trusted door; verify
     /// carries the SAME cap on the untrusted one.
     TooManyContributions { would_be: usize, max: usize },
+    /// The carried contributions total more tensor coordinates than the checker's work
+    /// budget allows.
+    ///
+    /// THE THIRD BOUND, AND THE ONLY ONE ON A PRODUCT. `TooMuchDerivableWork` bounds the
+    /// proof count and `TooManyContributions` bounds `n`; verification cost is `n * d` and
+    /// `d` was bounded by nothing but `filesize / 8`. A set of all-DISTINCT node ids derives
+    /// zero proofs (proof bound 0) and can sit at a sixteenth of the contribution cap while
+    /// still carrying an arbitrary `d`: measured, `n = 256, d = 16384` is 32.03 MiB of
+    /// receipt, 11.78 s of verifier CPU, both other guards nowhere near firing, verdict
+    /// `Ok`.
+    ///
+    /// `coordinates` is the sum of `tensor.len()` over the carried set, computed in `O(n)`
+    /// from the lengths alone -- BEFORE any coordinate is read, hashed or cloned. It is the
+    /// number to pass to [`Policy::with_max_coordinates`] to admit this receipt.
+    TooMuchCoordinateWork { coordinates: u128, max: u128 },
     /// The receipt's identity set is not the one the checker expects. This is the
     /// fabricated-PKI case and it is the most important rejection in the enum.
     PkiMismatch,
@@ -149,6 +275,20 @@ impl core::fmt::Display for Invalid {
                 "the receipt carries {would_be} contributions, over the limit of {max}; \
                  equivocation detection scans every held contribution, so checking is \
                  quadratic in this count even when the set derives no proofs"
+            ),
+            // NAMES THE NUMBER TO RAISE, not just the number exceeded. A refusal that reports
+            // only "over the limit" leaves an operator with a legitimate large receipt
+            // guessing; `coordinates` IS the value that admits this receipt, so it is printed
+            // as the argument to pass rather than left to be inferred.
+            Invalid::TooMuchCoordinateWork { coordinates, max } => write!(
+                f,
+                "the carried contributions total {coordinates} tensor coordinates, over this \
+                 checker's work budget of {max}; verification does work proportional to that \
+                 product (contributions x values each) and nothing in a receipt bounds the \
+                 vector length, so the budget is the bound. If you meant to check this \
+                 receipt, raise the budget to {coordinates}: \
+                 Policy::with_max_coordinates({coordinates}), or acfa-verify \
+                 --max-coordinates {coordinates}"
             ),
             Invalid::PkiMismatch => write!(
                 f,
@@ -380,7 +520,7 @@ impl Receipt {
                 });
             }
         }
-        self.recompute()
+        self.recompute(policy.max_coordinates)
     }
 
     /// Check that the receipt agrees with itself, against its own carried PKI.
@@ -389,8 +529,15 @@ impl Receipt {
     /// This exists for diagnosis -- inspecting a receipt whose deployment you do not know,
     /// or triaging which of several failures is present -- and it returns a type with no
     /// `population_bound_met` flag precisely so its result cannot be reported as a safe one.
+    ///
+    /// WORK BUDGET: this entry point has no [`Policy`], so it uses
+    /// [`DEFAULT_MAX_VERIFY_COORDINATES`] and can return
+    /// [`Invalid::TooMuchCoordinateWork`]. Diagnosis is still a door that accepts a file from
+    /// a stranger -- `acfa-verify` reaches this path whenever `--pki` is omitted -- so it
+    /// gets the bound rather than an exemption. A caller who needs a larger budget here has
+    /// a `Policy` available and should use `verify`.
     pub fn check_self_consistent(&self) -> Result<SelfConsistent, Invalid> {
-        let v = self.recompute()?;
+        let v = self.recompute(DEFAULT_MAX_VERIFY_COORDINATES)?;
         Ok(SelfConsistent {
             round: v.round,
             state_root: v.state_root,
@@ -403,7 +550,7 @@ impl Receipt {
     /// Order matters: cryptography before arithmetic. Signatures and proofs are checked
     /// first, so a receipt stuffed with forged entries is rejected as forged rather than
     /// as "aggregate mismatch", which would misattribute the fault.
-    fn recompute(&self) -> Result<Verified, Invalid> {
+    fn recompute(&self, max_coordinates: u128) -> Result<Verified, Invalid> {
         // 0. BOUND THE CARRIED SET BEFORE ANY PER-CONTRIBUTION WORK. The derivation
         //    loop near the end calls `deliver`, which scans everything held, so
         //    `recompute` is QUADRATIC in the carried count. `TooMuchDerivableWork`
@@ -420,6 +567,47 @@ impl Receipt {
             return Err(Invalid::TooManyContributions {
                 would_be: carried,
                 max: crate::state::MAX_MERGE_CONTRIBUTIONS,
+            });
+        }
+
+        // 0b. BOUND THE WORK, NOT ONLY THE INPUTS. Step 0 above bounds `n`; the derivable
+        //     -proof check further down bounds the proof count. Neither bounds `d`, and the
+        //     cost of every step below this one is proportional to the PRODUCT `n * d`:
+        //     step 1 hashes each tensor to check its signature, step 3 clones and re-hashes
+        //     it into the leaf, step 4 hashes it again inside `admit` and clones it again
+        //     for the kernel, and the derivation loop hashes it twice more. Bounding one
+        //     factor of a product bounds nothing -- the sentence `MAX_COORDINATE_OPS` one
+        //     layer down already writes about `MAX_CONTRIBUTIONS`.
+        //
+        //     MEASURED, on the unfixed code, release, EVERY EXISTING GUARD PASSING and the
+        //     verdict `Ok`: `n = 256, d = 16384` is 32.03 MiB of receipt and 11.78 s of
+        //     verifier CPU with the contribution count at 256 of 4096 and the derivable
+        //     -proof bound at 0. `n = 4096, d = 2048` is 64.45 MiB and 31.54 s. The cost is
+        //     LINEAR in `d` (fitted exponent 0.99) and `d` is bounded only by `filesize / 8`.
+        //
+        //     THE KERNEL'S BOUND IS NOT A SUBSTITUTE FOR THIS ONE, TWICE OVER. `resolve`
+        //     treats a layer-1 refusal as a legitimate deterministic OUTCOME -- correctly,
+        //     because two replicas must agree the round produced nothing -- so
+        //     `MAX_COORDINATE_OPS` firing changes the answer and not the cost; it arrives
+        //     after the work rather than instead of it. And its quantity is the wrong one:
+        //     at `n = 256, d = 8192` the kernel's `n^2 * d` is 5.4e8, comfortably inside its
+        //     1e9 cap, while this door burned 8.7 s. Small kernel number, large verifier
+        //     number, same receipt.
+        //
+        //     THE CHECK ITSELF IS `O(n)` AND TOUCHES NO COORDINATE: `Vec::len` is a field
+        //     read, and `n` is already capped by step 0 immediately above. So this is
+        //     genuinely BEFORE the expensive work rather than merely early in the function.
+        //     `u128` and saturating, because the sum of attacker-chosen lengths must not
+        //     wrap into a small number and pass -- that is `required_n`'s failure mode
+        //     (see `Rule::required_n`) and it fails OPEN.
+        let coordinates: u128 = self
+            .contributions
+            .iter()
+            .fold(0u128, |acc, c| acc.saturating_add(c.tensor.len() as u128));
+        if coordinates > max_coordinates {
+            return Err(Invalid::TooMuchCoordinateWork {
+                coordinates,
+                max: max_coordinates,
             });
         }
 

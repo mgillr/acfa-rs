@@ -20,7 +20,7 @@
 //!   3  self-consistent only -- NOT a security verdict (no `--pki` given)
 
 use acfa_receipt::identity::{is_usable_pubkey, Pki, PubKey};
-use acfa_receipt::{decode, Invalid, Policy, Rule, WireError};
+use acfa_receipt::{decode, Invalid, Policy, Rule, WireError, DEFAULT_MAX_VERIFY_COORDINATES};
 use std::io::{IsTerminal, Read};
 use std::process::ExitCode;
 
@@ -130,6 +130,12 @@ Verifies an ACFA Layer 2 receipt offline. Reads stdin when FILE is absent.
                         only check that detects WITHHOLDING: verification proves the
                         issuer computed honestly over the set it SHOWED, never that
                         it showed everything it held.
+  --max-coordinates <N> how much of YOUR CPU this receipt may cost, counted in tensor
+                        coordinates (contributions x values each). Verification work
+                        is proportional to that product and NOTHING in a receipt
+                        bounds the vector length, so this is the bound. Defaults to
+                        262144, about one second on the calibration host. A refused
+                        receipt prints the number to pass here.
 
 Exit: 0 verified, 1 invalid, 2 unparseable, 3 self-consistent only (no --pki).";
 
@@ -174,12 +180,13 @@ fn main() -> ExitCode {
     // `--require-bound`, so the check the operator asked for was never applied and the tool
     // exited 0. A verifier that ignores what it was asked to do is worse than one that
     // refuses, because the operator has no way to notice.
-    const KNOWN: [&str; 7] = [
+    const KNOWN: [&str; 8] = [
         "--pki",
         "--f",
         "--rule",
         "--require-bound",
         "--expect-state-root",
+        "--max-coordinates",
         "--help",
         "-h",
     ];
@@ -238,6 +245,23 @@ fn main() -> ExitCode {
     let f_override = flag_value(&args, "--f");
     let rule_want = flag_value(&args, "--rule");
 
+    // The work budget. Refused rather than interpreted when malformed, for the same reason
+    // `--require-bound=false` is: an operator who mistypes the ceiling they meant to raise
+    // must not silently get the default back, because the visible symptom of that mistake is
+    // a refusal they will read as "this receipt is bad" instead of "my flag did not parse".
+    let max_coordinates = match flag_value(&args, "--max-coordinates") {
+        None => DEFAULT_MAX_VERIFY_COORDINATES,
+        Some(v) => match v.trim().parse::<u128>() {
+            Ok(n) => n,
+            Err(_) => {
+                eprintln!(
+                    "acfa-verify: --max-coordinates must be a non-negative integer, got {v:?}"
+                );
+                return ExitCode::from(2);
+            }
+        },
+    };
+
     // rust-08. THE MITIGATION THIS TOOL DOCUMENTS BUT DID NOT IMPLEMENT. Three places --
     // SECURITY.md, lib.rs and this binary's own closing note -- tell the operator to
     // "compare the state root against an independently obtained one", and there was no way
@@ -265,7 +289,13 @@ fn main() -> ExitCode {
         }
     };
 
-    let flag_names = ["--pki", "--f", "--rule", "--expect-state-root"];
+    let flag_names = [
+        "--pki",
+        "--f",
+        "--rule",
+        "--expect-state-root",
+        "--max-coordinates",
+    ];
     let mut consumed: Vec<usize> = Vec::new();
     for (i, a) in args.iter().enumerate() {
         if flag_names.contains(&a.as_str()) {
@@ -411,7 +441,7 @@ silently change the aggregate"
     };
 
     let rule_was_pinned = rule_want.is_some();
-    let mut policy = Policy::new(pki, f);
+    let mut policy = Policy::new(pki, f).with_max_coordinates(max_coordinates);
     if let Some(r) = rule_want {
         policy.rule = match r.as_str() {
             "krum" => Some(Rule::Krum),
@@ -572,6 +602,15 @@ fn report_invalid(e: &Invalid) {
             eprintln!(
                 "  a small file can buy a large amount of your CPU. Refused before the scan."
             );
+        }
+        Invalid::TooMuchCoordinateWork { coordinates, max } => {
+            eprintln!("  this receipt would cost more work to check than you allowed");
+            eprintln!("  {coordinates} tensor coordinates carried, budget {max}");
+            eprintln!("  verification work is proportional to that product (contributions x");
+            eprintln!("  values each) and NOTHING in a receipt bounds the vector length, so");
+            eprintln!("  the budget is the bound. Refused before reading a single coordinate.");
+            eprintln!("  If you meant to check this receipt, re-run with:");
+            eprintln!("    --max-coordinates {coordinates}");
         }
         Invalid::PkiMismatch => {
             eprintln!("  the receipt's identity set is NOT the one you supplied");
