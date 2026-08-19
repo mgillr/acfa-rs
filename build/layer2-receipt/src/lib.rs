@@ -79,6 +79,7 @@ pub mod entry;
 pub mod hash;
 pub mod identity;
 pub mod receipt;
+pub mod redact;
 pub mod resolve;
 pub mod state;
 pub mod wire;
