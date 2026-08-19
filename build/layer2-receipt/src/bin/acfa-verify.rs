@@ -529,6 +529,15 @@ fn report_invalid(e: &Invalid) {
             eprintln!("  quadratic in how often a single node id repeats -- so a small file");
             eprintln!("  can buy a large amount of your CPU. Refused before doing the work.");
         }
+        Invalid::TooManyContributions { would_be, max } => {
+            eprintln!("  this receipt carries more contributions than the verifier will scan");
+            eprintln!("  {would_be} carried, limit {max}");
+            eprintln!("  equivocation detection scans every held contribution, so checking");
+            eprintln!("  is quadratic in this count even when the set derives no proofs -- so");
+            eprintln!(
+                "  a small file can buy a large amount of your CPU. Refused before the scan."
+            );
+        }
         Invalid::PkiMismatch => {
             eprintln!("  the receipt's identity set is NOT the one you supplied");
             eprintln!("  every signature in it may still be genuine -- for keys you do not trust");

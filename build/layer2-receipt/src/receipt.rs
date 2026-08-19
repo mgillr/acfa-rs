@@ -98,6 +98,14 @@ pub enum Invalid {
     /// is quadratic in how often one node id repeats, so an unbounded verify is a remote
     /// denial of service on a door that accepts input from anyone.
     TooMuchDerivableWork { would_be: usize, max: usize },
+    /// The carried contribution set is larger than the verifier will scan.
+    /// `deliver` runs equivocation detection against everything held, so `recompute`
+    /// is QUADRATIC in the carried count. `TooMuchDerivableWork` bounds only the PROOF
+    /// half -- a set of all-DISTINCT node ids derives zero proofs (bound 0) yet still
+    /// forces n(n-1)/2 leaf comparisons -- so this is the contribution half of the
+    /// bound. `State::merge` caps this exact quantity on the trusted door; verify
+    /// carries the SAME cap on the untrusted one.
+    TooManyContributions { would_be: usize, max: usize },
     /// The receipt's identity set is not the one the checker expects. This is the
     /// fabricated-PKI case and it is the most important rejection in the enum.
     PkiMismatch,
@@ -134,6 +142,12 @@ impl core::fmt::Display for Invalid {
                 "the carried contributions could derive up to {would_be} equivocation \
                  proofs, over the limit of {max}; each costs a signature verification and \
                  the count is quadratic in how often one node id repeats"
+            ),
+            Invalid::TooManyContributions { would_be, max } => write!(
+                f,
+                "the receipt carries {would_be} contributions, over the limit of {max}; \
+                 equivocation detection scans every held contribution, so checking is \
+                 quadratic in this count even when the set derives no proofs"
             ),
             Invalid::PkiMismatch => write!(
                 f,
@@ -352,6 +366,25 @@ impl Receipt {
     /// first, so a receipt stuffed with forged entries is rejected as forged rather than
     /// as "aggregate mismatch", which would misattribute the fault.
     fn recompute(&self) -> Result<Verified, Invalid> {
+        // 0. BOUND THE CARRIED SET BEFORE ANY PER-CONTRIBUTION WORK. The derivation
+        //    loop near the end calls `deliver`, which scans everything held, so
+        //    `recompute` is QUADRATIC in the carried count. `TooMuchDerivableWork`
+        //    further down bounds the PROOF half -- but a set of all-DISTINCT node ids
+        //    derives zero proofs (bound 0) and still forces n(n-1)/2 leaf comparisons,
+        //    so that guard passes while the scan runs unbounded. Measured end to end:
+        //    12 000 all-distinct contributions verify Ok in 2.4 s, cost unbounded in n.
+        //    `State::merge` caps this exact quantity (`MAX_MERGE_CONTRIBUTIONS`) on the
+        //    trusted door; verify MUST carry the SAME cap or the untrusted door is a
+        //    remote DoS. This is the contribution half the note near the derivation
+        //    loop promised; before this guard only the proof half was carried across.
+        let carried = self.contributions.len();
+        if carried > crate::state::MAX_MERGE_CONTRIBUTIONS {
+            return Err(Invalid::TooManyContributions {
+                would_be: carried,
+                max: crate::state::MAX_MERGE_CONTRIBUTIONS,
+            });
+        }
+
         // 1. Every carried contribution must be genuinely signed.
         for c in &self.contributions {
             if !c.signature_valid(&self.pki) {
@@ -425,8 +458,11 @@ impl Receipt {
         // THE UNTRUSTED DOOR. `deliver` runs detection against everything accumulated so
         // far, so this loop is QUADRATIC in a contribution set the SENDER chooses. Measured
         // before the bound: 81.4 KB of receipt to 67.4 s of verifier CPU, verdict Ok, wire
-        // linear while work quadrupled per doubling. `State::merge` already bounded exactly
-        // this quantity; verify did not, so the cap was on the trusted door only.
+        // linear while work quadrupled per doubling. `State::merge` bounds BOTH halves on
+        // the trusted door -- the contribution count AND the derivable-proof count. Verify
+        // now carries both: the count at step 0 at the top of `recompute`, the proof count
+        // here. The proof bound alone is a hole an all-distinct-id set walks through (it
+        // derives zero proofs), which is why the count cap above is not redundant with it.
         let derivable = crate::state::derivable_proof_bound(&self.contributions);
         if derivable > crate::state::MAX_MERGE_PROOFS {
             return Err(Invalid::TooMuchDerivableWork {
