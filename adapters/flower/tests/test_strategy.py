@@ -1357,6 +1357,7 @@ def test_the_kernel_tokens_are_sliced_by_length_not_by_a_quoted_number():
     This pins the property directly: for every token, the offset used is exactly its length.
     A future token added with a hand-counted offset fails here rather than in a deployment.
     """
+    import acfa_flower.strategy as _strategy_mod
     from acfa_flower.strategy import _OK, _REFUSED, _UNDEFENDED, _decode_values
 
     for tok in (_OK, _UNDEFENDED, _REFUSED):
@@ -1367,7 +1368,17 @@ def test_the_kernel_tokens_are_sliced_by_length_not_by_a_quoted_number():
     # what it replaced, and the docstring above does too. An absence-assertion over a file that
     # must document the thing it forbids can never pass -- the check has to look where the
     # defect could actually live.
-    src = Path(__file__).resolve().parents[1] / "acfa_flower" / "strategy.py"
+    #
+    # LOCATE THE MODULE THROUGH THE IMPORT, NOT BY PATH ARITHMETIC. This read
+    # `Path(__file__).parents[1] / "acfa_flower" / "strategy.py"`, which assumes the tests sit
+    # NEXT TO the package source. True in a checkout, FALSE for a pip-installed package -- so a
+    # user who installed acfa-flower from PyPI and ran the documented suite got
+    # `FileNotFoundError` on a test that says nothing about their installation. Found by the
+    # v0.2.0 user-acceptance run, from a directory with no source tree beside the tests.
+    #
+    # `strategy.__file__` is wherever the module ACTUALLY loaded from, so this now inspects the
+    # code under test in both contexts instead of a path that only exists in one.
+    src = Path(_strategy_mod.__file__)
     code = [
         l for l in src.read_text().split("\n")
         if not l.lstrip().startswith("#")
