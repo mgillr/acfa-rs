@@ -307,7 +307,9 @@ pub const MAX_CONTRIBUTIONS: usize = 4096;
 /// selection `theta = n - 2f` times over a shrinking pool, so the work is `O(n^3 * d)`.
 ///
 /// Measured on the reference host (see `build/LOAD-AND-STRESS.md`): n=256, d=1024 takes
-/// 11.55 s. The cube law puts n=512 near 90 s and n=1024 beyond ten minutes. A single wire
+/// 11.55 s -- a PRE-`MAX_COORDINATE_OPS` measurement; that cell (`bulyan_work = 1.76e10`)
+/// is REFUSED by the work bound today. The cube law puts n=512 near 90 s and n=1024 beyond
+/// ten minutes, but the work bound now refuses those long before the count cap binds. A single wire
 /// byte selects this rule, so an attacker picks the exponent; the cap is what stops one
 /// byte buying an unbounded amount of a verifier's time.
 pub const MAX_CONTRIBUTIONS_BULYAN: usize = 512;
@@ -327,8 +329,12 @@ pub const MAX_CONTRIBUTIONS_BULYAN: usize = 512;
 ///     d=64    561 KB     12.29 s     d=1024   8.9 MB   255 s
 /// ```
 ///
-/// Every row `ok`. `f` is not the variable either: at `n=512, d=64`, every `f` from 0 to 126
-/// lands between 10.35 s and 11.93 s.
+/// Every row was `ok` BEFORE the work bound existed -- these measurements are WHY it does.
+/// Under the shipped `MAX_COORDINATE_OPS`, `bulyan_work(512, d) = 1.34e8 * d` crosses `1e9`
+/// at `d >= 8`, so every row in the table above except `d = 2` now returns `TooMuchWork`:
+/// it is the evidence for the bound, not a menu of what the binary will run. `f` is not the
+/// variable either: at `n=512, d=64`, every `f` from 0 to 126 lands between 10.35 s and 11.93 s
+/// (also pre-bound; that `(n, d)` is refused now).
 ///
 /// THE ARITHMETIC BEHIND THE NUMBER. Coordinate-operations were timed against wall clock on
 /// the calibration host, and the model was checked at two different `(n, d)` with the SAME

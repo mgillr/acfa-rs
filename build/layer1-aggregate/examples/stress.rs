@@ -114,6 +114,31 @@ fn human(d: Duration) -> String {
     }
 }
 
+/// Formats a possibly-refused timing. A `None` is a size the work bound REFUSED, which
+/// is the documented ceiling doing its job -- not a missing measurement -- so it reads
+/// `refused` rather than being silently dropped or crashing the run.
+fn human_opt(d: Option<Duration>) -> String {
+    match d {
+        Some(d) => human(d),
+        None => "refused".to_string(),
+    }
+}
+
+/// Times an aggregation that the work bound may refuse at large sizes. Returns `None`
+/// when the kernel refuses the size: the bound firing (MAX_COORDINATE_OPS /
+/// MAX_CONTRIBUTIONS_BULYAN) is the DOCUMENTED ceiling, not a harness failure, so the
+/// harness reports it instead of `unwrap()`-panicking on its own published grid.
+fn time_agg<T, E>(reps: usize, mut f: impl FnMut() -> Result<T, E>) -> Option<Duration> {
+    // One probe: if the size is over a bound the kernel refuses in O(1), and we report
+    // the ceiling rather than time -- and then panic on -- a refusal.
+    if f().is_err() {
+        return None;
+    }
+    Some(time_it(reps, || {
+        let _ = std::hint::black_box(f());
+    }))
+}
+
 fn main() {
     let quick = std::env::args().any(|a| a == "--quick");
     println!("# ACFA Layer 1 -- load and stress");
@@ -141,30 +166,28 @@ fn main() {
     for &n in &ns {
         let f = n / 8;
         let cs = corpus(n, d_fixed, 42 + n as u64);
-        let t_mean = time_it(reps, || {
-            std::hint::black_box(mean(&cs).unwrap());
-        });
-        let t_med = time_it(reps, || {
-            std::hint::black_box(coord_median_trim(&cs, f).unwrap());
-        });
-        let t_krum = time_it(reps, || {
-            std::hint::black_box(krum_aggregate(&cs, f).unwrap());
-        });
-        // Bulyan needs n >= 4f+3; f = n/8 satisfies it for these sizes.
-        let t_bul = time_it(reps.min(3), || {
-            std::hint::black_box(bulyan_aggregate(&cs, f).unwrap());
-        });
+        let t_mean = time_agg(reps, || mean(&cs));
+        let t_med = time_agg(reps, || coord_median_trim(&cs, f));
+        let t_krum = time_agg(reps, || krum_aggregate(&cs, f));
+        // Bulyan needs n >= 4f+3; f = n/8 satisfies it for these sizes. Above the
+        // coordinate-op ceiling (MAX_COORDINATE_OPS) the kernel REFUSES rather than
+        // compute -- the cell reads `refused`, which is the ceiling, not a crash.
+        let t_bul = time_agg(reps.min(3), || bulyan_aggregate(&cs, f));
 
         println!(
             "{:>6} {:>12} {:>12} {:>12} {:>12}",
             n,
-            human(t_mean),
-            human(t_med),
-            human(t_krum),
-            human(t_bul)
+            human_opt(t_mean),
+            human_opt(t_med),
+            human_opt(t_krum),
+            human_opt(t_bul)
         );
-        krum_pts.push((n as f64, t_krum.as_secs_f64()));
-        bulyan_pts.push((n as f64, t_bul.as_secs_f64()));
+        if let Some(t) = t_krum {
+            krum_pts.push((n as f64, t.as_secs_f64()));
+        }
+        if let Some(t) = t_bul {
+            bulyan_pts.push((n as f64, t.as_secs_f64()));
+        }
     }
 
     let krum_exp = log_log_slope(&krum_pts);
@@ -189,18 +212,22 @@ fn main() {
     for &d in &ds {
         let f = n_fixed / 8;
         let cs = corpus(n_fixed, d, 7 + d as u64);
-        let t = time_it(reps.min(3), || {
-            std::hint::black_box(krum_aggregate(&cs, f).unwrap());
-        });
+        let t = time_agg(reps.min(3), || krum_aggregate(&cs, f));
         // n^2 pair-coordinates is the work multi-Krum actually does.
         let work = (n_fixed * n_fixed * d) as f64;
-        println!(
-            "{:>8} {:>12} {:>16.2}",
-            d,
-            human(t),
-            t.as_secs_f64() * 1e9 / work
-        );
-        d_pts.push((d as f64, t.as_secs_f64()));
+        match t {
+            Some(t) => {
+                println!(
+                    "{:>8} {:>12} {:>16.2}",
+                    d,
+                    human(t),
+                    t.as_secs_f64() * 1e9 / work
+                );
+                d_pts.push((d as f64, t.as_secs_f64()));
+            }
+            // A refused d row is the coordinate-op ceiling, printed not hidden.
+            None => println!("{:>8} {:>12} {:>16}", d, "refused", "--"),
+        }
     }
     let d_exp = log_log_slope(&d_pts);
     println!();
@@ -242,7 +269,13 @@ fn main() {
     // Bulyan is projected too. It is the rule most likely to be unaffordable, so
     // omitting it would report the worst cliff as an absence -- the exact failure the
     // note below warns about.
-    let base_b = bulyan_pts.last().map(|(_, t)| *t).unwrap_or(0.0);
+    // Scale bulyan from its OWN largest measured n: the work bound can hold that below
+    // the krum grid's last n, and projecting from a size that was `refused` (never ran)
+    // would be an extrapolation from a point that does not exist.
+    let (base_bn, base_b) = bulyan_pts
+        .last()
+        .map(|(n, t)| (*n, *t))
+        .unwrap_or((1.0, 0.0));
     for (pn, pd, label) in [
         (100.0, 1e6, "100 nodes, 1M params"),
         (1000.0, 1e6, "1000 nodes, 1M params"),
@@ -251,7 +284,7 @@ fn main() {
         // Scale from the largest measured point by the MEASURED exponents, not the
         // predicted ones -- projecting with the theory would assume the answer.
         let t_k = base_t * (pn / base_n).powf(krum_exp) * (pd / d_fixed as f64).powf(d_exp);
-        let t_b = base_b * (pn / base_n).powf(bulyan_exp) * (pd / d_fixed as f64).powf(d_exp);
+        let t_b = base_b * (pn / base_bn).powf(bulyan_exp) * (pd / d_fixed as f64).powf(d_exp);
         println!(
             "  {label:<24} krum {:>10}   bulyan {:>10}   matrix {}",
             human(Duration::from_secs_f64(t_k)),
@@ -271,7 +304,7 @@ fn main() {
     // ~97 700x (5.0 decades), so the same error in the d exponent is worth roughly
     // eleven times more. Probing the n axis alone reported the projection as stable,
     // which is exactly how a false precision survives a sensitivity check.
-    let n_reach = 1000.0f64 / base_n;
+    let n_reach = 1000.0f64 / base_bn;
     let d_reach = 1e8 / d_fixed as f64;
     let headline = base_b * n_reach.powf(bulyan_exp) * d_reach.powf(d_exp);
     println!(

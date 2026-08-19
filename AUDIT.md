@@ -16,8 +16,17 @@ The real total is 59 identifiers, contiguous with no gaps and no duplicates, whi
 crypto-05 = crdt-04, adv-03 = rust-07, adv-04 = rust-06. The last of those is recorded by the
 source itself, at `build/layer1-aggregate/tests/value_range.rs`.
 
-This file records the ones that are **fixed**, with the commit that fixed each so the claim
-is checkable rather than asserted. **Three** of the fifty-nine were refuted outright -- crdt-10,
+This file records the ones that are **fixed**. A note on provenance, because the reviewer was
+right to probe it: the short commit hashes cited inline below are from the PRE-EXTRACTION
+private history and DO NOT RESOLVE in this public repository -- the shipped history was re-rooted
+at `8caa65da` when the publishable subset was extracted, collapsing many private commits. So an
+inline hash here is a historical marker, not a `git show` target for a stranger. The CHECKABLE
+public record of every finding is its **GitHub issue**, labelled `audit`, each closed with the
+mechanism, the public commit, a guarding test, and confirmation that test FAILS on the unfixed
+code (the guard-deletion proof). The machine-checkable anchors are the cross-architecture
+fingerprint (below) and `tools/regression-guard.sh`, a CI job that fails if any fix, guard test,
+or the fingerprint is reverted. Read the issues for provenance; the inline hashes are kept for
+internal traceability only. **Three** of the fifty-nine were refuted outright -- crdt-10,
 adv-07 and num-07 -- and a refuted finding is kept rather than deleted, because a report that
 was investigated and found wrong is a result, and the next person to notice the same thing
 deserves to find the answer instead of repeating the work. Several more were partly confirmed
@@ -164,22 +173,29 @@ overturns its own author is not doing anything.
 
 ---
 
-## Open findings
+## Findings status -- ALL CLOSED
 
-Tracked as issues labelled [`audit`](https://github.com/mgillr/acfa-rs/issues?q=is%3Aissue+is%3Aopen+label%3Aaudit).
-The ones worth naming here because they bear on whether the system suits a given deployment:
+Every one of the 59 findings is now closed on GitHub (labelled `audit`), each with the closure
+detail above. There are **no open audit findings**. A production sweep after the audit raised and
+closed a further set, including a remote verify-path denial of service the audit had missed.
 
-- **Q16.16 resolution may be unfit for realistic gradient magnitudes** (#6). The most
-  consequential open item, and a parameter-choice question rather than a bug. Exactness and
-  dynamic range are a trade, and this repository has documented the exactness side and not
-  the cost side. Being measured; the result will be published whichever way it falls.
-- **"Drop-in for FedAvg" is not accurate on non-IID data** (#8). Minority-distribution
-  clients are excluded with zero adversaries present -- expected for a distance-based rule,
-  and not what "drop-in" tells a reader.
-- **The ASCII-over-stdin integration path is impractical at model scale** (#9). The
-  single-implementation guarantee is deliberate; the constant factor it costs is not
-  documented.
-- **The `no-std` crate category is false** (#1), the **MSRV is declared but never exercised**
-  (#3), and **public error enums implement neither `Display` nor `Error`** (#2).
+What remains are not open defects but **documented limitations and roadmap** -- the honest
+envelope of the system, closed at their real scope rather than left as bugs:
 
-Not listed: a small number of security findings, held until they are closed.
+- **Q16.16 resolution vs realistic gradient magnitudes** (#6). A parameter-choice trade, now
+  measured and documented on both sides (the exactness and the cost). Rescale upstream by a
+  power of two, which is exact and reversible.
+- **"Drop-in for FedAvg" on non-IID data** (#8). Distance-based rules exclude
+  minority-distribution clients even with zero adversaries -- inherent to Krum/Bulyan, now
+  caveated where the claim is made.
+- **ASCII-over-stdin at model scale** (#9). The single-implementation guarantee is deliberate;
+  its constant-factor cost is now documented rather than implied away.
+- **no-std (#1), MSRV (#3), Display/Error (#2)** -- CLOSED. The `no-std` category claim was
+  removed, an MSRV CI job now builds at the declared floor and proves it bites, and every public
+  error enum implements `Display` and `std::error::Error`.
+
+Two roadmap items an adopter should weigh, named because the system's honesty about its envelope
+is the point: it is a **wire format plus a verifier**, not a daemon -- there is no network layer
+and finality state is in-memory (not persisted across a restart) -- and it has had **no accredited
+security review**. Run it today as a reproducibility and provenance tool for small-model,
+small-cohort, accountability-first deployments, which is the envelope its guarantees actually fit.

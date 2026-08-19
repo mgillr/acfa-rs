@@ -7,6 +7,8 @@ aggregate nobody can afford to compute is not a product.
 
 Reproduce with `cargo run --release --example stress`. Add `-- --quick` for a smaller grid
 with an identical report shape; the `--` separator is required or cargo consumes the flag.
+Cells whose work exceeds the shipped bound (`MAX_COORDINATE_OPS = 1e9`) are printed as
+`refused`, not timed -- the example demonstrates the ceiling rather than crashing on it.
 No CI job runs this: it is a measurement you run yourself, not a gate.
 Host: Intel i5-6500, single-threaded, release profile with `overflow-checks = true`.
 
@@ -29,6 +31,14 @@ a shrinking pool for Bulyan.
 | 256 | 0.5 ms | 10.2 ms | 135.7 ms | **11.55 s** |
 
 **krum 1.974** (predicted 2.000) . **bulyan 2.856** (predicted 3.000)
+
+> **Under the shipped work bound (`MAX_COORDINATE_OPS = 1e9`) the two bulyan cells at
+> `n = 128` and `n = 256` are now REFUSED, not computed.** Bulyan's work is `n^3 * d`, so at
+> `d = 1024` it crosses `1e9` units near `n = 100`; the kernel returns `TooMuchWork` and the
+> stress example prints `refused` for exactly these cells. The `1.46 s` and `11.55 s` above
+> are the *pre-bound* measurements that MOTIVATED the cap -- see `rules.rs::MAX_COORDINATE_OPS`.
+> The krum and median columns stay under the bound across this whole grid (`krum_work(256, 1024)
+> = 6.7e7`), so they are unaffected.
 
 ### In `d` (dimension), `n = 32`
 

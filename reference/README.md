@@ -1,7 +1,10 @@
 # Reference implementation
 
 `acfa.py` is the reference kernel released with
-[arXiv:2607.10305](https://arxiv.org/abs/2607.10305), vendored here verbatim.
+[arXiv:2607.10305](https://arxiv.org/abs/2607.10305), vendored here with ONE documented
+correction (the `fp_encode` rounding rule, num-01 -- see below). It is not byte-identical to
+the paper's release; the correction and the reason it was made to the file rather than only
+noted are recorded here.
 
 ## Why it is vendored rather than linked
 
@@ -23,7 +26,7 @@ Verify the copy is unmodified:
 cd reference && shasum -a 256 -c SHA256SUMS
 ```
 
-`377cfa60...` is the file as released. If you change it, the goldens change, the
+`43e45bfa...` is the pinned hash of this file (`SHA256SUMS`, checked in CI). If you change it, the goldens change, the
 cross-implementation tests fail, and that is the intended behaviour: the whole point of
 this file is to be a second, independently written implementation that the Rust must
 agree with byte for byte. Do not edit it to make a test pass.
@@ -43,24 +46,25 @@ candidates while `theta = n-2f`, which differ exactly when `f < 2`. The Rust ref
 asserts it is still present, so a corrected reference fails CI rather than sliding into
 unexamined agreement.
 
-**`fp_encode` rounds by a different rule than the crate.** `fp_encode` is
-`int(round(x * (1 << Q_FRAC_BITS)))`, and Python's `round` is ties-to-even; the Rust
-`fixed::encode` specifies and implements half-away-from-zero. They do not disagree at
-every tie -- they disagree at exactly half of them, the half-integers whose floor is even.
-Measured: `0.5 -> 0` here against `1` in Rust, `2.5 -> 2` against `3`, `4.5 -> 4` against
-`5`, and symmetrically for negatives; `1.5`, `3.5` and `5.5` agree.
+**`fp_encode` rounding -- RESOLVED (num-01).** This was a real divergence and it is fixed.
+`fp_encode` originally used `int(round(...))`, and Python's `round` is ties-to-even, while the
+Rust `fixed::encode` specifies and implements half-away-from-zero -- so they disagreed at
+exactly half the half-integers (those whose floor is even): `0.5 -> 0` here versus `1` in Rust,
+`2.5 -> 2` versus `3`, and so on. `fp_encode` now rounds **half away from zero explicitly**
+(`floor(s+0.5)` for `s >= 0`, `ceil(s-0.5)` for `s < 0`), so it agrees with the Rust encoder at
+every tie. Re-run it: `0.5/65536` encodes to `1`, matching Rust. The correction is guarded by
+`build/layer1-aggregate/tests/reference_rounding.rs`, which cross-checks the encoders at the
+midpoints directly.
 
-Two things bound what that means, and both are worth stating because each alone would
-mislead. It is not a live interop break: `fp_encode` has no call site inside this file --
-its own docstring says the kernel never sees floats -- the goldens are generated from
-integer inputs, and the Rust encoder is the only encoder on every documented path. But it
-is also not harmless, because the hazard here is a READER: anyone who takes this file as
-the specification and writes a third implementation from it will round the other way at
-those points and produce a different aggregate from the same inputs, which is exactly the
-failure the determinism property exists to exclude.
-
-WHICH RULE IS NORMATIVE IS AN OPEN QUESTION AND IS NOT ANSWERED HERE. The paper and the
-crate's docstring both specify half-away-from-zero; this file is the artifact as released
-and is deliberately left byte-identical to it, warts included, because a vendored
-reference that has been edited is no longer evidence of anything. That is why the
-correction lives in this README, which is not pinned, and not in `acfa.py`, which is.
+WHICH RULE IS NORMATIVE: HALF-AWAY-FROM-ZERO (num-01). The paper and the crate's docstring
+both specify it, the cross-architecture fingerprint is built on it, and the annihilation
+threshold argument (`|s| < 0.5` encodes to 0) rests on it. So the reference was corrected TO
+the file rather than only in prose -- an earlier version of this README left `acfa.py`
+ties-to-even and documented the divergence here, on the theory that a vendored reference should
+not be edited. That theory loses to a sharper hazard the reviewer named: this file's STATED
+PURPOSE is to be the specification, and a third-party implementer reading a spec that rounds
+ties-to-even would produce a kernel that disagrees with every deployed one at every rounding
+boundary -- exactly the failure the fixed-point design exists to prevent. A spec that is wrong
+is worse than a vendored file that is edited. Correcting `acfa.py` (and re-pinning it) makes the
+spec, the implementation, and the fingerprint say one thing. Golden generation feeds the kernel
+integers and never calls `fp_encode`, so the correction moved no golden and no fingerprint.
