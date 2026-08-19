@@ -26,11 +26,24 @@
 //!   1 vs 2 -- a bad RECEIPT versus a bad INVOCATION. Different remediation entirely: one means
 //!             distrust the issuer, the other means fix your command line. Collapsing them sends
 //!             an operator hunting a security incident over a typo, or the reverse.
-//!   3 vs 0 -- **the most dangerous of the three.** Exit 3 says "I checked this receipt against
-//!             ITSELF; no identity was verified." If it ever became 0, a WEAKER claim would be
-//!             silently promoted to a STRONGER one -- and unlike the 0-vs-1 case there is no
-//!             `INVALID` on stderr to contradict it, so a human reading the terminal would not
-//!             catch it either. Both channels would agree, and both would be wrong.
+//!   3 vs 0 -- exit 3 says "I checked this receipt against ITSELF; no identity was verified."
+//!             If it ever became 0, a WEAKER claim would be silently promoted to a STRONGER one.
+//!
+//! CORRECTION TO THIS FILE'S FIRST VERSION, which landed in ac49cc6 and was wrong. That version
+//! ranked `3 vs 0` as the most dangerous of the three, on the reasoning that no stderr message
+//! contradicts it so a human would not catch it either. **That is false, and I had not read the
+//! output before asserting it.** The no-`--pki` path opens with
+//!
+//!     SELF-CONSISTENT ONLY -- THIS IS NOT A SECURITY VERDICT
+//!
+//! and then states outright that the identity set is chosen by whoever wrote the receipt, so a
+//! forgery built from fresh keys reaches the same result. That is a LOUDER human backstop than
+//! the `INVALID` line, not an absent one. The two mutants are symmetric in that respect and the
+//! ranking was unfounded.
+//!
+//! What survives the correction is the reason this file exists: in BOTH cases the human channel
+//! still warns and the exit status still lies, so automation is fooled either way. The divergence
+//! is the defect; which of the two is "worse" was a claim about output I had not looked at.
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -210,12 +223,18 @@ fn self_consistent_only_is_reported_distinctly_from_verified() {
     assert_ne!(
         code, 0,
         "without --pki nobody's identity was checked, so 0 would promote a self-consistency \
-         check to a verification -- and no INVALID is printed, so a human would not catch it \
-         either\n{out}"
+         check to a verification\n{out}"
     );
     assert_eq!(
         code, 3,
         "the self-consistent band is exit 3; got {code}\n{out}"
+    );
+    // The human channel must keep saying so too. Asserted rather than assumed: the first version
+    // of this file claimed no such message existed, which was wrong and unchecked.
+    assert!(
+        out.contains("NOT A SECURITY VERDICT"),
+        "the self-consistent path must tell a human it is not a verdict, not only encode that in \
+         the exit status\n{out}"
     );
 }
 
