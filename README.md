@@ -412,6 +412,22 @@ answer. Multi-Krum is `O(n^2 d)`, so participant count dominates, not dimension.
   (1.56x vs Krum's 1.61x at n=15) and refuses below `n >= 4f+3`; `coord_median_trim` is worse
   at 2.21x. Property of the imported rules. The field is named `population_bound_met`
   accordingly. See `build/layer1-aggregate/tests/within_norm.rs`.
+- The Lemma 12 no-flip certificate can be **denied** by a single participant, though never
+  forged by one. `beta` is scaled by the largest pairwise L1 distance in the admitted set, so one
+  contribution with large raw magnitude enlarges the threshold for the whole round and can push
+  every configuration out of the certified tier -- for everybody, not just itself. This is
+  availability-only: inflating that distance can only make certification harder, so a hostile
+  input withholds a certificate and can never produce a false one. The obvious fix -- scoping the
+  maximum to the pairs that actually enter the boundary scores -- is **unsound**, because a Krum
+  score is a minimum over m-subsets and the perturbation is free to change which pairs those are,
+  so the bound must cover every candidate pair. Documented rather than patched, tracked as
+  issue #72.
+- The shipped certification threshold is the paper's `4*beta_hat`, which is **twice what
+  soundness requires**: a direct argument on the observed gap gives `2*beta_hat`, verified and
+  searched over 1.78M preimages in the contested band with zero flips. The looser constant ships
+  because the code must not enforce a threshold the published lemma does not state; the
+  tightening is an erratum candidate against the paper, and would double how often the
+  certificate fires.
 - Q16.16 fixes range at +/-2^15, resolution 2^-16. Out-of-range values are refused, not
   saturated, because saturation would make the result depend on which replica saturated first.
   Rescale upstream with a factor both parties hold.
