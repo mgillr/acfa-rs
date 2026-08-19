@@ -278,3 +278,47 @@ fn certificate_is_independent_of_input_order() {
         );
     }
 }
+
+/// **The soundness constant, pinned numerically so no reformatting or refactor can loosen it
+/// silently.** `tools/regression-guard.sh` also greps for the literal, but a text guard is
+/// brittle -- `cargo fmt` already split that expression across three lines once and turned the
+/// grep red. This assertion is about the VALUE, so it survives any formatting.
+///
+/// The 4 is 2 + 2 with both terms load-bearing and different in origin: both boundary endpoints
+/// move in opposite directions (real condition `g > 2*beta`), and each of the two ranks can sit
+/// `beta_hat` from its real counterpart under the 1-Lipschitz transport
+/// (`g >= g_hat - 2*beta_hat`). Halving yields only `g > 0`, which certifies configurations that
+/// can still flip.
+///
+/// GUARD-DELETION: change the threshold to `2 * beta` and this goes RED immediately.
+#[test]
+fn the_certification_threshold_is_exactly_four_beta() {
+    let mut r = Lcg::new(2024);
+    let mut checked = 0;
+    for trial in 0..200u64 {
+        let n = 6 + (trial % 5) as usize;
+        let d = 2 + (trial % 4) as usize;
+        let f = 1 + (trial % 2) as usize;
+        let cs: Vec<Contribution> = (0..n)
+            .map(|i| Contribution {
+                tie_key: format!("k{i:04}").into_bytes(),
+                v: (0..d).map(|_| (r.next_f64(1.0) * SCALE) as i64).collect(),
+            })
+            .collect();
+        if let Ok((_, Some(c))) = multi_krum_certified(&cs, f) {
+            assert_eq!(
+                c.threshold,
+                4 * c.beta,
+                "the certification threshold must be exactly 4 * beta -- halving it forges \
+                 certificates for configurations with 0 < g <= 2*beta"
+            );
+            assert_eq!(
+                c.certified,
+                c.margin > c.threshold,
+                "the verdict must be exactly margin > threshold"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "vacuous: no certificate was produced to check");
+}

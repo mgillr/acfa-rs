@@ -64,7 +64,33 @@ check_fn "the_total_encoder_refuses_a_fault_bound_that_does_not_fit"            
 check_fn "two_honest_nodes_do_not_finalise_conflicting_states_after_resume"     build/layer2-finality/tests/crdt05_orientation_and_attribution.rs
 check_fn "a_double_signer_conviction_and_its_evidence_survive_a_resume"         build/layer2-finality/tests/crdt05_orientation_and_attribution.rs
 check_fn "a_chain_anchored_to_the_wrong_predecessor_is_not_admitted"            build/layer2-finality/tests/crdt09_predecessor_binding.rs
+check_fn "a_certified_selection_never_differs_from_the_real_valued_selection"  build/layer1-aggregate/tests/lemma12_margin.rs
+check_fn "the_certification_threshold_is_exactly_four_beta"                  build/layer1-aggregate/tests/lemma12_margin.rs
+check_fn "certificate_is_computed_over_the_admitted_set_not_the_carried_set"   build/layer2-receipt/tests/lemma12_admitted_set.rs
+check_fn "redaction_changes_no_verification_answer"                           build/layer2-receipt/tests/redacted_receipt.rs
+check_fn "neither_decoder_accepts_the_others_artefact"                        build/layer2-receipt/tests/redacted_receipt.rs
 [ "$fail" -eq 0 ] && echo "  OK  named guard functions present"
+
+echo "== Lemma 12 soundness constants are unchanged =="
+# The 4 in `4 * beta` is 2 + 2 with both terms load-bearing (endpoint crossing, plus the
+# 1-Lipschitz transport from the observed gap to the real one). Halving it certifies
+# configurations that can still flip -- a FALSE certificate. It reads like slack, an
+# exhaustive search shows ~13x of empirical slack, and it is still not halvable, so the
+# literal is pinned here rather than defended by a comment alone. Same for the GLOBAL l1_max:
+# scoping it to score-relevant pairs is unsound, because a score is a min over m-subsets and
+# the perturbation can change which pairs those are.
+if grep -q "let threshold = 4i128" build/layer1-aggregate/src/rules.rs; then
+  echo "  OK  threshold is 4 * beta"
+else
+  echo "  FAIL Lemma 12 threshold is no longer 4 * beta -- halving it forges certificates"
+  fail=1
+fi
+if grep -q "if l1 > l1_max" build/layer1-aggregate/src/rules.rs; then
+  echo "  OK  l1_max is a global maximum over all scored pairs"
+else
+  echo "  FAIL l1_max is no longer a global max over all pairs -- scoping it is unsound"
+  fail=1
+fi
 
 echo "== test suite has not collapsed =="
 N=$(grep -rhoE '#\[test\]' build/*/tests/*.rs build/*/src/*.rs 2>/dev/null | wc -l | tr -d ' ')

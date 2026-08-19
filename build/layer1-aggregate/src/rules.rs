@@ -835,11 +835,48 @@ pub struct MarginCertificate {
     pub beta: i128,
     /// `4 * beta_hat` -- the value `margin` must exceed. Stored so a reader never has to
     /// reproduce the factor, and so a change to it is visible in any recorded certificate.
+    ///
+    /// **DO NOT HALVE THIS. THE 4 IS 2 + 2 AND BOTH TERMS ARE LOAD-BEARING, WITH DIFFERENT
+    /// ORIGINS.** It looks like padding on top of the paper's `g > 2*beta` and it is not:
+    ///
+    ///   * the FIRST 2 is that both endpoints of the boundary move in opposite directions --
+    ///     the score at rank `m` can rise by `beta` while the score at rank `m+1` falls by
+    ///     `beta` -- so the REAL no-flip condition on the true gap is `g > 2*beta`;
+    ///   * the SECOND 2 is the cost of not being able to SEE `g`. Order statistics are
+    ///     1-Lipschitz in sup-norm, so each of the two ranks can individually sit `beta_hat`
+    ///     from its real counterpart, giving `g >= g_hat - 2*beta_hat`.
+    ///
+    /// Chain: `g_hat > 4*beta_hat  =>  g >= g_hat - 2*beta_hat > 2*beta_hat >= 2*beta`. Halve
+    /// it and the chain yields `g > 0` and nothing more -- a configuration with `0 < g <= 2*beta`
+    /// passes the halved test AND CAN STILL FLIP. That is a false certificate, the one failure
+    /// mode this lemma exists to exclude.
+    ///
+    /// The tempting argument for halving is that measurement shows enormous slack: an
+    /// exhaustive preimage search found flips ceasing to exist about 13x below where
+    /// certification begins. **That is evidence the bound is loose, not that it is halvable**,
+    /// and the trap is subtle -- halving RESCALES THE RATIO AXIS BY TWO, so a null measured
+    /// against `4*beta` says nothing about the band a halved rule would newly certify. An
+    /// empirical null at one threshold is not a null at half of it. (Raised by C, refuted by G's
+    /// independent derivation from the paper; ruled by B.)
     pub threshold: i128,
     /// `delta_star = 2*l1_max + 3*d` in raw units: the per-squared-distance perturbation bound.
     pub delta_star: i128,
     /// The largest pairwise L1 distance in the scored set, raw units. Adversary-influenceable
     /// upward only, which is why inflating it can deny a certificate but not forge one.
+    ///
+    /// **THE MAXIMUM IS OVER ALL PAIRS AND THAT IS LOAD-BEARING, NOT CONSERVATISM.** The obvious
+    /// optimisation -- restrict it to the pairs that actually enter the boundary scores -- is
+    /// UNSOUND. A Krum score is a MIN OVER m-SUBSETS, so the perturbation is free to change
+    /// WHICH `j` are the `m` nearest; a bound taken over the currently-minimising neighbour set
+    /// bounds a set the adversary can walk straight out of. It must cover every CANDIDATE pair.
+    ///
+    /// The cost of that soundness is a real, accepted limitation: because the max is global, ONE
+    /// outlier with large raw magnitude enlarges `beta` for the whole round and can push every
+    /// configuration out of the certified tier for everybody. That is a DENIAL primitive and it
+    /// is availability-only -- it can never forge a certificate. Tracked as issue #72 and
+    /// documented rather than silently accepted. (Found empirically by C attacking the compiled
+    /// binary, and independently derived from the paper by G in an isolated context; the
+    /// unsoundness of the scoping fix is G's argument.)
     pub l1_max: i128,
     /// Krum's nearest-neighbour count `n - f - 2`, the number of squared distances summed
     /// into each score -- the multiplier in `beta`.
