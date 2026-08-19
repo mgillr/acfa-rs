@@ -21,9 +21,18 @@
 use crate::entry::{Contribution, EquivProof};
 use crate::identity::{Pki, PubKey, Sig};
 use crate::receipt::Receipt;
+use crate::redact::{RedactedContribution, RedactedReceipt};
 use crate::resolve::Rule;
 
 pub const MAGIC: &[u8; 8] = b"ACFA-R1\0";
+/// Wire magic for a REDACTED receipt.
+///
+/// Deliberately a different string, not a flag inside the existing format. A full-receipt
+/// decoder must REJECT redacted bytes and this decoder must reject full ones, so no caller can
+/// be handed a receipt carrying less evidence than it believes it has. A version bit inside one
+/// format would have made that a branch someone could forget to take; a different magic makes
+/// it a decode failure.
+pub const MAGIC_REDACTED: &[u8; 8] = b"ACFA-X1\0";
 pub const VERSION: u16 = 1;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -435,6 +444,192 @@ pub fn decode(bytes: &[u8]) -> Result<Receipt, WireError> {
     }
 
     Ok(Receipt {
+        round,
+        f,
+        rule,
+        pki,
+        contributions,
+        proofs,
+        claimed_state_root,
+        claimed_output_root,
+        claimed_aggregate,
+    })
+}
+
+// ------------------------------------------------- redacted receipts (see `redact.rs`)
+
+/// Encode a redacted receipt.
+///
+/// The same layout as `encode` except each contribution carries its 32-byte `tensor_hash` in
+/// place of the length-prefixed tensor -- exactly the field the signature and the leaf already
+/// committed to. Canonical by the same means: leaf-sorted, so two encoders of one set emit
+/// identical bytes.
+pub fn encode_redacted(r: &RedactedReceipt) -> Vec<u8> {
+    let mut w = W(Vec::new());
+    w.raw(MAGIC_REDACTED);
+    w.u16(VERSION);
+    w.u64(r.round);
+    w.u32(r.f as u32);
+    w.u8(r.rule.as_wire());
+
+    w.u32(r.pki.len() as u32);
+    for (id, pk) in &r.pki {
+        w.u32(*id);
+        w.raw(pk);
+    }
+
+    let mut cs = r.contributions.clone();
+    cs.sort_by_key(|c| c.leaf());
+    w.u32(cs.len() as u32);
+    for c in &cs {
+        w.u64(c.rnd);
+        w.u32(c.node_id);
+        w.raw(&c.tensor_hash);
+        w.raw(&c.sig);
+    }
+
+    let mut ps = r.proofs.clone();
+    ps.sort_by_key(|p| p.leaf());
+    w.u32(ps.len() as u32);
+    for p in &ps {
+        w.u64(p.rnd);
+        w.u32(p.node_id);
+        w.raw(&p.h1);
+        w.raw(&p.h2);
+        w.raw(&p.sig1);
+        w.raw(&p.sig2);
+    }
+
+    w.raw(&r.claimed_state_root);
+    w.raw(&r.claimed_output_root);
+
+    match &r.claimed_aggregate {
+        None => w.u8(0),
+        Some(a) => {
+            w.u8(1);
+            w.u32(a.len() as u32);
+            for v in a {
+                w.i64(*v);
+            }
+        }
+    }
+    w.0
+}
+
+/// Decode a redacted receipt.
+///
+/// **Carries every guard the full decoder carries.** A redacted receipt is a NARROWER door,
+/// never a weaker one, so the checks that make the full door safe are repeated here rather than
+/// assumed to have happened elsewhere: strictly-ascending PKI ids (canonical encoding), refusal
+/// of an unusable public key (crypto-02 -- a small-order key verifies without any secret),
+/// refusal of a reused public key (crypto-03 -- one key wearing several identities defeats the
+/// distinctness the robustness argument rests on), counts bounded against the bytes actually
+/// present, canonical leaf ordering, and no trailing bytes.
+pub fn decode_redacted(bytes: &[u8]) -> Result<RedactedReceipt, WireError> {
+    let mut r = R { b: bytes, i: 0 };
+    if r.take(8)? != MAGIC_REDACTED {
+        return Err(WireError::BadMagic);
+    }
+    let v = r.u16()?;
+    if v != VERSION {
+        return Err(WireError::UnsupportedVersion(v));
+    }
+    let round = r.u64()?;
+    let f = r.u32()? as usize;
+    let rule_b = r.u8()?;
+    let rule = Rule::from_wire(rule_b).ok_or(WireError::UnknownRule(rule_b))?;
+
+    let n_pki_raw = r.u32()?;
+    let n_pki = r.count(n_pki_raw, 4 + 32)?;
+    let mut pki: Pki = Pki::new();
+    let mut last_id: Option<u32> = None;
+    let mut seen_keys: std::collections::BTreeSet<PubKey> = std::collections::BTreeSet::new();
+    for _ in 0..n_pki {
+        let id = r.u32()?;
+        if let Some(prev) = last_id {
+            if id <= prev {
+                return Err(WireError::NotCanonical("pki not strictly ascending by id"));
+            }
+        }
+        last_id = Some(id);
+        let pk: PubKey = r.arr32()?;
+        if !crate::identity::is_usable_pubkey(&pk) {
+            return Err(WireError::NotCanonical(
+                "pki contains an unusable public key",
+            ));
+        }
+        if !seen_keys.insert(pk) {
+            return Err(WireError::NotCanonical("pki reuses a public key"));
+        }
+        pki.insert(id, pk);
+    }
+
+    // 8 + 4 + 32 + 64 is the smallest a redacted contribution can be on the wire.
+    let n_c_raw = r.u32()?;
+    let n_c = r.count(n_c_raw, 8 + 4 + 32 + 64)?;
+    let mut contributions: Vec<RedactedContribution> = Vec::with_capacity(n_c);
+    for _ in 0..n_c {
+        let rnd = r.u64()?;
+        let node_id = r.u32()?;
+        let tensor_hash = r.arr32()?;
+        let sig = r.arr64()?;
+        contributions.push(RedactedContribution {
+            rnd,
+            node_id,
+            tensor_hash,
+            sig,
+        });
+    }
+    if contributions.windows(2).any(|w| w[0].leaf() >= w[1].leaf()) {
+        return Err(WireError::NotCanonical(
+            "contributions not strictly ascending by leaf",
+        ));
+    }
+
+    let n_p_raw = r.u32()?;
+    let n_p = r.count(n_p_raw, 8 + 4 + 32 + 32 + 64 + 64)?;
+    let mut proofs: Vec<EquivProof> = Vec::with_capacity(n_p);
+    for _ in 0..n_p {
+        proofs.push(EquivProof {
+            rnd: r.u64()?,
+            node_id: r.u32()?,
+            h1: r.arr32()?,
+            h2: r.arr32()?,
+            sig1: r.arr64()?,
+            sig2: r.arr64()?,
+        });
+    }
+    if proofs.windows(2).any(|w| w[0].leaf() >= w[1].leaf()) {
+        return Err(WireError::NotCanonical(
+            "proofs not strictly ascending by leaf",
+        ));
+    }
+
+    let claimed_state_root = r.arr32()?;
+    let claimed_output_root = r.arr32()?;
+    let claimed_aggregate = match r.u8()? {
+        0 => None,
+        1 => {
+            let d_raw = r.u32()?;
+            let d = r.count(d_raw, 8)?;
+            let mut a = Vec::with_capacity(d);
+            for _ in 0..d {
+                a.push(r.i64()?);
+            }
+            Some(a)
+        }
+        _ => {
+            return Err(WireError::NotCanonical(
+                "aggregate presence flag not 0 or 1",
+            ))
+        }
+    };
+
+    if r.i != r.b.len() {
+        return Err(WireError::TrailingBytes);
+    }
+
+    Ok(RedactedReceipt {
         round,
         f,
         rule,

@@ -38,6 +38,13 @@
 //!     distances, so the masks do not cancel. Making that work is a research problem, not a
 //!     configuration flag, and nothing here should be read as having solved it.
 //!
+//! **SIZE: REDACTION IS NOT UNIFORMLY SMALLER, AND THE CROSSOVER IS d = 4.** A contribution's
+//! `4 + 8d` tensor bytes are replaced by a fixed 32-byte hash, so the artefact shrinks only for
+//! `d >= 4` and grows by a few bytes per contribution below that. Real model widths are in the
+//! millions, where the reduction is the entire point (a 1M-parameter update collapses from 8 MB
+//! to 32 bytes per contributor) -- but the two-element toy case in the tests genuinely costs
+//! bytes, and saying "redacted receipts are smaller" without qualification would be false.
+//!
 //! **A REDACTED RECEIPT CAN NEVER BE MISTAKEN FOR A FULL ONE.** It has its own wire magic, so a
 //! full-receipt decoder rejects it and this decoder rejects a full receipt. The verdict type is
 //! also separate and carries no `aggregate` field that could be read as verified -- only a
