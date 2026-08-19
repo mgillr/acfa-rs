@@ -284,11 +284,13 @@ fn certificate_is_independent_of_input_order() {
 /// brittle -- `cargo fmt` already split that expression across three lines once and turned the
 /// grep red. This assertion is about the VALUE, so it survives any formatting.
 ///
-/// The 4 is 2 + 2 with both terms load-bearing and different in origin: both boundary endpoints
-/// move in opposite directions (real condition `g > 2*beta`), and each of the two ranks can sit
-/// `beta_hat` from its real counterpart under the 1-Lipschitz transport
-/// (`g >= g_hat - 2*beta_hat`). Halving yields only `g > 0`, which certifies configurations that
-/// can still flip.
+/// 4 is the PAPER's constant (acfa.tex:565). A direct argument on the observed gap shows
+/// `2*beta_hat` is the true soundness floor -- verified independently and searched over 1.78M
+/// preimages in the contested band with zero flips -- so 4 is twice what is required. It ships
+/// anyway because the code must not enforce a threshold the published lemma does not state;
+/// the tightening is an erratum candidate on the paper, not a code change. This test pins
+/// whatever the shipped constant IS, so a silent drift below the `2*beta_hat` floor -- which
+/// would certify configurations that can still flip -- cannot pass.
 ///
 /// GUARD-DELETION: change the threshold to `2 * beta` and this goes RED immediately.
 #[test]

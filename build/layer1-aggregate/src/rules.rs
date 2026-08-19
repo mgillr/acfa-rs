@@ -836,28 +836,38 @@ pub struct MarginCertificate {
     /// `4 * beta_hat` -- the value `margin` must exceed. Stored so a reader never has to
     /// reproduce the factor, and so a change to it is visible in any recorded certificate.
     ///
-    /// **DO NOT HALVE THIS. THE 4 IS 2 + 2 AND BOTH TERMS ARE LOAD-BEARING, WITH DIFFERENT
-    /// ORIGINS.** It looks like padding on top of the paper's `g > 2*beta` and it is not:
+    /// **THIS IS THE PAPER'S CONSTANT, AND IT IS KNOWN TO BE TWICE WHAT SOUNDNESS REQUIRES.**
+    /// Do not change it here without changing the paper first -- see the ordering note below.
     ///
-    ///   * the FIRST 2 is that both endpoints of the boundary move in opposite directions --
-    ///     the score at rank `m` can rise by `beta` while the score at rank `m+1` falls by
-    ///     `beta` -- so the REAL no-flip condition on the true gap is `g > 2*beta`;
-    ///   * the SECOND 2 is the cost of not being able to SEE `g`. Order statistics are
-    ///     1-Lipschitz in sup-norm, so each of the two ranks can individually sit `beta_hat`
-    ///     from its real counterpart, giving `g >= g_hat - 2*beta_hat`.
+    /// `acfa.tex:565` specifies `g_hat > 4*beta_hat`, reached by transporting the observed gap
+    /// to the real one (`g >= g_hat - 2*beta_hat`) and then applying the real no-flip condition
+    /// (`g > 2*beta`, because both boundary endpoints move in opposite directions). That chain
+    /// is sound and gives 4.
     ///
-    /// Chain: `g_hat > 4*beta_hat  =>  g >= g_hat - 2*beta_hat > 2*beta_hat >= 2*beta`. Halve
-    /// it and the chain yields `g > 0` and nothing more -- a configuration with `0 < g <= 2*beta`
-    /// passes the halved test AND CAN STILL FLIP. That is a false certificate, the one failure
-    /// mode this lemma exists to exclude.
+    /// **A DIRECT ARGUMENT ON THE OBSERVED GAP GIVES 2, AND IT HAS BEEN VERIFIED.** It never
+    /// leaves the observable world, so it pays no transport cost. If the quantised and real
+    /// selections differ, then some `a` is selected on the grid but not in reals and some `b` is
+    /// the reverse (both selections have size `m`), and:
     ///
-    /// The tempting argument for halving is that measurement shows enormous slack: an
-    /// exhaustive preimage search found flips ceasing to exist about 13x below where
-    /// certification begins. **That is evidence the bound is loose, not that it is halvable**,
-    /// and the trap is subtle -- halving RESCALES THE RATIO AXIS BY TWO, so a null measured
-    /// against `4*beta` says nothing about the band a halved rule would newly certify. An
-    /// empirical null at one threshold is not a null at half of it. (Raised by C, refuted by G's
-    /// independent derivation from the paper; ruled by B.)
+    ///   * `S(a) >= S(b)`, by definition of the real selection;
+    ///   * `S_hat(b) - S_hat(a) >= g_hat`, by definition of the quantised selection;
+    ///   * `|S_hat(i) - S(i)| <= beta` per index, which chained through `S(a) >= S(b)` gives
+    ///     `S_hat(b) - S_hat(a) <= 2*beta`.
+    ///
+    /// So a flip implies `g_hat <= 2*beta`; contrapositive, `g_hat > 2*beta` implies no flip.
+    /// With `beta_hat >= beta` the observable form `g_hat > 2*beta_hat` therefore suffices.
+    /// Independently verified step by step, and searched: 1,781,100 preimages enumerated inside
+    /// the contested band `2*beta < g_hat <= 4*beta`, with a positive control, zero flips.
+    ///
+    /// **WHY THE LOOSER CONSTANT SHIPS ANYWAY.** Not doubt -- ordering. The code must not
+    /// silently outrun its own paper: a kernel enforcing a threshold the published lemma does
+    /// not state is the same defect as a spec describing a rounding rule the code abandoned,
+    /// which this repository has already had once. The tightening is carried as an erratum
+    /// candidate against `acfa.tex:565`; when the paper states 2, this becomes 2 and the
+    /// certification rate doubles. Until then 4 is strictly stronger and therefore safe.
+    ///
+    /// Whatever the constant, it is NOT free slack to spend: `g_hat > 2*beta_hat` is the floor,
+    /// and anything at or below it certifies configurations that can still flip.
     pub threshold: i128,
     /// `delta_star = 2*l1_max + 3*d` in raw units: the per-squared-distance perturbation bound.
     pub delta_star: i128,
