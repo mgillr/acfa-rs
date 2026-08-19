@@ -20,6 +20,7 @@ use crate::entry::{Contribution, EquivProof};
 use crate::identity::Pki;
 use crate::resolve::{resolve, Resolution, Rule};
 use crate::state::State;
+use acfa_aggregate::MarginCertificate;
 
 /// A self-contained, offline-checkable record of one resolved round.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,6 +255,25 @@ pub struct Verified {
     /// Byzantine guarantee because too few identities took part. Surfacing that separately
     /// is the difference between an honest receipt and a reassuring one.
     pub population_bound_met: bool,
+    /// **Lemma 12's no-flip certificate: did fixed-point arithmetic change WHO was selected?**
+    ///
+    /// This is the question byte-identity does not answer. Determinism says every replica
+    /// computed the same selection; it does not say that selection is the one the
+    /// un-quantised gradients would have produced. `Some(c)` with `c.certified` true means it
+    /// provably is -- a per-round, third-party-checkable statement about a counterfactual.
+    ///
+    /// **Recomputed by the verifier, never carried on the wire**, so there is nothing here an
+    /// issuer can forge or suppress; two verifiers of the same receipt derive the same
+    /// certificate, and it costs no encoding change.
+    ///
+    /// `None` means no certificate is available -- empty round, kernel refusal, the select-all
+    /// band, or Bulyan -- and is NOT a negative result. `Some(c)` with `c.certified` false is
+    /// the honest negative: the boundary was too close to certify, which by Remark 13 includes
+    /// an irreducible exact-tie residual no margin condition can ever cover.
+    ///
+    /// Independent of `population_bound_met`: a certified selection can still be undefended,
+    /// and a defended round can be uncertified. Neither implies the other.
+    pub margin: Option<MarginCertificate>,
 }
 
 impl Receipt {
@@ -513,6 +533,7 @@ impl Receipt {
             convicted: already.iter().copied().collect(),
             convictable_but_unconvicted: convictable,
             population_bound_met: r.population_bound_met,
+            margin: r.margin,
         })
     }
 }

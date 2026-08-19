@@ -773,6 +773,23 @@ pub fn krum_aggregate(cs: &[Contribution], f: usize) -> Result<Vec<i64>, AggErro
     mean(&picked)
 }
 
+/// `krum_aggregate` together with its Lemma 12 no-flip certificate.
+///
+/// Returns the SAME aggregate `krum_aggregate` returns -- the certificate is an additive
+/// observable and must never move the value that ships. `None` for the certificate means the
+/// select-all band, where no selection boundary exists.
+///
+/// This is the entry point Layer 2 uses, so that the certificate is computed over exactly the
+/// admitted set that produced the aggregate. See the invariant note on `multi_krum_certified`.
+pub fn krum_aggregate_certified(
+    cs: &[Contribution],
+    f: usize,
+) -> Result<(Vec<i64>, Option<MarginCertificate>), AggError> {
+    let (sel, cert) = multi_krum_certified(cs, f)?;
+    let picked: Vec<Contribution> = sel.iter().map(|&i| cs[i].clone()).collect();
+    Ok((mean(&picked)?, cert))
+}
+
 /// A checkable certificate that the fixed-point selection equals the real-valued one.
 ///
 /// **This is Lemma 12 of the paper (quantisation margin, a checkable no-flip condition),
@@ -845,6 +862,26 @@ pub struct MarginCertificate {
 ///
 /// COST: one pass, the same `O(n^2 * d)` the selection already pays, plus an `abs` and an
 /// add per coordinate. The work bound is checked before any of it, exactly as in `multi_krum`.
+///
+/// **INVARIANT: `n` HERE IS THE PAPER'S `|A|`, THE ADMITTED SET.** Lemma 12 states
+/// `beta := (|A| - f - 2) * Delta*` over the ADMITTED set, and this function computes
+/// `(n - f - 2)` over the slice it is handed. Those agree because the kernel has no notion of
+/// admission at all: Layer 2 decides who is admitted (`State::admit`) and passes ONLY the
+/// admitted set down, so the slice received here IS `A`. Recorded as an invariant rather than
+/// left as a coincidence, because the two symbols are equal in today's code and a future
+/// admission policy is exactly the kind of change that would silently separate them.
+///
+/// The structural reason this is SAFE rather than merely currently-true: the certificate and
+/// the selection are computed in the SAME call over the SAME slice and returned TOGETHER, so
+/// there is no path on which a certificate computed over one set is applied to a selection
+/// over another. A caller that passes a superset (something that would have been filtered)
+/// gets a MORE conservative answer, not a forged one: a superset can only raise `n - f - 2`,
+/// and `l1_max` is a maximum so a superset can only raise that too, therefore `delta_star` and
+/// `beta` both only grow and certification only gets harder. **The dangerous edit is to compute
+/// this over a receipt's raw carried contributions instead of over the admitted set** -- that
+/// set is a superset whenever anything was excluded or convicted, and it is a different
+/// problem instance from the one that produced the aggregate. (Surface identified by C in
+/// adversarial review; the paper says `|A|` and the first draft of this reduction said `n`.)
 pub fn multi_krum_certified(
     cs: &[Contribution],
     f: usize,

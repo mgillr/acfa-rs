@@ -494,6 +494,41 @@ silently change the aggregate"
                     )
                 }
             );
+            // Lemma 12. Reported on its OWN line and never folded into VERIFIED, because it
+            // answers a DIFFERENT question: not "did the issuer compute honestly over this
+            // set" but "would the selection have been the same in real arithmetic". An
+            // operator who cannot see the distinction will assume the strongest reading, so
+            // the absent case says so explicitly rather than printing nothing.
+            match &v.margin {
+                Some(c) if c.certified => {
+                    println!("  no-flip      CERTIFIED -- fixed-point selection provably equals");
+                    println!("               the real-valued one (Lemma 12)");
+                    println!(
+                        "               margin {} > threshold {} (4 x beta {})",
+                        c.margin, c.threshold, c.beta
+                    );
+                }
+                Some(c) => {
+                    println!("  no-flip      NOT CERTIFIED -- the selection boundary is too close");
+                    println!(
+                        "               margin {} <= threshold {} (4 x beta {})",
+                        c.margin, c.threshold, c.beta
+                    );
+                    println!(
+                        "               This is NOT evidence of a flip. It means quantisation"
+                    );
+                    println!("               COULD have changed who was selected, and the margin");
+                    println!(
+                        "               condition cannot rule it out. An exact tie (margin 0)"
+                    );
+                    println!("               is the residual no condition can ever cover.");
+                }
+                None => {
+                    println!("  no-flip      not available for this round");
+                    println!("               (empty round, refusal, select-all, or Bulyan --");
+                    println!("               Lemma 12 is stated for multi-Krum's boundary)");
+                }
+            }
             println!();
             println!("Checked against the identities in {pki_path} and f = {f}.");
             println!("This establishes that the issuer computed honestly over the set shown.");

@@ -14,7 +14,9 @@
 use crate::hash::{enc_tensor, h};
 use crate::identity::Pki;
 use crate::state::State;
-use acfa_aggregate::{bulyan_aggregate, krum_aggregate, Contribution as AggContribution};
+use acfa_aggregate::{
+    bulyan_aggregate, krum_aggregate_certified, Contribution as AggContribution, MarginCertificate,
+};
 
 /// Which robust rule to apply to the admitted set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +78,20 @@ pub struct Resolution {
     /// construction is for. It is a flag rather than an error precisely so that it
     /// cannot be silently discarded.
     pub population_bound_met: bool,
+    /// Lemma 12's no-flip certificate for this round, when the rule and the configuration
+    /// admit one.
+    ///
+    /// **Recomputed, never carried.** It is not on the wire and not in any root: every
+    /// verifier derives it independently from the admitted set, so there is nothing here for
+    /// an issuer to forge or to omit. That is also why adding it changes no encoding and
+    /// cannot move the cross-architecture fingerprint.
+    ///
+    /// `None` means no certificate is available, which is NOT the same as "not certified" and
+    /// must never be reported as a negative result. It arises when the round admitted nothing,
+    /// when the kernel refused, when the select-all band fired (no selection boundary exists),
+    /// or under Bulyan -- Lemma 12 is stated for multi-Krum's boundary and extending it to
+    /// Bulyan's iterated selection is not a change this crate may make on its own authority.
+    pub margin: Option<MarginCertificate>,
 }
 
 /// Resolve one round against the state.
@@ -96,6 +112,7 @@ pub fn resolve(state: &State, rnd: u64, pki: &Pki, f: usize, rule: Rule) -> Reso
             output_root: h(&b),
             admitted,
             population_bound_met: false,
+            margin: None,
         };
     }
 
@@ -107,9 +124,16 @@ pub fn resolve(state: &State, rnd: u64, pki: &Pki, f: usize, rule: Rule) -> Reso
         })
         .collect();
 
-    let agg = match rule {
-        Rule::Krum => krum_aggregate(&cs, f),
-        Rule::Bulyan => bulyan_aggregate(&cs, f),
+    // `cs` is built from `adm` -- the ADMITTED set -- so the certificate below is computed
+    // over exactly the set that produces the aggregate, which is what Lemma 12's `|A|` means.
+    // Computing it over the raw carried contributions instead would be a different problem
+    // instance whenever anything was excluded or convicted. (C, adversarial review.)
+    let (agg, margin) = match rule {
+        Rule::Krum => match krum_aggregate_certified(&cs, f) {
+            Ok((a, cert)) => (Ok(a), cert),
+            Err(e) => (Err(e), None),
+        },
+        Rule::Bulyan => (bulyan_aggregate(&cs, f), None),
     };
 
     match agg {
@@ -122,6 +146,7 @@ pub fn resolve(state: &State, rnd: u64, pki: &Pki, f: usize, rule: Rule) -> Reso
                 aggregate: Some(a),
                 admitted,
                 population_bound_met: adm.len() >= rule.required_n(f),
+                margin,
             }
         }
         // Layer 1 refuses rather than guessing on malformed input (dimension mismatch,
@@ -136,6 +161,9 @@ pub fn resolve(state: &State, rnd: u64, pki: &Pki, f: usize, rule: Rule) -> Reso
                 output_root: h(&b),
                 admitted,
                 population_bound_met: false,
+                // The kernel refused, so there is no selection and therefore no boundary to
+                // certify. `None` is "no certificate available", never "not certified".
+                margin: None,
             }
         }
     }
