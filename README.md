@@ -426,8 +426,11 @@ answer. Multi-Krum is `O(n^2 d)`, so participant count dominates, not dimension.
   soundness requires**: a direct argument on the observed gap gives `2*beta_hat`, verified and
   searched over 1.78M preimages in the contested band with zero flips. The looser constant ships
   because the code must not enforce a threshold the published lemma does not state; the
-  tightening is an erratum candidate against the paper, and would double how often the
-  certificate fires.
+  tightening is an erratum candidate against the paper. **How much it would actually gain is
+  distribution-dependent and was measured, not assumed: between 1.00x and 11.75x depending on
+  the margin distribution, and NO GAIN AT ALL (0.0% -> 0.0%) in the realistic high-dimensional
+  clustered case.** An earlier version of this note said it "doubles" the certification rate;
+  three people repeated that and none of us had measured it.
 - Q16.16 fixes range at +/-2^15, resolution 2^-16. Out-of-range values are refused, not
   saturated, because saturation would make the result depend on which replica saturated first.
   Rescale upstream with a factor both parties hold.

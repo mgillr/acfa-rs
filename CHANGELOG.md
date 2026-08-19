@@ -93,8 +93,16 @@ closes the verifier-bound and composition defects found in round-3 review.
   **refuted and rejected**. The 4 is 2 + 2 with both terms load-bearing: both boundary endpoints
   move in opposite directions (real condition `g > 2*beta`), and each rank can sit `beta_hat`
   from its real counterpart under a 1-Lipschitz transport (`g >= g_hat - 2*beta_hat`). Halving
-  yields only `g > 0`, certifying configurations that can still flip. The constant is now pinned
-  by a numeric test and by `tools/regression-guard.sh`.
+  yields only `g > 0`, certifying configurations that can still flip — **but the diagnosis given
+  at the time was wrong.** A direct argument on the observed gap, which pays no transport cost,
+  shows `2*beta_hat` is the true soundness floor; it was verified step by step and searched over
+  1,781,100 preimages in the contested band with zero flips. The paper's `4*beta_hat` is
+  therefore twice what soundness requires. It ships anyway because the code must not enforce a
+  threshold the published lemma does not state — paper first, then code. **The claim that
+  tightening "doubles the certification rate" was also wrong and unmeasured**: measured, the gain
+  is 1.00x–11.75x depending on the margin distribution, and zero in the realistic
+  high-dimensional clustered case. The constant is pinned by a numeric test and by
+  `tools/regression-guard.sh`.
 - `l1_max` remains a **global** maximum over all pairs, and this is load-bearing rather than
   cautious: a Krum score is a min over m-subsets, so the perturbation can change which pairs are
   the `m` nearest, and a bound over the currently-minimising set bounds a set the adversary can

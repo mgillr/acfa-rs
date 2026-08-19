@@ -863,8 +863,17 @@ pub struct MarginCertificate {
     /// silently outrun its own paper: a kernel enforcing a threshold the published lemma does
     /// not state is the same defect as a spec describing a rounding rule the code abandoned,
     /// which this repository has already had once. The tightening is carried as an erratum
-    /// candidate against `acfa.tex:565`; when the paper states 2, this becomes 2 and the
-    /// certification rate doubles. Until then 4 is strictly stronger and therefore safe.
+    /// candidate against `acfa.tex:565`; when the paper states 2, this becomes 2. Until then 4
+    /// is strictly stronger and therefore safe.
+    ///
+    /// **HOW MUCH THE TIGHTENING WOULD ACTUALLY BUY WAS MEASURED, AND IT IS NOT "DOUBLE".**
+    /// Halving a threshold doubles the certified fraction only if the margin distribution is
+    /// uniform near the line, and it is not. Measured across shapes: between `1.00x` and
+    /// `11.75x`, and `0.0% -> 0.0%` -- NO GAIN -- in the realistic high-dimensional clustered
+    /// case, which is the case that matters for federated learning. The phrase "doubles the
+    /// certification rate" was asserted by three people in sequence, including in a coordinator
+    /// ruling, before anyone measured it. It is recorded here as an error rather than deleted,
+    /// because the failure was arithmetic-by-plausibility and it nearly reached a paper.
     ///
     /// Whatever the constant, it is NOT free slack to spend: `g_hat > 2*beta_hat` is the floor,
     /// and anything at or below it certifies configurations that can still flip.
