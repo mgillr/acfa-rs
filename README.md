@@ -116,6 +116,32 @@ flowchart TB
   H --> CI["CI blocks any push where<br/>the 8 targets disagree"]
 ```
 
+## Releases
+
+Releases are signed annotated git tags `vMAJOR.MINOR.PATCH` on `main`, each with a matching
+GitHub Release. From v0.3.0 the same version appears in all three Rust crate manifests and in
+the Python adapter, so `Cargo.toml` identifies the release; before v0.3.0 it did not, and
+[`CHANGELOG.md`](CHANGELOG.md) records that caveat rather than quietly correcting it.
+
+| Version | Date | What it is |
+|---|---|---|
+| v0.3.0 | unreleased | Ships the paper's Lemma 12 no-flip certificate; bounds the verifier by contribution count; fixes the unsigned-contribution availability defect |
+| v0.2.0 | 2026-08-19 | First production-signed release; full audit closed; adapter published to PyPI |
+| v0.1.0 | 2026-08-17 | First public tag |
+
+**To identify a build, check the fingerprint, not the version string.**
+
+```sh
+cd build/layer2-receipt && cargo run -q --release --example digest
+```
+
+The comparable digest is `bd13ba3209a940b2025368a63c546ffd59e2580a1b8aa7128cc9b423d1957e40` on
+every supported architecture, including big-endian s390x, and it has not changed across any
+release. It changes only on a deliberate, documented wire-version bump. A different value means
+you are not running a released tree.
+
+Full history, including what is still open at each release: [`CHANGELOG.md`](CHANGELOG.md).
+
 ## Install
 
 The Rust crates are not published to crates.io -- install them from this repository (below). The Python adapter **is published to PyPI** as [`acfa-flower`](https://pypi.org/project/acfa-flower/).
