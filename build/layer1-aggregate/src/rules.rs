@@ -645,6 +645,24 @@ fn krum_scores<'a>(
     n: usize,
     m: usize,
 ) -> Result<Vec<Scored<'a>>, AggError> {
+    Ok(krum_scores_inner::<false>(cs, n, m)?.0)
+}
+
+/// Scoring, optionally also tracking the largest pairwise L1 distance for Lemma 12.
+///
+/// `TRACK_L1` is a CONST generic, not a runtime flag, so the plain selection path
+/// monomorphises to exactly the code it had before this function existed: no branch in the
+/// inner loop, no extra traversal, no measurable cost to `multi_krum`. The certified path
+/// pays one extra `abs` and `checked_add` per coordinate and nothing else -- it reuses the
+/// same single pass rather than walking every pair a second time.
+///
+/// Returning the L1 max from HERE rather than recomputing it is what keeps the certificate
+/// inside the work bound already checked by the caller: no new asymptotics, same O(n^2 * d).
+fn krum_scores_inner<'a, const TRACK_L1: bool>(
+    cs: &'a [Contribution],
+    n: usize,
+    m: usize,
+) -> Result<(Vec<Scored<'a>>, i128), AggError> {
     let mut scored: Vec<Scored<'a>> = Vec::with_capacity(n);
     // rust-02. ONE ROW AT A TIME, NEVER THE WHOLE MATRIX.
     //
@@ -664,11 +682,21 @@ fn krum_scores<'a>(
     // `Vec`s cost more than recomputing a cheap distance in cache. The asymptotics are
     // unchanged, O(n^2 * d) either way; only the constant and the memory moved.
     let mut ds: Vec<i128> = Vec::with_capacity(n);
+    let mut l1_max: i128 = 0;
     for i in 0..n {
         ds.clear();
         for j in 0..n {
             if j != i {
-                ds.push(sq_dist(&cs[i].v, &cs[j].v).ok_or(AggError::ArithmeticOverflow)?);
+                if TRACK_L1 {
+                    let (sq, l1) = crate::fixed::sq_and_l1(&cs[i].v, &cs[j].v)
+                        .ok_or(AggError::ArithmeticOverflow)?;
+                    if l1 > l1_max {
+                        l1_max = l1;
+                    }
+                    ds.push(sq);
+                } else {
+                    ds.push(sq_dist(&cs[i].v, &cs[j].v).ok_or(AggError::ArithmeticOverflow)?);
+                }
             }
         }
         ds.sort_unstable();
@@ -679,7 +707,7 @@ fn krum_scores<'a>(
         scored.push((score, cs[i].tie_key.as_slice(), i));
     }
     scored.sort_unstable();
-    Ok(scored)
+    Ok((scored, l1_max))
 }
 
 /// Multi-Krum selection. Score of i is the sum of the `m = n-f-2` smallest squared
@@ -743,6 +771,149 @@ pub fn krum_aggregate(cs: &[Contribution], f: usize) -> Result<Vec<i64>, AggErro
     let sel = multi_krum(cs, f)?;
     let picked: Vec<Contribution> = sel.iter().map(|&i| cs[i].clone()).collect();
     mean(&picked)
+}
+
+/// A checkable certificate that the fixed-point selection equals the real-valued one.
+///
+/// **This is Lemma 12 of the paper (quantisation margin, a checkable no-flip condition),
+/// in its observable form -- the form a replica can evaluate on the quantised values it
+/// actually holds, without access to the real-valued originals.**
+///
+/// WHY IT EXISTS, AND WHAT IT ADDS OVER DETERMINISM. Byte-identity says every replica
+/// computes the SAME selection. It says nothing about whether that selection is the one
+/// the un-quantised gradients would have produced. By Lemma 3(b) multi-Krum is
+/// discontinuous: arbitrarily near a score tie, a bounded perturbation flips the selection
+/// by Theta(1), and Q16.16 rounding IS such a perturbation. So determinism alone leaves
+/// open the question a reviewer actually asks -- "did discretising the inputs change who
+/// was selected?" This certificate answers it per round, and answers it soundly.
+///
+/// THE ARITHMETIC IS EXACT AND INTEGER. In raw Q16.16 units the grid step is `delta = 1`,
+/// so the lemma's `Delta* = 2*delta*L1max + 3*d*delta^2` becomes exactly
+/// `2*l1_max + 3*d` in raw units, and scores are already raw `i128`. There is no float
+/// anywhere in the certificate and no scaling step: it is the same kind of exact integer
+/// comparison as the selection itself, so two replicas that agree on the selection agree
+/// on the certificate, bit for bit.
+///
+/// SOUND, NOT COMPLETE, AND DELIBERATELY SO. The observable threshold is `4*beta` rather
+/// than the real-value `2*beta`, because a replica measures `g_hat` on quantised data and
+/// `|g - g_hat| <= 2*beta`. It can therefore DECLINE to certify a configuration that is in
+/// fact stable -- but it can never certify one that is not. An adversary who inflates a
+/// contribution enlarges `l1_max`, and so enlarges `beta`, and so makes certification
+/// HARDER: the failure mode of a hostile input is a withheld certificate, never a false one.
+///
+/// WHAT IT DOES NOT COVER. It certifies the SELECTION, not robustness: a certified round
+/// whose admitted population is below the rule's bound is still undefended, which is why
+/// `population_bound_met` is reported separately and neither implies the other. It says
+/// nothing about the `<= delta/2` per-coordinate value quantisation of the selected vectors
+/// themselves, nor the one unit of floor rounding in the fixed-point mean. And by Remark 13
+/// there is an irreducible exact-tie residual (`g -> 0`) that NO margin condition can cover;
+/// those rounds are reported `certified: false`, which is the honest answer, not a failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MarginCertificate {
+    /// The observable boundary margin `g_hat = s_(m+1) - s_(m)`: the exact raw gap between
+    /// the last SELECTED score and the first REJECTED one. Zero means an exact tie.
+    pub margin: i128,
+    /// `beta_hat = (n - f - 2) * delta_star`: the most any single score can move under
+    /// per-coordinate quantisation error.
+    pub beta: i128,
+    /// `4 * beta_hat` -- the value `margin` must exceed. Stored so a reader never has to
+    /// reproduce the factor, and so a change to it is visible in any recorded certificate.
+    pub threshold: i128,
+    /// `delta_star = 2*l1_max + 3*d` in raw units: the per-squared-distance perturbation bound.
+    pub delta_star: i128,
+    /// The largest pairwise L1 distance in the scored set, raw units. Adversary-influenceable
+    /// upward only, which is why inflating it can deny a certificate but not forge one.
+    pub l1_max: i128,
+    /// Krum's nearest-neighbour count `n - f - 2`, the number of squared distances summed
+    /// into each score -- the multiplier in `beta`.
+    pub nn_count: usize,
+    /// Dimension of the contributions.
+    pub d: usize,
+    /// **The verdict.** `margin > threshold`: the quantised selection provably equals the
+    /// real-valued selection. False means "not certified", which spans both a genuine
+    /// near-tie and a merely conservative decline -- it is never evidence of a flip.
+    pub certified: bool,
+}
+
+/// Multi-Krum selection together with its Lemma 12 no-flip certificate.
+///
+/// Returns the SAME selection `multi_krum` returns -- this is an additive observable, not a
+/// different rule, and a test asserts the two agree. `None` for the certificate means the
+/// select-all band (`n < f + 3`) fired: nothing is excluded, so no selection boundary exists
+/// and the no-flip question is vacuous. That band is undefended for the reasons documented on
+/// `multi_krum`, and a vacuous certificate must not be read as a safety claim.
+///
+/// COST: one pass, the same `O(n^2 * d)` the selection already pays, plus an `abs` and an
+/// add per coordinate. The work bound is checked before any of it, exactly as in `multi_krum`.
+pub fn multi_krum_certified(
+    cs: &[Contribution],
+    f: usize,
+) -> Result<(Vec<usize>, Option<MarginCertificate>), AggError> {
+    let d = check(cs)?;
+    let n = cs.len();
+    if (n as u128) < f as u128 + 3 {
+        // Select-all: no boundary, so no certificate. See the doc above.
+        return Ok(((0..n).collect(), None));
+    }
+    let m = n - f - 2;
+
+    if n > MAX_CONTRIBUTIONS {
+        return Err(AggError::TooManyContributions {
+            n,
+            max: MAX_CONTRIBUTIONS,
+        });
+    }
+    let work = krum_work(n, d);
+    if work > MAX_COORDINATE_OPS {
+        return Err(AggError::TooMuchWork {
+            work,
+            max: MAX_COORDINATE_OPS,
+        });
+    }
+
+    let (scored, l1_max) = krum_scores_inner::<true>(cs, n, m)?;
+
+    // Lemma 12 in raw Q16.16 units, where the grid step delta is exactly 1:
+    //   delta_star = 2*delta*L1max + 3*d*delta^2  ->  2*l1_max + 3*d
+    //   beta       = (n - f - 2) * delta_star
+    //   certified  <=> g_hat > 4*beta
+    // Every term is i128 and checked: a certificate that overflowed into a wrong answer
+    // would be worse than no certificate at all.
+    let delta_star = (2i128)
+        .checked_mul(l1_max)
+        .and_then(|x| x.checked_add(3i128.checked_mul(d as i128)?))
+        .ok_or(AggError::ArithmeticOverflow)?;
+    let beta = (m as i128)
+        .checked_mul(delta_star)
+        .ok_or(AggError::ArithmeticOverflow)?;
+    let threshold = 4i128
+        .checked_mul(beta)
+        .ok_or(AggError::ArithmeticOverflow)?;
+
+    // `scored` is sorted ascending, so index m-1 is the m-th smallest (last selected) and
+    // index m is the (m+1)-th (first rejected). `m >= 1` and `m <= n - 2` both follow from
+    // `n >= f + 3`, so neither index can be out of range.
+    let margin = scored[m]
+        .0
+        .checked_sub(scored[m - 1].0)
+        .ok_or(AggError::ArithmeticOverflow)?;
+
+    let mut out: Vec<usize> = scored[..m].iter().map(|&(_, _, i)| i).collect();
+    out.sort_unstable();
+
+    Ok((
+        out,
+        Some(MarginCertificate {
+            margin,
+            beta,
+            threshold,
+            delta_star,
+            l1_max,
+            nn_count: m,
+            d,
+            certified: margin > threshold,
+        }),
+    ))
 }
 
 /// Multi-Krum selection **in score order**, best first.

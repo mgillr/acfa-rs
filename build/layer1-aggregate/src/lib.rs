@@ -44,7 +44,8 @@ pub mod rules;
 pub use fixed::{decode, decode_vec, encode, encode_vec, FixedError, FRAC_BITS, SCALE};
 pub use rules::{
     bulyan_aggregate, bulyan_select, coord_median_trim, krum_aggregate, mean, multi_krum,
-    multi_krum_ranked, trimmed_mean, AggError, Contribution,
+    multi_krum_certified, multi_krum_ranked, trimmed_mean, AggError, Contribution,
+    MarginCertificate,
 };
 
 /// Convenience constructor for a contribution from float input.

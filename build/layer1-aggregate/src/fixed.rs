@@ -229,6 +229,29 @@ pub(crate) fn sq_dist(a: &[i64], b: &[i64]) -> Option<i128> {
     Some(acc)
 }
 
+/// Squared L2 distance AND L1 distance in one pass, both exact in raw Q16.16 units.
+///
+/// Lemma 12's observable perturbation bound needs the largest pairwise L1 distance
+/// alongside the score, and the score needs the squared L2. Walking the pair once and
+/// returning both costs one traversal instead of two; the caller that does not need the
+/// L1 keeps using `sq_dist` and pays nothing (see `krum_scores_inner`'s const generic).
+///
+/// L1 cannot overflow where the square does not: each `|d|` is at most the Q16.16 span
+/// (2^32 - 1) and there are at most `d` of them, so the sum is far below the `d * span^2`
+/// the squared accumulator already tolerates. It is still `checked_add`, because a bound
+/// argued in a comment is not a bound the compiler enforces.
+pub(crate) fn sq_and_l1(a: &[i64], b: &[i64]) -> Option<(i128, i128)> {
+    debug_assert_eq!(a.len(), b.len(), "dimension mismatch");
+    let mut sq: i128 = 0;
+    let mut l1: i128 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        let d = (*x as i128) - (*y as i128);
+        sq = sq.checked_add(d.checked_mul(d)?)?;
+        l1 = l1.checked_add(d.abs())?;
+    }
+    Some((sq, l1))
+}
+
 #[cfg(test)]
 mod tests {
     /// num-06. `(scaled + 0.5).floor()` is NOT half-away-from-zero: when `scaled` is the
