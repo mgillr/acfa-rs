@@ -47,6 +47,26 @@ closes the verifier-bound and composition defects found in round-3 review.
   change. Computed over the **admitted** set — the paper's `|A|` — not a receipt's raw carried
   contributions, which is a superset whenever anything was excluded or convicted.
 - `CHANGELOG.md` (this file) and a Releases section in the README.
+- **Redacted receipts — full accountability, zero plaintext.** The audit artefact carried every
+  participant's raw update in the clear, which is why it could not be shown to anyone the
+  participants did not already trust with their gradients. Redaction turns out to be *lossless*
+  for verification, because of a property the crypto already had: a signature is over
+  `contrib_msg(rnd, tensor_hash)` and a leaf hashes the tensor *hash*, never the tensor, and
+  `EquivProof` was already plaintext-free. A redacted receipt therefore still establishes, at
+  full strength, that every contribution is genuinely signed, that the state root commits to
+  exactly this set, who was admitted, and who equivocated — with the same answers as the
+  unredacted receipt. It cannot re-execute the aggregate, which genuinely needs the vectors.
+  - **This is redaction. It is NOT secure aggregation and NOT differential privacy.** It gives
+    no formal privacy guarantee; `tensor_hash` is a binding commitment, not a hiding one, so a
+    recipient who can guess a plausible update can confirm it by hashing. Bonawitz-style masking
+    does not straightforwardly apply to this rule at all — masks cancel under a *sum*, and
+    multi-Krum is a *selection* on pairwise distances.
+  - Its own wire format and magic (`ACFA-X1`), so neither decoder can accept the other's
+    artefact. The redacted decoder repeats every guard the full one carries — it is a narrower
+    door, not a weaker one.
+  - Size note: replacing `4 + 8d` tensor bytes with a fixed 32-byte hash shrinks the artefact
+    only for `d >= 4`, and grows it slightly below that. At real model widths the reduction is
+    the point (a 1M-parameter update collapses from 8 MB to 32 bytes per contributor).
 
 ### Fixed
 - **Verify bounded by contribution count** (#68). `State::merge` capped both the derivable-proof
@@ -64,12 +84,33 @@ closes the verifier-bound and composition defects found in round-3 review.
   history and listed closed findings as open; the stress example panicked on its own documented
   grid by unwrapping a now-expected `TooMuchWork` refusal.
 
+### Adversarial review of Lemma 12, and what it changed
+- An exhaustive **preimage** search — fixing the quantised point and enumerating the whole
+  `|x - X| <= 1/2` box it could have come from, which is the freedom the lemma exists to bound —
+  found **0 forged certificates over 812,500 preimages**, including instances certified by as
+  little as 0.9% over the line. Flips ceased to exist ~13× below where certification begins.
+- A proposal to halve the threshold from `4*beta` to `2*beta` on the strength of that slack was
+  **refuted and rejected**. The 4 is 2 + 2 with both terms load-bearing: both boundary endpoints
+  move in opposite directions (real condition `g > 2*beta`), and each rank can sit `beta_hat`
+  from its real counterpart under a 1-Lipschitz transport (`g >= g_hat - 2*beta_hat`). Halving
+  yields only `g > 0`, certifying configurations that can still flip. The constant is now pinned
+  by a numeric test and by `tools/regression-guard.sh`.
+- `l1_max` remains a **global** maximum over all pairs, and this is load-bearing rather than
+  cautious: a Krum score is a min over m-subsets, so the perturbation can change which pairs are
+  the `m` nearest, and a bound over the currently-minimising set bounds a set the adversary can
+  walk out of.
+
 ### Known open at time of writing
 - **#70 — gossip stops permanently at round ~4096/n.** `State::merge` unions contribution keys
   across *all* rounds against a global cap with no round scoping and no prune API. Measured:
   n=20 dies at round 205, n=100 at round 41, no recovery. Note that the naive fix is **not**
   semantically inert — pruning preserves convictions already made but destroys the ability to
   convict an equivocator whose second message arrives after the prune.
+- **#72 — one outlier denies the Lemma 12 certificate for the whole round.** Because `l1_max`
+  is a global maximum, a single contribution with large raw magnitude enlarges `beta` for
+  everybody and can push every configuration out of the certified tier. **Availability-only: it
+  can deny a certificate but never forge one.** The obvious fix is unsound (see above), so this
+  is documented rather than patched.
 - **#71 — verifier work is unbounded in `d`.** At n=4096, d=1024 a 32.45 MiB receipt buys
   19.00s of CPU and returns `Ok` with every guard passing. The guards bound inputs; what needs
   bounding is work.
