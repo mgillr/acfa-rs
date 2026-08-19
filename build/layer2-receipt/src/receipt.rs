@@ -261,15 +261,29 @@ impl Receipt {
     pub fn issue(state: &State, round: u64, pki: &Pki, f: usize, rule: Rule) -> Receipt {
         let r: Resolution = resolve(state, round, pki, f, rule);
 
-        // SCOPE THE CARRIED SET TO THIS ROUND, and commit to the root of what is carried.
+        // SCOPE THE CARRIED SET TO THIS ROUND AND TO VALID SIGNATURES, and commit to the
+        // root of what is carried.
         //
-        // `recompute` refuses any contribution whose `rnd` differs from the receipt's, so
-        // carrying the issuer's whole state made every receipt from a state that had lived
-        // through more than one round unverifiable -- `issue` and `verify` disagreed about
-        // what a receipt is. Scoping here rather than relaxing the check there is the
-        // correct direction: a receipt is a statement about ONE round, and a verifier that
-        // accepted foreign-round entries would be checking a commitment over a set it never
+        // `recompute` refuses any contribution whose `rnd` differs from the receipt's, or
+        // that is not signed by its claimed author, so carrying the issuer's whole state
+        // made a receipt unverifiable the moment the state held a foreign-round OR an
+        // unsigned entry -- `issue` and `verify` disagreed about what a receipt is. Scoping
+        // here rather than relaxing the check there is the correct direction: a receipt is a
+        // statement about ONE round, and a verifier that accepted foreign-round or
+        // unauthenticated entries would be checking a commitment over a set it never
         // examined.
+        //
+        // The SIGNATURE half of this scope closes a composition defect: `admit` (the
+        // read-time path the aggregate is taken over) already SKIPS a contribution with a
+        // bad signature (`if !c.signature_valid(pki) { continue }`), but `issue` carried the
+        // raw state, so one unauthenticated contribution merged into a replica's state made
+        // every receipt it issued for that round fail `recompute`'s step-1 signature check
+        // everywhere -- an availability defect, and a receipt whose committed state root and
+        // whose aggregate were taken over DIFFERENT sets. Carrying exactly what `recompute`
+        // accepts (`rnd == round && signature_valid`) makes issue and verify agree and puts
+        // the state root over the same set the aggregate is. On an HONEST state every
+        // contribution is valid, so this filter drops nothing and the golden vectors and the
+        // cross-architecture fingerprint are byte-for-byte unchanged.
         //
         // Proofs are NOT scoped. Conviction is permanent -- the proof set is grow-only, and
         // an identity that equivocated in round 1 is still convicted in round 5 -- so
@@ -277,7 +291,11 @@ impl Receipt {
         // already takes conviction from the whole proof set, and `recompute` round-checks
         // contributions only, so this is the view both sides already agree on.
         let mut carried = State::new();
-        for c in state.c.values().filter(|c| c.rnd == round) {
+        for c in state
+            .c
+            .values()
+            .filter(|c| c.rnd == round && c.signature_valid(pki))
+        {
             carried.add_contribution(c.clone());
         }
         for p in state.e.values() {
