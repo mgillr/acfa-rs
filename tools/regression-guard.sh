@@ -66,6 +66,7 @@ check_fn "a_double_signer_conviction_and_its_evidence_survive_a_resume"         
 check_fn "a_chain_anchored_to_the_wrong_predecessor_is_not_admitted"            build/layer2-finality/tests/crdt09_predecessor_binding.rs
 check_fn "a_certified_selection_never_differs_from_the_real_valued_selection"  build/layer1-aggregate/tests/lemma12_margin.rs
 check_fn "the_certification_threshold_is_exactly_four_beta"                  build/layer1-aggregate/tests/lemma12_margin.rs
+check_fn "a_late_equivocation_for_a_pruned_round_still_convicts"             build/layer2-receipt/tests/merge_round_death.rs
 check_fn "certificate_is_computed_over_the_admitted_set_not_the_carried_set"   build/layer2-receipt/tests/lemma12_admitted_set.rs
 check_fn "redaction_changes_no_verification_answer"                           build/layer2-receipt/tests/redacted_receipt.rs
 check_fn "neither_decoder_accepts_the_others_artefact"                        build/layer2-receipt/tests/redacted_receipt.rs

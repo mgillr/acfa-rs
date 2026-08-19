@@ -10,6 +10,7 @@
 use crate::entry::{Contribution, EquivProof};
 use crate::hash::merkle_root;
 use crate::identity::Pki;
+use crate::redact::RedactedContribution;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Product state. `BTreeMap` keyed by leaf: insertion is idempotent, iteration is
@@ -18,6 +19,36 @@ use std::collections::{BTreeMap, BTreeSet};
 pub struct State {
     pub c: BTreeMap<[u8; 32], Contribution>,
     pub e: BTreeMap<[u8; 32], EquivProof>,
+    /// **Conviction witnesses: pruned contributions, stripped to what still convicts.**
+    ///
+    /// A replica cannot retain every round's vectors forever -- at n=20, d=1000 that is about
+    /// 8 KB per contribution and 1.5 GiB after ten thousand rounds -- but it also cannot simply
+    /// DROP them, because equivocation is detected by comparing a new contribution against the
+    /// ones already held. Drop round R and an equivocator whose second message for round R
+    /// arrives later, or is deliberately withheld until the prune, escapes conviction entirely.
+    /// That is the adversary the whole proof machinery exists to catch.
+    ///
+    /// So pruning keeps the WITNESS and discards only the vector. `(rnd, node_id, tensor_hash,
+    /// sig)` is about 108 bytes and is exactly sufficient to both DETECT a conflict -- detection
+    /// keys on leaf inequality -- and to FORM the proof, since `EquivProof::canonical` takes
+    /// `(tensor_hash, sig)` pairs and never reads a vector. Detection strength after pruning is
+    /// therefore unchanged, not merely degraded gracefully.
+    ///
+    /// It reuses `RedactedContribution` deliberately: redaction and pruning need the same thing
+    /// -- everything that authenticates and commits, minus the vector -- and that type is
+    /// already proven to produce a leaf BYTE-IDENTICAL to the full contribution's, which is the
+    /// property this rests on.
+    ///
+    /// **Not part of `root()`.** The commitment stays over `c` and `e` alone. Both production
+    /// callers of `root()` build fresh states rather than reading a replica's accumulated one
+    /// (verified by enumeration), so a detection-only side structure cannot move any root that
+    /// crosses replicas.
+    ///
+    /// **This bounds the CONSTANT, not the growth.** Retention is still linear in rounds, at
+    /// ~108 bytes instead of ~8 KB. Truly bounding it needs a conviction horizon -- a round past
+    /// which equivocation stops being detectable at all -- which is a policy decision with a
+    /// real security cost and is deliberately left open rather than chosen here.
+    pub w: BTreeMap<[u8; 32], RedactedContribution>,
 }
 
 /// Largest contribution set `merge` will absorb from a peer.
@@ -181,8 +212,15 @@ impl State {
         // --- contribution bound -------------------------------------------------------
         // Union, not sum: leaves are content-addressed, so anything both sides hold counts
         // once. Summing would refuse an idempotent re-merge of a state already held.
+        // LIVE contributions only. A leaf this replica has already pruned to a witness must not
+        // count against the live bound -- it is retired, and counting it would make the bound a
+        // function of all history again, which is the defect this fix exists to remove.
         let mut union: BTreeSet<&[u8; 32]> = self.c.keys().collect();
-        union.extend(other.c.keys());
+        for k in other.c.keys() {
+            if !self.w.contains_key(k) {
+                union.insert(k);
+            }
+        }
         let would_be = union.len();
         if would_be > MAX_MERGE_CONTRIBUTIONS {
             return Err(MergeError::TooManyContributions {
@@ -275,6 +313,21 @@ impl State {
         let nh = new.tensor_hash();
         let nl = new.leaf();
         let mut out = Vec::new();
+        // Witnesses first: a pruned round must still convict. This loop is the reason pruning
+        // is safe at all -- delete it and an equivocator simply waits for the prune horizon.
+        for wc in self.w.values() {
+            if wc.rnd == new.rnd && wc.node_id == new.node_id && wc.leaf() != nl {
+                let p = EquivProof::canonical(
+                    new.rnd,
+                    new.node_id,
+                    (wc.tensor_hash, wc.sig),
+                    (nh, new.sig),
+                );
+                if p.valid(pki) {
+                    out.push(p);
+                }
+            }
+        }
         for c in self.c.values() {
             // Keyed on the LEAF, which covers the signature, because that is what
             // `admit` excludes on. Keying detection on the tensor hash while admission
@@ -301,7 +354,41 @@ impl State {
         for p in self.detect_equivocations(&c, pki) {
             self.add_proof(p);
         }
-        self.add_contribution(c);
+        // A leaf already held as a WITNESS is one this replica has deliberately pruned. Taking
+        // its vector back would undo the prune and let a peer re-inflate a replica's live set to
+        // the cap by replaying old rounds -- the same permanent stop by another route. Detection
+        // above has already run against it, so nothing is lost by declining the body.
+        if !self.w.contains_key(&c.leaf()) {
+            self.add_contribution(c);
+        }
+    }
+
+    /// Retire every contribution for rounds at or before `through`, keeping its conviction
+    /// witness.
+    ///
+    /// This is the fix for the permanent gossip stop: `merge`'s contribution bound counts LIVE
+    /// contributions, and without a way to retire settled rounds a replica reaches that bound as
+    /// a function of elapsed rounds and never recovers, because the set only grows.
+    ///
+    /// Deterministic and idempotent: it is a function of the round number alone, so two replicas
+    /// pruning through the same round hold the same live set. It does NOT touch `e` -- conviction
+    /// is permanent, an identity that equivocated in round 1 is still convicted in round 5 -- and
+    /// it does not touch `root()`, which is over `c` and `e`.
+    ///
+    /// Returns how many contributions were retired.
+    pub fn prune_through(&mut self, through: u64) -> usize {
+        let doomed: Vec<[u8; 32]> = self
+            .c
+            .iter()
+            .filter(|(_, c)| c.rnd <= through)
+            .map(|(k, _)| *k)
+            .collect();
+        for k in &doomed {
+            if let Some(c) = self.c.remove(k) {
+                self.w.insert(*k, RedactedContribution::from(&c));
+            }
+        }
+        doomed.len()
     }
 
     /// The admitted set for a round, in hash-canonical order.
