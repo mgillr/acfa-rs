@@ -1,6 +1,6 @@
 [package]
 name = "acfa-aggregate"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.87"          # is_multiple_of (1.87), is_none_or (1.82)
 authors = ["Ryan Gillespie"]

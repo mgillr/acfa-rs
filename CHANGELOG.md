@@ -22,7 +22,7 @@ prints something else, you are not running a released tree.
 
 ---
 
-## v0.3.0 — unreleased
+## v0.3.0 — 2026-08-20
 
 The frontier release: it ships the paper's Lemma 12, which had never been implemented, and
 closes the verifier-bound and composition defects found in round-3 review.
@@ -108,8 +108,42 @@ closes the verifier-bound and composition defects found in round-3 review.
   the `m` nearest, and a bound over the currently-minimising set bounds a set the adversary can
   walk out of.
 
-### Known open at time of writing
-- **#70 — gossip stops permanently at round ~4096/n.** `State::merge` unions contribution keys
+### Also fixed
+- **Verifier work is bounded by a caller-supplied coordinate budget** (#71, #73). Neither the
+  contribution-count cap nor the derivable-proof bound bounded the `n*d` product they multiply
+  into: measured, a 32 MiB receipt bought 16 s of CPU and returned `Ok` with every guard passing,
+  and at `n=256` the count guard sat at a *sixteenth* of its cap. Ships a fail-closed default plus
+  `Policy::with_max_coordinates`; the refusal names the count it declined. `check_self_consistent`
+  takes the same default, which is #73.
+- **Gossip no longer stops permanently** (#70). `State::merge` unioned contribution keys across
+  *all* rounds against a global cap, so gossip died at round ~4096/n — measured n=20 at round 205 —
+  and never recovered. `prune_through` retires settled rounds to conviction witnesses
+  `(rnd, node_id, tensor_hash, sig)`, ~108 bytes, which still detect **and still prove**
+  equivocation, so detection strength is unchanged rather than traded.
+- **A stdin fault bound near `usize::MAX` no longer panics** (#75). It printed `undefended 0` and
+  then aborted at 101 — a panic reachable from an untrusted door, and an exit code outside the
+  documented contract. Now refused at parse time with exit 2.
+- **A timing test no longer flakes on pristine code** (#74). It failed 2 of 6 runs with no patch
+  applied. Now the minimum over interleaved repetitions, resting on the fact that contention can
+  only make a run *slower*.
+
+### Verification work
+- **All 11 Tier 1 crypto guards witnessed**, each test proven to fail on its mutant. One of them —
+  `identity.rs` — could be mutated so `verify()` accepted **any** signature against a malformed
+  public key while the whole suite stayed green.
+- **All 21 Tier 2 untrusted-door sites addressed**: 19 witnessed, **2 shown to be equivalent
+  mutants** (not guards at all), written by one agent and independently re-proven by a second.
+- **Two real verifier holes found and closed**: `recompute`'s round binding and its output-root
+  check. The first is the *verifier* half of a composition defect whose issuer half was already
+  fixed and witnessed.
+- **A negative control was run on the mutation sweep, and it returned a negative result worth
+  recording**: a non-guard cannot be distinguished from a genuinely unwitnessed guard by
+  "changed, compiles, suite green" — both present identically. So a survivor count is an **upper
+  bound** on unwitnessed guards, not a count of them.
+
+### Known open
+
+- ~~#70 — gossip stops permanently~~ — **fixed, see above**. `State::merge` unions contribution keys
   across *all* rounds against a global cap with no round scoping and no prune API. Measured:
   n=20 dies at round 205, n=100 at round 41, no recovery. Note that the naive fix is **not**
   semantically inert — pruning preserves convictions already made but destroys the ability to
@@ -119,7 +153,7 @@ closes the verifier-bound and composition defects found in round-3 review.
   everybody and can push every configuration out of the certified tier. **Availability-only: it
   can deny a certificate but never forge one.** The obvious fix is unsound (see above), so this
   is documented rather than patched.
-- **#71 — verifier work is unbounded in `d`.** At n=4096, d=1024 a 32.45 MiB receipt buys
+- ~~#71 — verifier work unbounded in `d`~~ — **fixed, see above**. At n=4096, d=1024 a 32.45 MiB receipt buys
   19.00s of CPU and returns `Ok` with every guard passing. The guards bound inputs; what needs
   bounding is work.
 

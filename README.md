@@ -125,7 +125,7 @@ the Python adapter, so `Cargo.toml` identifies the release; before v0.3.0 it did
 
 | Version | Date | What it is |
 |---|---|---|
-| v0.3.0 | unreleased | Ships the paper's Lemma 12 no-flip certificate; bounds the verifier by contribution count; fixes the unsigned-contribution availability defect |
+| v0.3.0 | 2026-08-20 | Ships the paper's Lemma 12 no-flip certificate; redacted receipts (zero-plaintext audit artefact); a caller-supplied verifier work budget; round retirement to conviction witnesses |
 | v0.2.0 | 2026-08-19 | First production-signed release; full audit closed; adapter published to PyPI |
 | v0.1.0 | 2026-08-17 | First public tag |
 
@@ -247,6 +247,40 @@ provide. Round-half-to-even would be both deterministic and unbiased, and changi
 costs the reference pin. Sizes and the drift-over-rounds table:
 [adapters/flower/README.md](adapters/flower/README.md#the-aggregate-is-biased-downward-and-it-accumulates).
 
+**Did fixed-point arithmetic change WHO was selected?** Byte-identity says every replica computed
+the same selection; it does not say that selection is the one un-quantised gradients would have
+produced. `multi_krum_certified` answers that per round, checkably:
+
+```rust
+use acfa_aggregate::multi_krum_certified;
+
+let (selection, cert) = multi_krum_certified(&cs, 1)?;   // same selection as multi_krum
+if let Some(c) = cert {
+    println!("no-flip certified: {} (margin {} vs {})", c.certified, c.margin, c.threshold);
+}
+```
+
+This is Lemma 12 of the paper in its observable form. In raw Q16.16 units the grid step is exactly
+1, so it reduces to integer arithmetic -- `delta_star = 2*l1_max + 3*d`,
+`beta = (n-f-2)*delta_star`, certified iff `margin > 4*beta` -- no float anywhere, so two replicas
+that agree on the selection agree on the certificate bit for bit.
+
+**Sound, and in the regime that matters it fires rarely.** It can decline to certify a stable
+configuration but can never certify an unstable one, and an adversary inflating a contribution
+enlarges `beta`, making certification *harder* -- hostile input withholds a certificate and cannot
+forge one. But `beta` is a worst case assuming every one of the `d` coordinates errs maximally and
+in the worst direction, so **at high dimension with clustered contributions -- the realistic
+federated case -- the measured certification rate is approximately zero.** A tighter probabilistic
+rule is open work. `None` means no certificate is available (empty round, kernel refusal, the
+select-all band, or Bulyan) and is not the same as "not certified".
+
+Two tracked limits: the shipped `4*beta` is **twice** what soundness requires (a direct argument on
+the observed gap gives `2*beta`; the looser constant ships because the code must not enforce a
+threshold the published lemma does not state), and because `l1_max` is a **global** maximum one
+large-magnitude outlier raises `beta` for the whole round and can deny certification to everybody
+-- availability-only, never forgeable ([#72](https://github.com/mgillr/acfa-rs/issues/72)).
+
+
 Receipts:
 
 ```rust
@@ -259,6 +293,49 @@ let bytes   = acfa_receipt::encode_checked(&receipt)?;  // refuses an f the wire
 let verified = receipt.verify(&Policy::new(trusted_pki, f))?;
 println!("{:?} admitted, {:?} convicted", verified.admitted, verified.convicted);
 ```
+
+**Verification is bounded by a work budget, and it is fail-closed.** Verifying does work
+proportional to the total tensor coordinates carried, and neither the contribution-count cap nor
+the derivable-proof bound bounds that product -- measured, a 32 MiB receipt bought 16 s of CPU and
+returned `Ok` with every guard passing. `Policy` carries a coordinate budget defaulting to
+`DEFAULT_MAX_VERIFY_COORDINATES`, and the refusal names the count it declined, so the number to
+raise is in the error:
+
+```rust
+let policy = Policy::new(trusted_pki, f).with_max_coordinates(4_000_000);
+```
+
+`check_self_consistent` takes the same default -- diagnosis is still a door that accepts a file
+from a stranger.
+
+**Redacted receipts: full accountability, zero plaintext.** A receipt carries every participant's
+raw update, which is what makes it re-executable and also why it cannot be shown to anyone the
+participants do not already trust with their gradients. `redact()` drops the vectors and keeps
+everything that authenticates or commits:
+
+```rust
+let redacted = receipt.redact();
+let bytes    = acfa_receipt::wire::encode_redacted(&redacted);   // distinct magic, ACFA-X1
+let v        = redacted.verify(&Policy::new(trusted_pki, f))?;   // same admitted set, same convictions
+```
+
+Lossless for verification, because a signature is over `contrib_msg(rnd, tensor_hash)` and a leaf
+hashes the tensor *hash*, never the tensor -- and `EquivProof` was already plaintext-free. So
+authentication, the state root, admission and conviction all survive at full strength with the same
+answers. What it cannot do is re-execute the aggregate, which genuinely needs the vectors.
+
+**This is redaction. It is NOT secure aggregation and NOT differential privacy.** No formal privacy
+guarantee: it withholds vectors from the *artefact* while the aggregator saw everything, and
+`tensor_hash` is a binding commitment, not a hiding one, so a recipient who can guess a plausible
+update confirms it by hashing. A fixed 32-byte hash replaces `4 + 8d` tensor bytes, so the artefact
+shrinks only for `d >= 4`.
+
+**Retiring settled rounds.** `State::merge` bounds the *live* contribution set, so a replica that
+never retires anything reaches that bound as a function of elapsed rounds and then fails every
+later merge permanently. `prune_through(round)` retires a round's contributions to conviction
+witnesses -- `(rnd, node_id, tensor_hash, sig)`, about 108 bytes -- exactly enough to still detect
+and still prove equivocation, so detection strength is unchanged rather than traded. It bounds the
+constant, not the growth: retention is still linear in rounds.
 
 ### Python (Flower)
 
