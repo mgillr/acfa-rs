@@ -4,11 +4,11 @@ version = 4
 
 [[package]]
 name = "acfa-aggregate"
-version = "0.1.0"
+version = "0.3.0"
 
 [[package]]
 name = "acfa-receipt"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "acfa-aggregate",
  "ed25519-dalek",
