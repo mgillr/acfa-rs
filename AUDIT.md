@@ -199,3 +199,59 @@ is the point: it is a **wire format plus a verifier**, not a daemon -- there is 
 and finality state is in-memory (not persisted across a restart) -- and it has had **no accredited
 security review**. Run it today as a reproducibility and provenance tool for small-model,
 small-cohort, accountability-first deployments, which is the envelope its guarantees actually fit.
+
+## MASTER LEDGER
+
+Every finding from audit round 3 onward, with its GitHub issue and its status. **The count must
+reconcile:** a finding that was fixed but never filed reads exactly like a finding that was never
+found, which is why this table exists in the repository rather than only on GitHub.
+
+`area` distinguishes where the defect lives, because that governs how bad it is. **rust** is the
+implementation. **reference** is `reference/acfa.py` — pinned by hash and the executable spec a
+third party implements from, so a defect there ships a spec that contradicts the code. **gate** is
+a test, guard or CI step that cannot fail: a green check that verified nothing.
+
+| # | status | area | finding |
+|---|---|---|---|
+| [#99](https://github.com/mgillr/acfa-rs/issues/99) | **OPEN** | reference | LOW: demos/run.sh always reports exit 0 and its verdicts are hardcoded prose; not referenced by CI |
+| [#98](https://github.com/mgillr/acfa-rs/issues/98) | **OPEN** | gate | MEDIUM: error_traits covers 8 of 14 Invalid variants and 7 of 9 WireError variants -- both new variants are outside the array |
+| [#97](https://github.com/mgillr/acfa-rs/issues/97) | **OPEN** | gate | MEDIUM: claim-caveat-check.py self-test passes while 5 of 6 pairings go unevaluated -- fl-06 re-entering through the tool built to stop it |
+| [#96](https://github.com/mgillr/acfa-rs/issues/96) | **OPEN** | gate | HIGH: layer1-aggregate -- Lemma 12 constants are unasserted and the certificate check recomputes the production comparison |
+| [#95](https://github.com/mgillr/acfa-rs/issues/95) | **OPEN** | gate | HIGH: layer2-finality -- five guards in halt.rs and certificate.rs survive deletion of the behaviour they name |
+| [#94](https://github.com/mgillr/acfa-rs/issues/94) | **OPEN** | gate | HIGH: the golden CI job regenerates 2 of 4 vector files; vectors_cert.json can be replaced with garbage and CI stays green |
+| [#93](https://github.com/mgillr/acfa-rs/issues/93) | **OPEN** | gate | CRITICAL: regression-guard.sh greps for the fingerprint instead of computing it, and its test floor counts #[test] attributes |
+| [#92](https://github.com/mgillr/acfa-rs/issues/92) | **OPEN** | reference | MEDIUM: reference trimmed_mean silently returns the plain mean where Rust refuses (adv-05), and divides by zero |
+| [#91](https://github.com/mgillr/acfa-rs/issues/91) | **OPEN** | reference | MEDIUM: four inputs where Rust commits a refusal root and the reference computes an aggregate or crashes |
+| [#90](https://github.com/mgillr/acfa-rs/issues/90) | **OPEN** | reference | MEDIUM: reference merkle_root accepts duplicate leaves and returns the ambiguous colliding root (CVE-2012-2459 shape) |
+| [#89](https://github.com/mgillr/acfa-rs/issues/89) | **OPEN** | reference | HIGH: the v1 preimage/leaf path is absent from the reference -- ACFA-R1 receipts are unverifiable from the spec |
+| [#88](https://github.com/mgillr/acfa-rs/issues/88) | **OPEN** | reference | HIGH: reference fp_encode uses floor(s+0.5) -- the exact idiom fixed.rs documents as wrong -- and its guard test replicates the bug so it cannot fail |
+| [#87](https://github.com/mgillr/acfa-rs/issues/87) | **OPEN** | reference | HIGH: reference verify() is not strict -- accepts small-order-key forgeries Rust rejects (622/2000 measured) |
+| [#86](https://github.com/mgillr/acfa-rs/issues/86) | **OPEN** | reference | HIGH: reference State.merge is a plain dict union -- no proof derivation, crdt-02 live in the spec |
+| [#85](https://github.com/mgillr/acfa-rs/issues/85) | **OPEN** | reference | HIGH: reference _auto_proof returns after the first conflicting pair -- its state root is delivery-order dependent |
+| [#84](https://github.com/mgillr/acfa-rs/issues/84) | **OPEN** | reference | CRITICAL: reference EquivProof.valid refuses on h1==h2 alone, making the crypto-04 leaf-keying fix inert |
+| [#83](https://github.com/mgillr/acfa-rs/issues/83) | closed | rust | ctx cannot be pinned by a checker: Policy has no context field and acfa-verify has no --ctx |
+| [#82](https://github.com/mgillr/acfa-rs/issues/82) | **OPEN** | reference | CRITICAL: #79 and crypto-04 are both still live in the vendored Python reference -- the normative artefact contradicts the fix |
+| [#81](https://github.com/mgillr/acfa-rs/issues/81) | closed | rust | CRITICAL: EquivProof::valid ignores sig_preimage -- every pre-v0.4.0 conviction silently stops validating |
+| [#80](https://github.com/mgillr/acfa-rs/issues/80) | closed | rust | v1 receipts stopped decoding: leaf() folded ctx in unconditionally, reordering and re-rooting every pre-v0.4.0 receipt |
+| [#79](https://github.com/mgillr/acfa-rs/issues/79) | closed | rust | CRITICAL: an honest node in two contexts is permanently convictable -- the signed preimage does not name the context |
+| [#78](https://github.com/mgillr/acfa-rs/issues/78) | **OPEN** | rust | f semantics are unstated: population_bound_met compares a post-conviction set to an unadjusted fault bound |
+| [#77](https://github.com/mgillr/acfa-rs/issues/77) | closed | rust | FRAC_BITS is not on the wire and not versioned -- two builds at different scales silently disagree |
+| [#76](https://github.com/mgillr/acfa-rs/issues/76) | closed | rust | State::admit sorts with sort_by_key, hashing every tensor once per comparison -- 2.13x of verify at the shipped default budget |
+| [#75](https://github.com/mgillr/acfa-rs/issues/75) | closed | rust | acfa-agg: a stdin-supplied fault bound near usize::MAX panics (exit 101) after printing an answer |
+| [#74](https://github.com/mgillr/acfa-rs/issues/74) | closed | rust | verify_derivable_work_bound: timing-ratio test flakes on pristine main under host load (2/6) |
+| [#73](https://github.com/mgillr/acfa-rs/issues/73) | closed | rust | acfa-verify: the --pki-less self-consistency path does unbounded work and takes no policy (second door, no trust argument at all) |
+| [#72](https://github.com/mgillr/acfa-rs/issues/72) | closed | rust | layer1-aggregate: one rejected contribution denies the Lemma 12 certificate for the whole round (l1_max is a global max) |
+| [#71](https://github.com/mgillr/acfa-rs/issues/71) | closed | rust | verify: work is unbounded in d -- 32 MiB receipt buys 19s of CPU with every guard passing (second door) |
+| [#70](https://github.com/mgillr/acfa-rs/issues/70) | closed | rust | merge: global cross-round contribution cap kills gossip permanently at round ~4096/n (n=20 -> round 205) |
+| [#69](https://github.com/mgillr/acfa-rs/issues/69) | closed | rust | composition: one unsigned contribution nullifies a round's receipts (issue carried junk admit ignores) |
+| [#68](https://github.com/mgillr/acfa-rs/issues/68) | closed | rust | verify-dos: contribution-count scan is unbounded for all-distinct ids (the half #57 missed) |
+
+**32 findings recorded, 14 closed, 18 open**
+(6 gate, 11 reference, 1 rust).
+
+Nothing in the Rust implementation is known-broken at `5110657`. Every open item is either a
+divergence in the vendored reference or a gate that cannot fail — and the two are related, because
+what made the reference divergences invisible for so long is that **not one of them is exercised by
+any golden vector**, so the cross-implementation suite compared the two implementations only on
+inputs they agree about.
+
