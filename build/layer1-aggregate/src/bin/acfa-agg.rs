@@ -240,6 +240,37 @@ fn main() -> ExitCode {
                 }
                 saw_f = true;
                 match it.next().and_then(|v| v.parse().ok()) {
+                    // REFUSE AT PARSE TIME AN `f` THAT CANNOT DO THE BAND ARITHMETIC.
+                    //
+                    // The select-all band is `n < f + 3`, and that addition is on `usize`. For
+                    // `f` near `usize::MAX` it OVERFLOWED: with this crate's shipped
+                    // `overflow-checks = true` the process printed `undefended 0` to stdout and
+                    // then ABORTED AT 101 -- a panic reachable from stdin, which this project
+                    // treats as a denial of service, and an exit code outside the documented
+                    // contract of `0 ok / 1 refused / 2 unreadable`. Worse than the crash: a
+                    // caller reading stdout saw a plausible answer attached to a dead process.
+                    //
+                    // `multi_krum` already fixed this exact class internally by widening to
+                    // `f as u128 + 3`, precisely because `f + 3` in `usize` wrapped and made the
+                    // select-all convention silently fail to fire. The CLI parse path never got
+                    // the same treatment, so the guard existed one layer down and the door above
+                    // it did not have one.
+                    //
+                    // Refusing HERE rather than widening the addition is deliberate: an `f` that
+                    // cannot be added to 3 is not a fault bound anyone meant, and widening would
+                    // let it flow into the rule to produce a confident answer over a nonsense
+                    // parameter. A door that accepts a value it cannot reason about has not been
+                    // made safe by making the arithmetic wider.
+                    Some(v) if usize::checked_add(v, 3).is_none() => {
+                        return die(
+                            2,
+                            &format!(
+                                "line {}: f = {v} is too large to be a fault bound -- the \
+                                 select-all band needs f + 3 and that overflows",
+                                n + 1
+                            ),
+                        )
+                    }
                     Some(v) => f = v,
                     None => {
                         return die(

@@ -404,3 +404,58 @@ fn krum_at_the_select_all_band_is_reported_under_a_distinct_token_not_ok_or_refu
     assert_eq!(code, 0);
     assert!(stdout.starts_with("ok "));
 }
+
+/// **A fault bound near `usize::MAX` must be REFUSED, not panic after printing an answer.**
+///
+/// Before the fix the shipped binary wrote `undefended 0` to stdout and then **aborted at 101**
+/// with `attempt to add with overflow`: the select-all band computes `f + 3` on `usize`, and with
+/// this crate's `overflow-checks = true` profile that is a panic reachable from stdin. Three
+/// separate contracts broken at once -- a panic on an untrusted door, an exit code outside the
+/// documented `0 ok / 1 refused / 2 unreadable`, and a plausible-looking answer on stdout
+/// belonging to a process that died.
+///
+/// `multi_krum` already fixed this class internally with `f as u128 + 3`. The guard existed one
+/// layer down and the door above it did not have one, which is why this is a CLI test and not a
+/// library one.
+///
+/// GUARD-DELETION: remove the `usize::checked_add(v, 3).is_none()` arm from the `f` directive in
+/// `acfa-agg.rs` and this goes RED -- exit becomes 101 and stdout becomes `undefended 0`.
+#[test]
+fn a_fault_bound_that_cannot_do_the_band_arithmetic_is_refused_not_a_panic() {
+    let body = "6b31 0000000000010000\n6b32 0000000000010000\n6b33 0000000000010000\n";
+    for f in [usize::MAX, usize::MAX - 1, usize::MAX - 2] {
+        let (code, out, err) = run(&format!("rule krum\nf {f}\n{body}"));
+        assert_eq!(
+            code, 2,
+            "f = {f} must be refused as unreadable input, not panic; got exit {code}, \
+             stdout {out:?}"
+        );
+        assert!(
+            out.is_empty(),
+            "a refused request must print NOTHING to stdout -- a caller reading a token here \
+             would attach it to a dead process; got {out:?}"
+        );
+        assert!(
+            err.contains("fault bound"),
+            "the refusal must name the field so the operator knows what to change; got {err:?}"
+        );
+    }
+}
+
+/// The accepting twin: the largest `f` that CAN do the band arithmetic is still accepted by the
+/// parser, so the refusal above is a boundary and not a blanket ban on large values.
+#[test]
+fn the_largest_fault_bound_that_can_do_the_band_arithmetic_is_still_parsed() {
+    let body = "6b31 0000000000010000\n6b32 0000000000010000\n6b33 0000000000010000\n";
+    let (code, out, err) = run(&format!("rule krum\nf {}\n{body}", usize::MAX - 3));
+    assert_ne!(
+        code, 2,
+        "f = usize::MAX - 3 must clear the PARSE guard; stderr {err:?}"
+    );
+    assert_ne!(code, 101, "and must certainly not panic");
+    // n = 3 is far below f + 3, so this lands in the documented select-all band.
+    assert!(
+        out.starts_with("undefended"),
+        "expected the select-all token for n far below f+3, got {out:?}"
+    );
+}
