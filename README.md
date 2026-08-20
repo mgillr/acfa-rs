@@ -141,6 +141,7 @@ release. It changes only on a deliberate, documented wire-version bump. A differ
 you are not running a released tree.
 
 Full history, including what is still open at each release: [`CHANGELOG.md`](CHANGELOG.md).
+What the format promises, and what it does not: [`COMPATIBILITY.md`](COMPATIBILITY.md).
 
 ## Install
 
