@@ -125,22 +125,59 @@ fn the_refusal_does_not_scale_with_the_work_it_declines() {
     let (small, pki_s) = raw_state(130); //  8,385 derivable -- just over the cap
     let (large, pki_l) = raw_state(260); // 33,670 derivable -- 4x the work, same refusal
 
-    let t0 = std::time::Instant::now();
-    let vs = small.verify(&Policy::new(pki_s, 1));
-    let small_t = t0.elapsed().as_secs_f64();
+    let pol_s = Policy::new(pki_s, 1);
+    let pol_l = Policy::new(pki_l, 1);
+    assert!(
+        small.verify(&pol_s).is_err() && large.verify(&pol_l).is_err(),
+        "both must be refused"
+    );
 
-    let t1 = std::time::Instant::now();
-    let vl = large.verify(&Policy::new(pki_l, 1));
-    let large_t = t1.elapsed().as_secs_f64();
+    // MINIMUM OF INTERLEAVED REPETITIONS, NOT A SINGLE SAMPLE.
+    //
+    // This assertion is about an asymptotic property -- is the bound checked BEFORE the work or
+    // after it -- and the only instrument for that is wall clock. A single sample made this test
+    // flake on PRISTINE main: measured 2 failures in 6 consecutive runs with no patch applied, on
+    // a 4-CPU host under load 52-70 from concurrent work. It also contaminated two batches of a
+    // mutation sweep, where a test that fails for reasons unrelated to the code is worse than no
+    // test at all -- it teaches people to ignore a red.
+    //
+    // The fix rests on an asymmetry that is true of scheduling noise and not merely convenient:
+    // CONTENTION CAN ONLY EVER MAKE A RUN SLOWER. So the minimum over repetitions converges on the
+    // unloaded time from above, while a mean or a single sample is dragged by any spike. For the
+    // ratio to flake now, EVERY large repetition must be slow AND some small one fast in the same
+    // window.
+    //
+    // The repetitions are INTERLEAVED rather than run in two blocks, so a load episode that spans
+    // one block cannot bias one side of the ratio; and they are cheap because the expensive part
+    // here is `raw_state` building signed contributions, which happens once, while the refusal
+    // being timed is O(1) by hypothesis.
+    //
+    // This is still a timing test and it is still not deterministic. It is honest about what it
+    // measures rather than pretending otherwise, and if it ever flakes again the answer is a work
+    // counter in the library, not a looser ratio -- widening the ceiling would eventually admit
+    // the very quadratic the test exists to exclude.
+    const REPS: usize = 5;
+    let (mut small_t, mut large_t) = (f64::MAX, f64::MAX);
+    for _ in 0..REPS {
+        let t0 = std::time::Instant::now();
+        let vs = small.verify(&pol_s);
+        let dt = t0.elapsed().as_secs_f64();
+        assert!(vs.is_err());
+        small_t = small_t.min(dt);
 
-    assert!(vs.is_err() && vl.is_err(), "both must be refused");
+        let t1 = std::time::Instant::now();
+        let vl = large.verify(&pol_l);
+        let dt = t1.elapsed().as_secs_f64();
+        assert!(vl.is_err());
+        large_t = large_t.min(dt);
+    }
     // 4x the declined work (8,385 -> 33,670). Refused-before-the-work is ~flat; refused-after
     // would be ~4x.
     // The 3x ceiling leaves room for the linear signature check that legitimately precedes
     // the bound, while still failing a quadratic.
     assert!(
         large_t < small_t.max(1e-6) * 3.0,
-        "refusing 4x the work took {large_t:.4}s against {small_t:.4}s -- that scales with the \
-         work, so the bound is being checked AFTER it rather than before"
+        "refusing 4x the work took {large_t:.4}s against {small_t:.4}s (best of {REPS}) -- that \
+         scales with the work, so the bound is being checked AFTER it rather than before"
     );
 }
