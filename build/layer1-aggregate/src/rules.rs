@@ -906,6 +906,65 @@ pub struct MarginCertificate {
     /// real-valued selection. False means "not certified", which spans both a genuine
     /// near-tie and a merely conservative decline -- it is never evidence of a flip.
     pub certified: bool,
+    /// **How many additional FRACTIONAL BITS this round would need in order to certify.**
+    ///
+    /// `Some(0)` means it certified. `Some(k)` means it did not, and `k` more fractional bits of
+    /// fixed-point resolution are predicted to be enough. `None` means NO finite number of bits
+    /// helps -- the boundary margin is zero or negative, which is Remark 13's irreducible
+    /// exact-tie residual, and no margin condition can ever cover it.
+    ///
+    /// WHY THIS FIELD EXISTS. `certified: false` is opaque: it says the round could not be
+    /// certified without saying whether it missed by a hair or by six orders of magnitude, so an
+    /// operator cannot tell a near-miss from a hopeless configuration and has no parameter to act
+    /// on. In the realistic high-dimensional regime the certificate fires almost never, and the
+    /// reason turns out not to be conservatism in the bound at all -- it is that the fixed-point
+    /// grid is too coarse. This field converts that from an opaque negative into a number.
+    ///
+    /// **IT IS A PREDICTION FROM A MEASURED LAW, NOT A GUARANTEE, AND THE DISTINCTION MATTERS.**
+    /// The requirement-to-margin ratio was measured against the quantisation grid with the data
+    /// and the dimension held fixed and only `FRAC_BITS` varied:
+    ///
+    /// ```text
+    ///   FRAC_BITS   16      18      20      22       24
+    ///   need/margin 37.079  9.706   2.408   0.603    0.151
+    /// ```
+    ///
+    /// Exactly one halving per fractional bit, over nine doublings, to within 0.5%. So
+    /// `ceil(log2(threshold / margin))` predicts the shortfall well -- but re-encoding at a finer
+    /// grid changes the DATA, not merely the arithmetic, so the honest reading is "expect about
+    /// `k` bits" and not "`k` bits will certify this". Re-run the certificate at the new grid to
+    /// find out; do not treat this as an entitlement.
+    ///
+    /// Computed by exact integer doubling, so it is deterministic and identical on every
+    /// architecture, like everything else in this struct.
+    pub bits_short: Option<u32>,
+}
+
+/// How many doublings of `margin` are needed to exceed `threshold` -- i.e.
+/// `ceil(log2(threshold / margin))`, computed by exact integer doubling rather than by any
+/// logarithm, so it is bit-identical on every architecture.
+///
+/// `None` when `margin <= 0`: an exact tie or an inverted boundary is not a shortfall that more
+/// resolution can close, and returning a large number there would invite someone to go and buy
+/// bits that cannot help.
+///
+/// The loop is bounded by construction: `margin >= 1` and `threshold <= i128::MAX`, so it
+/// terminates in at most 127 iterations. `saturating_mul` guarantees it cannot spin even if that
+/// reasoning is ever wrong.
+fn bits_short(margin: i128, threshold: i128) -> Option<u32> {
+    if margin <= 0 {
+        return None;
+    }
+    if margin > threshold {
+        return Some(0);
+    }
+    let mut m = margin;
+    let mut k = 0u32;
+    while m <= threshold && k < 128 {
+        m = m.saturating_mul(2);
+        k += 1;
+    }
+    Some(k)
 }
 
 /// Multi-Krum selection together with its Lemma 12 no-flip certificate.
@@ -1005,6 +1064,7 @@ pub fn multi_krum_certified(
             nn_count: m,
             d,
             certified: margin > threshold,
+            bits_short: bits_short(margin, threshold),
         }),
     ))
 }
@@ -1192,6 +1252,70 @@ pub fn bulyan_aggregate(cs: &[Contribution], f: usize) -> Result<Vec<i64>, AggEr
     let sel = bulyan_select(cs, f)?;
     let picked: Vec<Contribution> = sel.iter().map(|&i| cs[i].clone()).collect();
     coord_median_trim(&picked, f)
+}
+
+#[cfg(test)]
+mod bits_short_tests {
+    use super::bits_short;
+
+    /// The EXACT-EQUALITY BOUNDARY, which no randomised corpus reaches.
+    ///
+    /// `certified` is `margin > threshold`, strictly. So when a doubling lands the margin EXACTLY
+    /// on the threshold it has NOT yet sufficed and one more bit is needed. That distinction is
+    /// invisible to data-driven tests -- exact equality is measure-zero in a random corpus -- and
+    /// an integration test that never hits it cannot witness the `<=` in the loop condition.
+    /// Found by mutating `while m <= threshold` to `while m < threshold` and watching the
+    /// integration suite stay green.
+    #[test]
+    fn a_doubling_that_lands_exactly_on_the_threshold_is_not_enough() {
+        // 8 doubles to 16, which EQUALS the threshold: not greater, so it does not certify.
+        assert_eq!(
+            bits_short(8, 16),
+            Some(2),
+            "8 -> 16 ties the threshold; 16 -> 32 clears it"
+        );
+        assert_eq!(
+            bits_short(1, 1),
+            Some(1),
+            "equal at zero doublings still needs one"
+        );
+        assert_eq!(bits_short(1, 2), Some(2), "1 -> 2 ties, 2 -> 4 clears");
+        // And strictly-greater needs none.
+        assert_eq!(bits_short(17, 16), Some(0));
+        assert_eq!(bits_short(2, 1), Some(0));
+    }
+
+    #[test]
+    fn a_non_positive_margin_has_no_finite_shortfall() {
+        assert_eq!(bits_short(0, 100), None);
+        assert_eq!(bits_short(-5, 100), None);
+        assert_eq!(
+            bits_short(0, 0),
+            None,
+            "a zero threshold does not rescue a zero margin"
+        );
+    }
+
+    /// Each returned `k` is exactly the doublings needed: `k-1` falls short, `k` clears.
+    #[test]
+    fn the_returned_count_is_exact_across_a_ladder() {
+        for p in 1..40u32 {
+            let threshold = 1i128 << p;
+            let k = bits_short(1, threshold).unwrap();
+            assert_eq!(k, p + 1, "1 must double {} times to exceed 2^{p}", p + 1);
+        }
+    }
+
+    /// Enormous shortfalls terminate rather than spinning, and saturation cannot hide a wrong answer.
+    #[test]
+    fn an_extreme_shortfall_terminates_and_is_bounded() {
+        let k = bits_short(1, i128::MAX).unwrap();
+        assert!(k <= 128, "must terminate within the i128 width, got {k}");
+        assert!(
+            k >= 127,
+            "1 needs the full width to exceed i128::MAX, got {k}"
+        );
+    }
 }
 
 #[cfg(test)]

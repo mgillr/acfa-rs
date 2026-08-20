@@ -544,6 +544,22 @@ silently change the aggregate"
                         "               margin {} <= threshold {} (4 x beta {})",
                         c.margin, c.threshold, c.beta
                     );
+                    match c.bits_short {
+                        Some(k) => {
+                            println!("               ABOUT {k} MORE FRACTIONAL BIT(S) of resolution would");
+                            println!("               be expected to close this -- a deployment parameter,");
+                            println!("               not a defect in the receipt. It is a prediction from a");
+                            println!("               measured law, so re-run at the finer grid to confirm.");
+                        }
+                        None => {
+                            println!(
+                                "               The boundary is an EXACT TIE. No amount of extra"
+                            );
+                            println!(
+                                "               resolution closes it -- the irreducible residual."
+                            );
+                        }
+                    }
                     println!(
                         "               This is NOT evidence of a flip. It means quantisation"
                     );
