@@ -83,6 +83,23 @@ use acfa_receipt::hash::{enc_tensor, h};
 use acfa_receipt::identity::{contrib_msg, Identity, Pki};
 use acfa_receipt::{decode, encode, Contribution, EquivProof, Receipt, Rule, WireError};
 
+/// Krum at `f = 1` on this build's fixed-point scale.
+///
+/// A NAMED FIXTURE, NOT A DEFAULT. A contribution signed under different round parameters is
+/// filtered out of the round by `Receipt::issue`, exactly as a foreign `ctx` is, so a test that
+/// needs other parameters has to say so rather than inherit these silently.
+const BULYAN_F3: acfa_receipt::RoundParams = acfa_receipt::RoundParams {
+    rule: acfa_receipt::Rule::Bulyan,
+    f: 3,
+    frac_bits: acfa_receipt::FRAC_BITS,
+};
+
+const PARAMS_DEFAULT: acfa_receipt::RoundParams = acfa_receipt::RoundParams {
+    rule: acfa_receipt::Rule::Krum,
+    f: 1,
+    frac_bits: acfa_receipt::FRAC_BITS,
+};
+
 // ------------------------------------------------------------------- the instrument
 
 thread_local! {
@@ -159,20 +176,32 @@ const HOSTILE_COUNT: u32 = 4_000_000;
 
 // ---------------------------------------------------------------------- the fixture
 
+/// Krum at f = 1, the common case in this file.
+fn contrib(a: &Identity, rnd: u64, t: &[i64]) -> Contribution {
+    contrib_with(a, PARAMS_DEFAULT, rnd, t)
+}
+
 fn ident(n: u32) -> Identity {
     Identity::from_secret(n, &[n as u8; 32])
 }
 
-fn contrib(a: &Identity, rnd: u64, t: &[i64]) -> Contribution {
+fn contrib_with(
+    a: &Identity,
+    params: acfa_receipt::RoundParams,
+    rnd: u64,
+    t: &[i64],
+) -> Contribution {
     let th = h(&enc_tensor(t));
     Contribution {
         ctx: acfa_receipt::identity::NO_CONTEXT,
         sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+        params,
         rnd,
         node_id: a.node_id,
         tensor: t.to_vec(),
         sig: a.sign(&contrib_msg(
             &acfa_receipt::identity::NO_CONTEXT,
+            &params,
             rnd,
             a.node_id,
             &th,
@@ -184,6 +213,7 @@ fn proof(node_id: u32, tag: u8) -> EquivProof {
     EquivProof {
         ctx: acfa_receipt::identity::NO_CONTEXT,
         sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+        params: PARAMS_DEFAULT,
         rnd: 1,
         node_id,
         h1: [tag; 32],
@@ -225,6 +255,7 @@ fn fixture() -> Receipt {
         round: 7,
         f: 1,
         rule: Rule::Krum,
+        frac_bits: acfa_receipt::FRAC_BITS,
         pki,
         contributions,
         proofs,
@@ -246,7 +277,7 @@ struct Offsets {
 }
 
 fn offsets(r: &Receipt) -> Offsets {
-    const HEAD: usize = 8 + 2 + 32 + 8 + 4 + 1; // magic, version, ctx, round, f, rule
+    const HEAD: usize = 8 + 2 + 32 + 8 + 4 + 1 + 4; // magic, version, ctx, round, f, rule, frac_bits
     const PKI_ELEM: usize = 4 + 32;
     const PROOF_ELEM: usize = 8 + 4 + 32 + 32 + 64 + 64;
 
@@ -374,7 +405,10 @@ fn a_large_but_honest_receipt_is_still_accepted() {
     let mut contributions: Vec<Contribution> = ids
         .iter()
         .enumerate()
-        .map(|(i, id)| contrib(id, 4, &[i as i64, i as i64 * 7 + 1]))
+        // SIGNED UNDER THE RECEIPT'S OWN PARAMETERS. The wire carries params ONCE in the
+        // header and the decoder stamps every entry from it, so contributions carrying
+        // different params hash to different leaves on the way back and land out of order.
+        .map(|(i, id)| contrib_with(id, BULYAN_F3, 4, &[i as i64, i as i64 * 7 + 1]))
         .collect();
     contributions.sort_by_key(|c| c.leaf());
     let r = Receipt {
@@ -382,6 +416,7 @@ fn a_large_but_honest_receipt_is_still_accepted() {
         round: 4,
         f: 3,
         rule: Rule::Bulyan,
+        frac_bits: acfa_receipt::FRAC_BITS,
         pki,
         contributions,
         proofs: vec![],

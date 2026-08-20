@@ -19,7 +19,7 @@ that speaks the same wire magic and version.** Concretely:
 
 **The fingerprint changed exactly once, at v0.4.0.** v0.1.0 through v0.3.0 all printed
 `bd13ba3209a940b2025368a63c546ffd59e2580a1b8aa7128cc9b423d1957e40`. v0.4.0 prints
-`701a05a332a539697b5415c6d35ca70ca327992a09a80e5c628081b3f890c287` because the signed preimage
+`4664c321388267507c825b8e1b5ef6c2c082879bb871d2c0fff557d514b2fedf` because the signed preimage
 now binds the context and the node id, which is a deliberate wire-version bump (`ACFA-R1` →
 `ACFA-R2`) and the only circumstance under which this value is permitted to move. Within each
 of those two eras the value is byte-identical on every supported architecture, big-endian

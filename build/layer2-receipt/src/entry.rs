@@ -9,7 +9,9 @@
 //! a log.
 
 use crate::hash::{enc_tensor, h};
-use crate::identity::{contrib_msg, contrib_msg_v1, verify, Context, Pki, PreimageVersion, Sig};
+use crate::identity::{
+    contrib_msg, contrib_msg_v1, verify, Context, Pki, PreimageVersion, RoundParams, Sig,
+};
 
 /// A round-tagged, signed contribution.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +22,13 @@ pub struct Contribution {
     /// contributions in different contexts can no longer be forged into an equivocation proof
     /// against their author (#79).
     pub ctx: Context,
+    /// **The arithmetic and robustness parameters this contribution was made under.**
+    ///
+    /// Inside the signature, so a contribution offered for one rule, fault bound, or fixed-point
+    /// scale cannot be presented in a round running another. Carried once in the receipt header
+    /// rather than repeated per contribution -- the decoder stamps every entry from it, exactly
+    /// as it does for `ctx`.
+    pub params: RoundParams,
     /// Which signed preimage this contribution's signature was made over.
     ///
     /// **This exists so the compatibility promise can be kept.** A receipt written by v0.3.0 was
@@ -62,7 +71,7 @@ impl Contribution {
     /// sharing either prefix, or these two prefixes being unified, turns that assert into a
     /// panic in production. If you add a leaf type, give it its own prefix.
     pub fn leaf(&self) -> [u8; 32] {
-        let mut b = Vec::with_capacity(2 + 32 + 8 + 4 + 32 + 64);
+        let mut b = Vec::with_capacity(2 + 32 + 1 + 4 + 4 + 8 + 4 + 32 + 64);
         b.extend_from_slice(b"C|");
         // THE LEAF IS VERSIONED FOR THE SAME REASON THE SIGNATURE IS, and forgetting that
         // silently broke the v1 promise once. The leaf is what `admit` sorts by and what the
@@ -73,6 +82,9 @@ impl Contribution {
         // forever. `NO_CONTEXT` is not a substitute -- 32 zero bytes still change the hash.
         if matches!(self.sig_preimage, PreimageVersion::V2) {
             b.extend_from_slice(&self.ctx);
+            b.push(self.params.rule.as_wire());
+            b.extend_from_slice(&self.params.f.to_be_bytes());
+            b.extend_from_slice(&self.params.frac_bits.to_be_bytes());
         }
         b.extend_from_slice(&self.rnd.to_be_bytes());
         b.extend_from_slice(&self.node_id.to_be_bytes());
@@ -93,7 +105,13 @@ impl Contribution {
                 ),
                 PreimageVersion::V2 => verify(
                     pk,
-                    &contrib_msg(&self.ctx, self.rnd, self.node_id, &self.tensor_hash()),
+                    &contrib_msg(
+                        &self.ctx,
+                        &self.params,
+                        self.rnd,
+                        self.node_id,
+                        &self.tensor_hash(),
+                    ),
                     &self.sig,
                 ),
             },
@@ -117,6 +135,8 @@ pub struct EquivProof {
     pub ctx: Context,
     /// See [`Contribution::sig_preimage`].
     pub sig_preimage: PreimageVersion,
+    /// The round parameters both accused signatures were made under. See [`RoundParams`].
+    pub params: RoundParams,
     pub rnd: u64,
     pub node_id: u32,
     pub h1: [u8; 32],
@@ -135,6 +155,8 @@ impl EquivProof {
     /// non-reproducible for the exact event it is meant to record.
     pub fn canonical(
         ctx: Context,
+        sig_preimage: PreimageVersion,
+        params: RoundParams,
         rnd: u64,
         node_id: u32,
         a: ([u8; 32], Sig),
@@ -147,7 +169,14 @@ impl EquivProof {
         };
         EquivProof {
             ctx,
-            sig_preimage: PreimageVersion::V2,
+            // TAKEN FROM THE ENTRIES, NOT HARDCODED. Proof DERIVATION is the seventh dispatch
+            // site and it was the one still pinned to V2, so two valid v1 contributions by one
+            // node in one round produced NO proof at all: the evidence existed and verified,
+            // and the formation path could not build it. `admit` still excluded the identity on
+            // leaf uniqueness, so the aggregate was safe -- what was lost was the attributable
+            // artefact, which is the thing this system exists to produce.
+            sig_preimage,
+            params,
             rnd,
             node_id,
             h1: lo.0,
@@ -165,11 +194,14 @@ impl EquivProof {
     /// because `C|` and `P|` keep the spaces disjoint. Do not unify these prefixes, and give
     /// any new leaf type its own.
     pub fn leaf(&self) -> [u8; 32] {
-        let mut b = Vec::with_capacity(2 + 32 + 8 + 4 + 64 + 128);
+        let mut b = Vec::with_capacity(2 + 32 + 1 + 4 + 4 + 8 + 4 + 64 + 128);
         b.extend_from_slice(b"P|");
         // Versioned for the same reason as `Contribution::leaf` -- see the comment there.
         if matches!(self.sig_preimage, PreimageVersion::V2) {
             b.extend_from_slice(&self.ctx);
+            b.push(self.params.rule.as_wire());
+            b.extend_from_slice(&self.params.f.to_be_bytes());
+            b.extend_from_slice(&self.params.frac_bits.to_be_bytes());
         }
         b.extend_from_slice(&self.rnd.to_be_bytes());
         b.extend_from_slice(&self.node_id.to_be_bytes());
@@ -204,20 +236,36 @@ impl EquivProof {
         let Some(pk) = pki.get(&self.node_id) else {
             return false;
         };
-        verify(
-            pk,
-            &contrib_msg(&self.ctx, self.rnd, self.node_id, &self.h1),
-            &self.sig1,
-        ) && verify(
-            pk,
-            &contrib_msg(&self.ctx, self.rnd, self.node_id, &self.h2),
-            &self.sig2,
-        )
+        let msg = |th: &[u8; 32]| -> Vec<u8> {
+            match self.sig_preimage {
+                // A PROOF MUST BE CHECKED UNDER THE PREIMAGE ITS SIGNATURES WERE MADE OVER, and
+                // this arm was missing until it was measured. `valid` called the v2 preimage
+                // unconditionally, so a v0.1.0-v0.3.0 receipt carrying a genuine conviction
+                // decoded cleanly, reproduced its state root, and then failed to validate the
+                // proof -- silently UN-CONVICTING a node on real evidence. Conviction permanence
+                // is a core claim of this system, so losing it on a version upgrade is the exact
+                // inverse of #79 and just as serious. Contribution::signature_valid always
+                // dispatched; this did not, and the two must stay in step.
+                PreimageVersion::V1 => contrib_msg_v1(self.rnd, th),
+                PreimageVersion::V2 => {
+                    contrib_msg(&self.ctx, &self.params, self.rnd, self.node_id, th)
+                }
+            }
+        };
+        verify(pk, &msg(&self.h1), &self.sig1) && verify(pk, &msg(&self.h2), &self.sig2)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    /// Krum at `f = 1` on this build's scale. A NAMED fixture, not a default -- `Receipt::issue`
+    /// filters contributions whose parameters differ, so a test needing others must say so.
+    const PARAMS_DEFAULT: crate::identity::RoundParams = crate::identity::RoundParams {
+        rule: crate::resolve::Rule::Krum,
+        f: 1,
+        frac_bits: acfa_aggregate::FRAC_BITS,
+    };
+
     use super::*;
     use crate::identity::Identity;
     use std::collections::BTreeMap;
@@ -234,11 +282,13 @@ mod tests {
         Contribution {
             ctx: crate::identity::NO_CONTEXT,
             sig_preimage: crate::identity::PreimageVersion::V2,
+            params: PARAMS_DEFAULT,
             rnd,
             node_id: a.node_id,
             tensor: t.to_vec(),
             sig: a.sign(&contrib_msg(
                 &crate::identity::NO_CONTEXT,
+                &PARAMS_DEFAULT,
                 rnd,
                 a.node_id,
                 &th,
@@ -276,6 +326,8 @@ mod tests {
         let c2 = contrib(&a, 5, &[2, 2]);
         let p = EquivProof::canonical(
             crate::identity::NO_CONTEXT,
+            PreimageVersion::V2,
+            PARAMS_DEFAULT,
             5,
             1,
             (c1.tensor_hash(), c1.sig),
@@ -283,6 +335,8 @@ mod tests {
         );
         let q = EquivProof::canonical(
             crate::identity::NO_CONTEXT,
+            PreimageVersion::V2,
+            PARAMS_DEFAULT,
             5,
             1,
             (c2.tensor_hash(), c2.sig),
@@ -298,6 +352,8 @@ mod tests {
         let c = contrib(&a, 5, &[1, 1]);
         let forged = EquivProof::canonical(
             crate::identity::NO_CONTEXT,
+            PreimageVersion::V2,
+            PARAMS_DEFAULT,
             5,
             1,
             (c.tensor_hash(), c.sig),
@@ -313,6 +369,8 @@ mod tests {
         let c2 = contrib(&a, 5, &[2, 2]);
         let mut p = EquivProof::canonical(
             crate::identity::NO_CONTEXT,
+            PreimageVersion::V2,
+            PARAMS_DEFAULT,
             5,
             1,
             (c1.tensor_hash(), c1.sig),

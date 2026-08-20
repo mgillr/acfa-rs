@@ -171,6 +171,14 @@ pub fn resolve(state: &State, rnd: u64, pki: &Pki, f: usize, rule: Rule) -> Reso
 
 #[cfg(test)]
 mod tests {
+    /// Krum at `f = 1` on this build's scale. A NAMED fixture, not a default -- `Receipt::issue`
+    /// filters contributions whose parameters differ, so a test needing others must say so.
+    const PARAMS_DEFAULT: crate::identity::RoundParams = crate::identity::RoundParams {
+        rule: crate::resolve::Rule::Krum,
+        f: 1,
+        frac_bits: acfa_aggregate::FRAC_BITS,
+    };
+
     use super::*;
     use crate::entry::Contribution;
     use crate::identity::{contrib_msg, Identity};
@@ -184,11 +192,13 @@ mod tests {
         Contribution {
             ctx: crate::identity::NO_CONTEXT,
             sig_preimage: crate::identity::PreimageVersion::V2,
+            params: PARAMS_DEFAULT,
             rnd,
             node_id: a.node_id,
             tensor: t.to_vec(),
             sig: a.sign(&contrib_msg(
                 &crate::identity::NO_CONTEXT,
+                &PARAMS_DEFAULT,
                 rnd,
                 a.node_id,
                 &th,

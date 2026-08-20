@@ -10,7 +10,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-FP="701a05a332a539697b5415c6d35ca70ca327992a09a80e5c628081b3f890c287"
+FP="4664c321388267507c825b8e1b5ef6c2c082879bb871d2c0fff557d514b2fedf"
 fail=0
 
 echo "== fingerprint unchanged (byte-identity is load-bearing; a change needs a wire-version bump) =="
@@ -46,6 +46,7 @@ GUARDS=(
   "build/layer2-receipt/tests/crypto02_key_strength.rs"
   "build/layer2-receipt/tests/crypto04_nonce_equivocation.rs"
   "build/layer2-receipt/tests/compat_v1_receipts.rs"
+  "build/layer2-receipt/tests/context_and_scale_are_load_bearing.rs"
   "build/layer2-receipt/tests/crypto08_rule_pinning.rs"
   "build/layer2-receipt/tests/rust04_argv.rs"
   "build/layer2-receipt/tests/rust08_expected_state_root.rs"

@@ -11,6 +11,17 @@ use acfa_receipt::hash::{enc_tensor, h};
 use acfa_receipt::identity::{contrib_msg, Identity, Pki};
 use acfa_receipt::{decode, encode, Contribution, Policy, Receipt, Rule, State, WireError};
 
+/// Krum at `f = 1` on this build's fixed-point scale.
+///
+/// A NAMED FIXTURE, NOT A DEFAULT. A contribution signed under different round parameters is
+/// filtered out of the round by `Receipt::issue`, exactly as a foreign `ctx` is, so a test that
+/// needs other parameters has to say so rather than inherit these silently.
+const PARAMS_DEFAULT: acfa_receipt::RoundParams = acfa_receipt::RoundParams {
+    rule: acfa_receipt::Rule::Krum,
+    f: 1,
+    frac_bits: acfa_receipt::FRAC_BITS,
+};
+
 fn ident(n: u32) -> Identity {
     Identity::from_secret(n, &[n as u8; 32])
 }
@@ -20,11 +31,13 @@ fn contrib(a: &Identity, rnd: u64, t: &[i64]) -> Contribution {
     Contribution {
         ctx: acfa_receipt::identity::NO_CONTEXT,
         sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+        params: PARAMS_DEFAULT,
         rnd,
         node_id: a.node_id,
         tensor: t.to_vec(),
         sig: a.sign(&contrib_msg(
             &acfa_receipt::identity::NO_CONTEXT,
+            &PARAMS_DEFAULT,
             rnd,
             a.node_id,
             &th,
@@ -179,7 +192,7 @@ fn out_of_order_contributions_are_refused_as_non_canonical() {
 
     // Now corrupt the order directly in the byte stream.
     let mut hand = canonical.clone();
-    let head = 8 + 2 + 32 + 8 + 4 + 1; // magic, version, ctx, round, f, rule
+    let head = 8 + 2 + 32 + 8 + 4 + 1 + 4; // magic, version, ctx, round, f, rule, frac_bits
     let n_pki = u32::from_be_bytes(hand[head..head + 4].try_into().unwrap()) as usize;
     let c_off = head + 4 + n_pki * 36;
     let n_c = u32::from_be_bytes(hand[c_off..c_off + 4].try_into().unwrap()) as usize;
@@ -202,7 +215,7 @@ fn out_of_order_contributions_are_refused_as_non_canonical() {
 fn a_duplicated_identity_in_the_pki_is_refused() {
     let (r, _) = sample(3);
     let bytes = encode(&r);
-    let head = 8 + 2 + 32 + 8 + 4 + 1; // magic, version, ctx, round, f, rule
+    let head = 8 + 2 + 32 + 8 + 4 + 1 + 4; // magic, version, ctx, round, f, rule, frac_bits
     let mut hand = bytes.clone();
     // Overwrite the second identity's id with the first's: no longer ascending.
     let first_id = hand[head + 4..head + 8].to_vec();
@@ -225,7 +238,7 @@ fn a_hostile_length_prefix_cannot_make_the_verifier_allocate() {
     // explicitly instead of trusting the platform to notice.
     let (r, _) = sample(4);
     let bytes = encode(&r);
-    let head = 8 + 2 + 32 + 8 + 4 + 1; // magic, version, ctx, round, f, rule
+    let head = 8 + 2 + 32 + 8 + 4 + 1 + 4; // magic, version, ctx, round, f, rule, frac_bits
 
     // Every count field in the format, each blown up to ~4 billion.
     let n_pki = u32::from_be_bytes(bytes[head..head + 4].try_into().unwrap()) as usize;
@@ -430,6 +443,8 @@ fn conviction_carries_across_rounds_by_design() {
     let b0 = contrib(&ids[0], 0, &[9, 9]);
     let old = acfa_receipt::EquivProof::canonical(
         acfa_receipt::identity::NO_CONTEXT,
+        acfa_receipt::identity::PreimageVersion::V2,
+        PARAMS_DEFAULT,
         0,
         1,
         (a0.tensor_hash(), a0.sig),

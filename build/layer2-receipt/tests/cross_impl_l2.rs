@@ -29,6 +29,17 @@ use acfa_receipt::identity::{contrib_msg, Identity, Pki};
 use acfa_receipt::{Contribution, EquivProof, Rule, State};
 use serde_json::Value;
 
+/// Krum at `f = 1` on this build's fixed-point scale.
+///
+/// A NAMED FIXTURE, NOT A DEFAULT. A contribution signed under different round parameters is
+/// filtered out of the round by `Receipt::issue`, exactly as a foreign `ctx` is, so a test that
+/// needs other parameters has to say so rather than inherit these silently.
+const PARAMS_DEFAULT: acfa_receipt::RoundParams = acfa_receipt::RoundParams {
+    rule: acfa_receipt::Rule::Krum,
+    f: 1,
+    frac_bits: acfa_receipt::FRAC_BITS,
+};
+
 fn vectors() -> Value {
     let raw = include_str!("golden/vectors_l2.json");
     serde_json::from_str(raw).expect("golden vectors parse")
@@ -81,6 +92,7 @@ fn the_signed_message_matches_the_reference() {
         assert_eq!(
             contrib_msg(
                 &h32(&c["ctx"]),
+                &PARAMS_DEFAULT,
                 rnd,
                 c["node_id"].as_u64().unwrap() as u32,
                 &th
@@ -156,12 +168,19 @@ fn signatures_and_contribution_leaves_match_the_reference() {
             "tensor hash, node {node_id}"
         );
 
-        let sig = id.sign(&contrib_msg(&golden_ctx(), rnd, id.node_id, &th));
+        let sig = id.sign(&contrib_msg(
+            &golden_ctx(),
+            &PARAMS_DEFAULT,
+            rnd,
+            id.node_id,
+            &th,
+        ));
         assert_eq!(sig.to_vec(), hx(&c["sig"]), "signature, node {node_id}");
 
         let ours = Contribution {
             ctx: golden_ctx(),
             sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+            params: PARAMS_DEFAULT,
             rnd,
             node_id,
             tensor,
@@ -179,6 +198,7 @@ fn the_equivocation_proof_matches_the_reference_byte_for_byte() {
     let ours = EquivProof {
         ctx: golden_ctx(),
         sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+        params: PARAMS_DEFAULT,
         rnd: p["rnd"].as_u64().unwrap(),
         node_id: p["node_id"].as_u64().unwrap() as u32,
         h1: h32(&p["h1"]),
@@ -197,11 +217,29 @@ fn the_equivocation_proof_matches_the_reference_byte_for_byte() {
     let a = (ours.h1, ours.sig1);
     let b = (ours.h2, ours.sig2);
     assert_eq!(
-        EquivProof::canonical(ours.ctx, ours.rnd, ours.node_id, a, b).leaf(),
+        EquivProof::canonical(
+            ours.ctx,
+            acfa_receipt::identity::PreimageVersion::V2,
+            PARAMS_DEFAULT,
+            ours.rnd,
+            ours.node_id,
+            a,
+            b
+        )
+        .leaf(),
         ours.leaf()
     );
     assert_eq!(
-        EquivProof::canonical(ours.ctx, ours.rnd, ours.node_id, b, a).leaf(),
+        EquivProof::canonical(
+            ours.ctx,
+            acfa_receipt::identity::PreimageVersion::V2,
+            PARAMS_DEFAULT,
+            ours.rnd,
+            ours.node_id,
+            b,
+            a
+        )
+        .leaf(),
         ours.leaf()
     );
 }
@@ -224,6 +262,7 @@ fn every_scenario_reproduces_the_reference_state_root_admitted_set_and_aggregate
     let mk = |c: &Value| Contribution {
         ctx: golden_ctx(),
         sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+        params: PARAMS_DEFAULT,
         rnd: c["rnd"].as_u64().unwrap(),
         node_id: c["node_id"].as_u64().unwrap() as u32,
         tensor: i64s(&c["tensor"]),
@@ -241,6 +280,7 @@ fn every_scenario_reproduces_the_reference_state_root_admitted_set_and_aggregate
     let proof = EquivProof {
         ctx: golden_ctx(),
         sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+        params: PARAMS_DEFAULT,
         rnd: pj["rnd"].as_u64().unwrap(),
         node_id: pj["node_id"].as_u64().unwrap() as u32,
         h1: h32(&pj["h1"]),

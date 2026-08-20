@@ -21,6 +21,17 @@ use acfa_receipt::identity::{contrib_msg, Identity, Pki};
 use acfa_receipt::{encode, Contribution, Receipt, Rule, State};
 use std::io::Write;
 
+/// Krum at `f = 1` on this build's fixed-point scale.
+///
+/// A NAMED FIXTURE, NOT A DEFAULT. A contribution signed under different round parameters is
+/// filtered out of the round by `Receipt::issue`, exactly as a foreign `ctx` is, so a test that
+/// needs other parameters has to say so rather than inherit these silently.
+const PARAMS_DEFAULT: acfa_receipt::RoundParams = acfa_receipt::RoundParams {
+    rule: acfa_receipt::Rule::Krum,
+    f: 1,
+    frac_bits: acfa_receipt::FRAC_BITS,
+};
+
 fn build(ids: &[Identity], equivocate: bool) -> (State, Pki) {
     let pki: Pki = ids.iter().map(|i| (i.node_id, i.public())).collect();
     let mut state = State::new();
@@ -28,6 +39,7 @@ fn build(ids: &[Identity], equivocate: bool) -> (State, Pki) {
         let t = vec![i as i64 * 3, i as i64 + 1, 7 - i as i64];
         let sig = id.sign(&contrib_msg(
             &acfa_receipt::identity::NO_CONTEXT,
+            &PARAMS_DEFAULT,
             1,
             id.node_id,
             &h(&enc_tensor(&t)),
@@ -36,6 +48,7 @@ fn build(ids: &[Identity], equivocate: bool) -> (State, Pki) {
             Contribution {
                 ctx: acfa_receipt::identity::NO_CONTEXT,
                 sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+                params: PARAMS_DEFAULT,
                 rnd: 1,
                 node_id: id.node_id,
                 tensor: t,
@@ -48,6 +61,7 @@ fn build(ids: &[Identity], equivocate: bool) -> (State, Pki) {
         let t = vec![9999, 9999, 9999];
         let sig = ids[0].sign(&contrib_msg(
             &acfa_receipt::identity::NO_CONTEXT,
+            &PARAMS_DEFAULT,
             1,
             ids[0].node_id,
             &h(&enc_tensor(&t)),
@@ -56,6 +70,7 @@ fn build(ids: &[Identity], equivocate: bool) -> (State, Pki) {
             Contribution {
                 ctx: acfa_receipt::identity::NO_CONTEXT,
                 sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+                params: PARAMS_DEFAULT,
                 rnd: 1,
                 node_id: ids[0].node_id,
                 tensor: t,
@@ -114,6 +129,7 @@ fn main() {
         let t = vec![9999, 9999, 9999];
         let sig = ids[0].sign(&contrib_msg(
             &acfa_receipt::identity::NO_CONTEXT,
+            &PARAMS_DEFAULT,
             1,
             ids[0].node_id,
             &h(&enc_tensor(&t)),
@@ -122,6 +138,7 @@ fn main() {
         st2.add_contribution(Contribution {
             ctx: acfa_receipt::identity::NO_CONTEXT,
             sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+            params: PARAMS_DEFAULT,
             rnd: 1,
             node_id: ids[0].node_id,
             tensor: t,

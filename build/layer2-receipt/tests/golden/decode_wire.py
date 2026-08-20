@@ -66,7 +66,7 @@ class R:
         return s.i == len(s.b)
 
 
-def leaf_c(ctx, rnd, node_id, tensor, sig):
+def leaf_c(ctx, params, rnd, node_id, tensor, sig):
     """`C|` [|| ctx] || rnd || node_id || sha256(enc_tensor) || sig, per the leaf() doc comment.
 
     enc_tensor is the decimal rendering of each value joined by `|`, per hash.rs.
@@ -81,6 +81,8 @@ def leaf_c(ctx, rnd, node_id, tensor, sig):
     enc = "|".join(str(v) for v in tensor).encode()
     th = hashlib.sha256(enc).digest()
     b = b"C|" + (ctx if ctx is not None else b"")
+    if params is not None:
+        b += params
     b += rnd.to_bytes(8, "big") + node_id.to_bytes(4, "big") + th + sig
     return hashlib.sha256(b).digest()
 
@@ -101,6 +103,8 @@ def decode(b):
     if rk not in RULES:
         raise ValueError(f"unknown rule {rk}")
     rule = RULES[rk]
+    # v2 carries the fixed-point scale; v1 predates the field and was always Q16.16.
+    frac_bits = r.u32() if wire == 2 else 16
 
     npki = r.u32()
     pki = []
@@ -113,6 +117,10 @@ def decode(b):
         last = i
         pki.append(i)
 
+    # The fixed-width parameter block a v2 leaf commits to, in declaration order.
+    params_blob = (bytes([rk]) + f.to_bytes(4, "big") + frac_bits.to_bytes(4, "big")
+                   if wire == 2 else None)
+
     ncon = r.u32()
     cons = []
     lastleaf = None
@@ -122,7 +130,7 @@ def decode(b):
         tl = r.u32()
         tensor = [r.i64() for _ in range(tl)]
         sig = r.take(64)
-        lf = leaf_c(ctx, rnd, nid, tensor, sig)
+        lf = leaf_c(ctx, params_blob, rnd, nid, tensor, sig)
         if lastleaf is not None and lf <= lastleaf:
             raise ValueError("contributions not ascending by leaf")
         lastleaf = lf
@@ -148,7 +156,7 @@ def decode(b):
         raise ValueError(f"presence byte must be 0 or 1, got {present}")
     if not r.done():
         raise ValueError(f"trailing bytes: {len(b) - r.i}")
-    return dict(wire=wire, ctx=(ctx.hex() if ctx is not None else None),
+    return dict(wire=wire, ctx=(ctx.hex() if ctx is not None else None), frac_bits=frac_bits,
                 round=round_, f=f, rule=rule, pki_n=len(pki), contribs=len(cons),
                 proofs=nprf, state_root=sr.hex(), output_root=orr.hex(), agg=agg)
 

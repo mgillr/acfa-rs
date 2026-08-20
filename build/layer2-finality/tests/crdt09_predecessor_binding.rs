@@ -10,6 +10,17 @@ use acfa_receipt::hash::{enc_tensor, h};
 use acfa_receipt::identity::{contrib_msg, Identity, Pki};
 use acfa_receipt::{Contribution, State};
 
+/// Krum at `f = 1` on this build's fixed-point scale.
+///
+/// A NAMED FIXTURE, NOT A DEFAULT. A contribution signed under different round parameters is
+/// filtered out of the round by `Receipt::issue`, exactly as a foreign `ctx` is, so a test that
+/// needs other parameters has to say so rather than inherit these silently.
+const PARAMS_DEFAULT: acfa_receipt::RoundParams = acfa_receipt::RoundParams {
+    rule: acfa_receipt::Rule::Krum,
+    f: 1,
+    frac_bits: acfa_receipt::FRAC_BITS,
+};
+
 fn room(n: u32) -> (Vec<Identity>, Pki) {
     let ids: Vec<Identity> = (1..=n)
         .map(|i| Identity::from_secret(i, &[i as u8; 32]))
@@ -22,11 +33,13 @@ fn leaf(a: &Identity, t: &[i64]) -> [u8; 32] {
     Contribution {
         ctx: acfa_receipt::identity::NO_CONTEXT,
         sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+        params: PARAMS_DEFAULT,
         rnd: 1,
         node_id: a.node_id,
         tensor: t.to_vec(),
         sig: a.sign(&contrib_msg(
             &acfa_receipt::identity::NO_CONTEXT,
+            &PARAMS_DEFAULT,
             1,
             a.node_id,
             &th,
@@ -95,11 +108,13 @@ fn the_certificate_preimage_does_not_yet_carry_the_anchor() {
             Contribution {
                 ctx: acfa_receipt::identity::NO_CONTEXT,
                 sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+                params: PARAMS_DEFAULT,
                 rnd: 1,
                 node_id: id.node_id,
                 tensor: vec![1, 2],
                 sig: id.sign(&contrib_msg(
                     &acfa_receipt::identity::NO_CONTEXT,
+                    &PARAMS_DEFAULT,
                     1,
                     id.node_id,
                     &h(&enc_tensor(&[1, 2])),

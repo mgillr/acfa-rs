@@ -15,21 +15,53 @@ use acfa_receipt::identity::{contrib_msg, Identity, Pki};
 use acfa_receipt::state::{derivable_proof_bound, MAX_MERGE_CONTRIBUTIONS, MAX_MERGE_PROOFS};
 use acfa_receipt::{Contribution, Invalid, Policy, Receipt, Rule, State};
 
-fn signed(id: &Identity, rnd: u64, t: &[i64]) -> Contribution {
+/// Krum at `f = 1` on this build's fixed-point scale.
+///
+/// A NAMED FIXTURE, NOT A DEFAULT. A contribution signed under different round parameters is
+/// filtered out of the round by `Receipt::issue`, exactly as a foreign `ctx` is, so a test that
+/// needs other parameters has to say so rather than inherit these silently.
+/// Krum at f = 0, for the tests whose round is issued with that bound. Signing under the wrong
+/// bound would have `Receipt::issue` filter every contribution out, so the test would fail on an
+/// empty round rather than on the thing it is about.
+const KRUM_F0: acfa_receipt::RoundParams = acfa_receipt::RoundParams {
+    rule: acfa_receipt::Rule::Krum,
+    f: 0,
+    frac_bits: acfa_receipt::FRAC_BITS,
+};
+
+const PARAMS_DEFAULT: acfa_receipt::RoundParams = acfa_receipt::RoundParams {
+    rule: acfa_receipt::Rule::Krum,
+    f: 1,
+    frac_bits: acfa_receipt::FRAC_BITS,
+};
+
+fn signed_with(
+    id: &Identity,
+    params: acfa_receipt::RoundParams,
+    rnd: u64,
+    t: &[i64],
+) -> Contribution {
     let th = h(&enc_tensor(t));
     Contribution {
         ctx: acfa_receipt::identity::NO_CONTEXT,
         sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+        params,
         rnd,
         node_id: id.node_id,
         tensor: t.to_vec(),
         sig: id.sign(&contrib_msg(
             &acfa_receipt::identity::NO_CONTEXT,
+            &params,
             rnd,
             id.node_id,
             &th,
         )),
     }
+}
+
+/// Krum at f = 1, the common case in this file.
+fn signed(id: &Identity, rnd: u64, t: &[i64]) -> Contribution {
+    signed_with(id, PARAMS_DEFAULT, rnd, t)
 }
 
 /// The bound arithmetic: a single (round,node) group of size k contributes k(k-1)/2.
@@ -58,7 +90,7 @@ fn verify_refuses_a_receipt_that_would_derive_too_much() {
     // 130 same-(round,node) contributions, distinct tensors -> 8385 derivable pairs > 8192.
     let mut s = State::new();
     for i in 0..130i64 {
-        s.add_contribution(signed(&id, 1, &[i, 0]));
+        s.add_contribution(signed_with(&id, KRUM_F0, 1, &[i, 0]));
     }
     let receipt = Receipt::issue(
         &s,
@@ -137,6 +169,7 @@ fn verify_refuses_more_contributions_than_it_will_scan() {
     let th = h(&enc_tensor(&t));
     let sig = base.sign(&contrib_msg(
         &acfa_receipt::identity::NO_CONTEXT,
+        &PARAMS_DEFAULT,
         1,
         base.node_id,
         &th,
@@ -152,6 +185,7 @@ fn verify_refuses_more_contributions_than_it_will_scan() {
         .map(|id| Contribution {
             ctx: acfa_receipt::identity::NO_CONTEXT,
             sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+            params: PARAMS_DEFAULT,
             rnd: 1,
             node_id: id,
             tensor: t.to_vec(),
@@ -168,6 +202,7 @@ fn verify_refuses_more_contributions_than_it_will_scan() {
         round: 1,
         f: 0,
         rule: Rule::Krum,
+        frac_bits: acfa_receipt::FRAC_BITS,
         pki: pki.clone(),
         contributions,
         proofs: Vec::new(),

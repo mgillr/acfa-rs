@@ -15,16 +15,43 @@ use acfa_receipt::hash::{enc_tensor, h};
 use acfa_receipt::identity::{contrib_msg, Identity, Pki};
 use acfa_receipt::{Contribution, Policy, Receipt, Rule, State};
 
-fn signed(id: &Identity, rnd: u64, t: &[i64]) -> Contribution {
+/// Krum at `f = 1` on this build's fixed-point scale.
+///
+/// A NAMED FIXTURE, NOT A DEFAULT. A contribution signed under different round parameters is
+/// filtered out of the round by `Receipt::issue`, exactly as a foreign `ctx` is, so a test that
+/// needs other parameters has to say so rather than inherit these silently.
+/// Krum at f = 0, for the tests issued with that bound. Signing under the wrong bound has
+/// `Receipt::issue` filter every contribution out, so the test would fail on an empty receipt
+/// instead of on the property it is about.
+const KRUM_F0: acfa_receipt::RoundParams = acfa_receipt::RoundParams {
+    rule: acfa_receipt::Rule::Krum,
+    f: 0,
+    frac_bits: acfa_receipt::FRAC_BITS,
+};
+
+const PARAMS_DEFAULT: acfa_receipt::RoundParams = acfa_receipt::RoundParams {
+    rule: acfa_receipt::Rule::Krum,
+    f: 1,
+    frac_bits: acfa_receipt::FRAC_BITS,
+};
+
+fn signed_with(
+    id: &Identity,
+    params: acfa_receipt::RoundParams,
+    rnd: u64,
+    t: &[i64],
+) -> Contribution {
     let th = h(&enc_tensor(t));
     Contribution {
         ctx: acfa_receipt::identity::NO_CONTEXT,
         sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+        params,
         rnd,
         node_id: id.node_id,
         tensor: t.to_vec(),
         sig: id.sign(&contrib_msg(
             &acfa_receipt::identity::NO_CONTEXT,
+            &params,
             rnd,
             id.node_id,
             &th,
@@ -59,6 +86,11 @@ fn fixture() -> (Receipt, Pki) {
 }
 
 /// The leaf is byte-identical, which is WHY everything downstream of it survives.
+/// Krum at f = 1.
+fn signed(id: &Identity, rnd: u64, t: &[i64]) -> Contribution {
+    signed_with(id, PARAMS_DEFAULT, rnd, t)
+}
+
 #[test]
 fn a_redacted_leaf_is_byte_identical_to_the_full_leaf() {
     let (r, _) = fixture();
@@ -130,9 +162,9 @@ fn the_redacted_artefact_contains_no_plaintext_vector() {
     // A value no hash, length, id or round could coincidentally produce.
     const SECRET: i64 = 606_060_606;
     let mut s = State::new();
-    s.deliver(signed(&id, 1, &[SECRET, SECRET + 1]), &pki);
-    s.deliver(signed(&other, 1, &[7, 8]), &pki);
-    s.deliver(signed(&third, 1, &[9, 10]), &pki);
+    s.deliver(signed_with(&id, KRUM_F0, 1, &[SECRET, SECRET + 1]), &pki);
+    s.deliver(signed_with(&other, KRUM_F0, 1, &[7, 8]), &pki);
+    s.deliver(signed_with(&third, KRUM_F0, 1, &[9, 10]), &pki);
     let r = Receipt::issue(
         &s,
         acfa_receipt::identity::NO_CONTEXT,
@@ -278,9 +310,12 @@ fn the_encoded_redacted_bytes_contain_no_plaintext_vector() {
     let vec_b: Vec<i64> = (0..64).map(|k| 7 + k).collect();
     let vec_c: Vec<i64> = (0..64).map(|k| 9 + k).collect();
     let mut s = State::new();
-    s.deliver(signed(&ids[0], 1, &vec_a), &pki);
-    s.deliver(signed(&ids[1], 1, &vec_b), &pki);
-    s.deliver(signed(&ids[2], 1, &vec_c), &pki);
+    // ALL THREE under the round's own bound. Converting only the first left a one-contribution
+    // round whose aggregate simply IS the secret vector, so the redacted artefact echoed it in
+    // `claimed_aggregate` and the no-plaintext assertion failed for the right reason.
+    s.deliver(signed_with(&ids[0], KRUM_F0, 1, &vec_a), &pki);
+    s.deliver(signed_with(&ids[1], KRUM_F0, 1, &vec_b), &pki);
+    s.deliver(signed_with(&ids[2], KRUM_F0, 1, &vec_c), &pki);
     let r = Receipt::issue(
         &s,
         acfa_receipt::identity::NO_CONTEXT,

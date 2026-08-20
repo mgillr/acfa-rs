@@ -33,6 +33,17 @@ use acfa_receipt::hash::{enc_tensor, h};
 use acfa_receipt::identity::{contrib_msg, Identity, Pki};
 use acfa_receipt::{Invalid, Policy, Receipt, Rule, State};
 
+/// Krum at `f = 1` on this build's fixed-point scale.
+///
+/// A NAMED FIXTURE, NOT A DEFAULT. A contribution signed under different round parameters is
+/// filtered out of the round by `Receipt::issue`, exactly as a foreign `ctx` is, so a test that
+/// needs other parameters has to say so rather than inherit these silently.
+const PARAMS_DEFAULT: acfa_receipt::RoundParams = acfa_receipt::RoundParams {
+    rule: acfa_receipt::Rule::Krum,
+    f: 1,
+    frac_bits: acfa_receipt::FRAC_BITS,
+};
+
 fn room(n: u32) -> (Vec<Identity>, Pki) {
     let ids: Vec<Identity> = (1..=n)
         .map(|i| Identity::from_secret(i, &[i as u8; 32]))
@@ -46,11 +57,13 @@ fn contrib(a: &Identity, rnd: u64, t: &[i64]) -> Contribution {
     Contribution {
         ctx: acfa_receipt::identity::NO_CONTEXT,
         sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+        params: PARAMS_DEFAULT,
         rnd,
         node_id: a.node_id,
         tensor: t.to_vec(),
         sig: a.sign(&contrib_msg(
             &acfa_receipt::identity::NO_CONTEXT,
+            &PARAMS_DEFAULT,
             rnd,
             a.node_id,
             &th,
@@ -169,8 +182,11 @@ fn acfa_verify_names_the_rule_and_flags_when_it_is_not_pinned() {
         out.contains("Krum"),
         "the receipt's rule must appear: {out}"
     );
+    // Match the RULE's flag specifically. v0.4.0 added a second NOT PINNED line for the
+    // context, so a bare substring search would pass on the wrong one and this test would
+    // stop saying anything about the rule at all.
     assert!(
-        out.contains("NOT PINNED"),
+        out.contains("rule; pass --rule to require the rule you expect"),
         "unpinned rule must be flagged: {out}"
     );
 
@@ -178,7 +194,13 @@ fn acfa_verify_names_the_rule_and_flags_when_it_is_not_pinned() {
     let out = run(&["--rule=krum"]);
     assert!(out.contains("Krum"));
     assert!(
-        !out.contains("NOT PINNED"),
+        !out.contains("rule; pass --rule to require the rule you expect"),
         "a pinned rule must not be flagged: {out}"
+    );
+    // And the context flag is still present, because --ctx was NOT passed -- which proves the
+    // assertion above is discriminating between the two flags rather than just finding neither.
+    assert!(
+        out.contains("context; pass --ctx to require the event you expect"),
+        "the context flag must still appear when only --rule was pinned: {out}"
     );
 }

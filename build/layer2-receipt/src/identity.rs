@@ -88,7 +88,7 @@ pub fn verify(pk: &PubKey, msg: &[u8], sig: &Sig) -> bool {
 ///
 /// DOMAIN SEPARATION IS LOAD-BEARING AND THE ROUND IS INSIDE THE SIGNATURE. Without
 /// the round, a signature harvested in round r replays in round r+1 as a fresh
-/// contribution the victim never made. Without the `ACFA-CONTRIB` tag, a signature
+/// contribution the victim never made. Without the `ACFA-CONTRIB2` tag, a signature
 /// produced for any other purpose by the same key could be replayed as a contribution.
 ///
 /// **THE CONTEXT AND THE NODE ID ARE INSIDE THE SIGNATURE FOR THE SAME REASON, AND THEIR
@@ -110,14 +110,71 @@ pub fn verify(pk: &PubKey, msg: &[u8], sig: &Sig) -> bool {
 ///
 /// The tag moved to `ACFA-CONTRIB2|` so a v1 signature can never be mistaken for a v2 one in
 /// either direction.
-pub fn contrib_msg(ctx: &Context, rnd: u64, node_id: u32, tensor_hash: &[u8; 32]) -> Vec<u8> {
-    let mut m = Vec::with_capacity(14 + 32 + 8 + 4 + 32);
+pub fn contrib_msg(
+    ctx: &Context,
+    params: &RoundParams,
+    rnd: u64,
+    node_id: u32,
+    tensor_hash: &[u8; 32],
+) -> Vec<u8> {
+    let mut m = Vec::with_capacity(14 + 32 + 1 + 4 + 4 + 8 + 4 + 32);
     m.extend_from_slice(b"ACFA-CONTRIB2|");
     m.extend_from_slice(ctx);
+    m.push(params.rule.as_wire());
+    m.extend_from_slice(&params.f.to_be_bytes());
+    m.extend_from_slice(&params.frac_bits.to_be_bytes());
     m.extend_from_slice(&rnd.to_be_bytes());
     m.extend_from_slice(&node_id.to_be_bytes());
     m.extend_from_slice(tensor_hash);
     m
+}
+
+/// **The arithmetic and robustness parameters a contribution was made UNDER.**
+///
+/// A signature that binds only the payload says what a node sent. It does not say what the node
+/// agreed to. These three fields are what turn a contribution from a loose vector into a
+/// consented act, and each closes a distinct hole.
+///
+/// * **`frac_bits` — the fixed-point scale (#77).** `FRAC_BITS` is a compile-time constant, so two
+///   replicas built at different scales produce different aggregates from the same real-valued
+///   inputs, both internally consistent, both verifying, silently disagreeing about what the
+///   numbers MEAN. That is the exact failure this project exists to make impossible, and the
+///   cross-architecture fingerprint does not catch it: each build produces its own self-consistent
+///   fingerprint. Binding the scale turns a silent numeric disagreement into a signature that does
+///   not verify. It matters now rather than later because the scale is about to become a
+///   deployment parameter -- ±32,768 refuses a large price outright, and the Lemma 12 certificate
+///   is measurably ~8 fractional bits short of firing at realistic dimension. Carry it BEFORE it
+///   becomes configurable, not after.
+/// * **`rule` and `f` — the aggregation semantics.** Without them an issuer can collect
+///   contributions offered for one round and present them in a round with a different rule or a
+///   different fault bound. The receipt stays honest about what it computed, and the signatures
+///   still verify, so nothing is detectable -- yet a node is recorded as having participated in an
+///   aggregation it never consented to. Binding them costs nothing that existed: a receipt already
+///   cannot be checked under a different bound, since `verify` refuses on `FaultBoundMismatch` and
+///   `RuleMismatch` before it reaches the arithmetic.
+///
+/// **Every field is fixed-width**, per the rule stated on [`Context`]: `rule` is one byte, `f` and
+/// `frac_bits` four each, big-endian. The concatenation stays injective, so no choice of parameters
+/// can re-cut the byte boundaries into a different `(ctx, params, round, node, tensor)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoundParams {
+    /// The aggregation rule this contribution was offered for.
+    pub rule: crate::resolve::Rule,
+    /// The fault bound the round is being run under.
+    pub f: u32,
+    /// The fixed-point scale the tensor is expressed in -- `acfa_aggregate::FRAC_BITS`.
+    pub frac_bits: u32,
+}
+
+impl RoundParams {
+    /// The parameters of a round run at this build's own scale.
+    pub fn new(rule: crate::resolve::Rule, f: u32) -> Self {
+        RoundParams {
+            rule,
+            f,
+            frac_bits: acfa_aggregate::FRAC_BITS,
+        }
+    }
 }
 
 /// Which signed preimage a signature was made over. See [`Contribution::sig_preimage`].
@@ -145,7 +202,7 @@ pub enum PreimageVersion {
 /// **THE RULE THAT MAKES IT SAFE, and any future field must meet it: every field of an ACFA signed
 /// preimage is FIXED-WIDTH.** Variable-length caller data enters only as a 32-byte hash. With
 /// fixed widths the concatenation is injective, so no choice of `ctx` can be made to collide with a
-/// different (ctx, round, node, tensor) by re-cutting the byte boundaries -- which is exactly the
+/// different (ctx, params, round, node, tensor) by re-cutting the byte boundaries -- which is exactly the
 /// attack a length-prefixed or delimiter-separated variable field would invite.
 ///
 /// A caller with no notion of context uses `NO_CONTEXT`, and should read its documentation first.
@@ -177,6 +234,14 @@ pub const NO_CONTEXT: Context = [0u8; 32];
 
 #[cfg(test)]
 mod tests {
+    /// Krum at `f = 1` on this build's scale. A NAMED fixture, not a default -- `Receipt::issue`
+    /// filters contributions whose parameters differ, so a test needing others must say so.
+    const PARAMS_DEFAULT: crate::identity::RoundParams = crate::identity::RoundParams {
+        rule: crate::resolve::Rule::Krum,
+        f: 1,
+        frac_bits: acfa_aggregate::FRAC_BITS,
+    };
+
     use super::*;
     use crate::hash::{enc_tensor, h};
 
@@ -195,7 +260,13 @@ mod tests {
     fn a_valid_signature_verifies_and_a_foreign_key_does_not() {
         let a = id(1);
         let b = id(2);
-        let m = contrib_msg(&NO_CONTEXT, 7, 1, &h(&enc_tensor(&[1, 2, 3])));
+        let m = contrib_msg(
+            &NO_CONTEXT,
+            &PARAMS_DEFAULT,
+            7,
+            1,
+            &h(&enc_tensor(&[1, 2, 3])),
+        );
         let s = a.sign(&m);
         assert!(verify(&a.public(), &m, &s));
         assert!(!verify(&b.public(), &m, &s), "another key must not verify");
@@ -207,14 +278,18 @@ mod tests {
         // present the same bytes as a round-8 contribution.
         let a = id(1);
         let th = h(&enc_tensor(&[9, 9]));
-        let s = a.sign(&contrib_msg(&NO_CONTEXT, 7, 1, &th));
+        let s = a.sign(&contrib_msg(&NO_CONTEXT, &PARAMS_DEFAULT, 7, 1, &th));
         assert!(verify(
             &a.public(),
-            &contrib_msg(&NO_CONTEXT, 7, 1, &th),
+            &contrib_msg(&NO_CONTEXT, &PARAMS_DEFAULT, 7, 1, &th),
             &s
         ));
         assert!(
-            !verify(&a.public(), &contrib_msg(&NO_CONTEXT, 8, 1, &th), &s),
+            !verify(
+                &a.public(),
+                &contrib_msg(&NO_CONTEXT, &PARAMS_DEFAULT, 8, 1, &th),
+                &s
+            ),
             "a round-7 signature must not verify as round 8"
         );
     }
@@ -222,7 +297,7 @@ mod tests {
     #[test]
     fn a_mangled_signature_is_refused_rather_than_panicking() {
         let a = id(1);
-        let m = contrib_msg(&NO_CONTEXT, 1, 1, &[0u8; 32]);
+        let m = contrib_msg(&NO_CONTEXT, &PARAMS_DEFAULT, 1, 1, &[0u8; 32]);
         let mut s = a.sign(&m);
         s[0] ^= 0xff;
         assert!(!verify(&a.public(), &m, &s));

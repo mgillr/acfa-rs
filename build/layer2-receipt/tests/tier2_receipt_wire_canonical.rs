@@ -70,6 +70,17 @@ use acfa_receipt::hash::{enc_tensor, h};
 use acfa_receipt::identity::{contrib_msg, Identity, Pki};
 use acfa_receipt::{decode, encode, Contribution, Policy, Receipt, Rule, State, WireError};
 
+/// Krum at `f = 1` on this build's fixed-point scale.
+///
+/// A NAMED FIXTURE, NOT A DEFAULT. A contribution signed under different round parameters is
+/// filtered out of the round by `Receipt::issue`, exactly as a foreign `ctx` is, so a test that
+/// needs other parameters has to say so rather than inherit these silently.
+const PARAMS_DEFAULT: acfa_receipt::RoundParams = acfa_receipt::RoundParams {
+    rule: acfa_receipt::Rule::Krum,
+    f: 1,
+    frac_bits: acfa_receipt::FRAC_BITS,
+};
+
 /// Every proof record is fixed width -- no length prefixes inside it -- which is what makes
 /// a record swap a pure reordering rather than a reshaping of the stream.
 const PROOF_REC: usize = 8 + 4 + 32 + 32 + 64 + 64; // rnd, node_id, h1, h2, sig1, sig2
@@ -79,7 +90,7 @@ const PROOF_REC: usize = 8 + 4 + 32 + 32 + 64 + 64; // rnd, node_id, h1, h2, sig
 /// The ctx term arrived in v0.4.0. The walk below is cross-checked against the receipt's own
 /// proof count and the trailing state root, which is why a stale HEAD failed loudly here
 /// instead of quietly walking into the middle of a signature.
-const HEAD: usize = 8 + 2 + 32 + 8 + 4 + 1;
+const HEAD: usize = 8 + 2 + 32 + 8 + 4 + 1 + 4; // + frac_bits(4), added in v0.4.0
 
 fn ident(n: u32) -> Identity {
     Identity::from_secret(n, &[n as u8; 32])
@@ -90,11 +101,13 @@ fn contrib(a: &Identity, rnd: u64, t: &[i64]) -> Contribution {
     Contribution {
         ctx: acfa_receipt::identity::NO_CONTEXT,
         sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+        params: PARAMS_DEFAULT,
         rnd,
         node_id: a.node_id,
         tensor: t.to_vec(),
         sig: a.sign(&contrib_msg(
             &acfa_receipt::identity::NO_CONTEXT,
+            &PARAMS_DEFAULT,
             rnd,
             a.node_id,
             &th,

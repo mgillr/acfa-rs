@@ -48,11 +48,20 @@ fn main() {
     let mut out = Vec::new();
     for (name, n, ncon, rule, f, rnd) in scenarios {
         let pki: Pki = ids[..n].iter().map(|i| (i.node_id, i.public())).collect();
+        // SIGN UNDER THE SCENARIO'S OWN PARAMETERS, not a shared fixture. `Receipt::issue`
+        // filters contributions whose parameters differ from the round's, so signing every
+        // scenario under one default silently emptied the Bulyan and f=0 vectors.
+        let params = acfa_receipt::RoundParams {
+            rule,
+            f: f as u32,
+            frac_bits: acfa_receipt::FRAC_BITS,
+        };
         let mut st = State::new();
         for (i, id) in ids[..ncon].iter().enumerate() {
             let t = vec![(i as i64) * 3, (i as i64) + 1];
             let sig = id.sign(&contrib_msg(
                 &acfa_receipt::identity::NO_CONTEXT,
+                &params,
                 rnd,
                 id.node_id,
                 &h(&enc_tensor(&t)),
@@ -61,6 +70,7 @@ fn main() {
                 Contribution {
                     ctx: acfa_receipt::identity::NO_CONTEXT,
                     sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+                    params,
                     rnd,
                     node_id: id.node_id,
                     tensor: t,

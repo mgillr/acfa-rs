@@ -54,18 +54,23 @@
 //! ```
 //! use acfa_receipt::{Identity, Pki, Policy, Receipt, Rule, State, Contribution};
 //! use acfa_receipt::hash::{h, enc_tensor};
-//! use acfa_receipt::identity::{contrib_msg, PreimageVersion, NO_CONTEXT};
+//! use acfa_receipt::identity::{contrib_msg, PreimageVersion, RoundParams, NO_CONTEXT};
 //!
 //! let ids: Vec<Identity> = (1..=5).map(|n| Identity::from_secret(n, &[n as u8; 32])).collect();
 //! let pki: Pki = ids.iter().map(|i| (i.node_id, i.public())).collect();
 //!
+//! // The parameters this round runs under. They are inside every signature, so a contribution
+//! // offered for one rule, fault bound or fixed-point scale cannot be presented in another.
+//! let params = RoundParams { rule: Rule::Krum, f: 1, frac_bits: acfa_receipt::FRAC_BITS };
+//!
 //! let mut state = State::new();
 //! for (i, id) in ids.iter().enumerate() {
 //!     let t = vec![i as i64 * 3, i as i64 + 1];
-//!     let sig = id.sign(&contrib_msg(&NO_CONTEXT, 1, id.node_id, &h(&enc_tensor(&t))));
+//!     let sig = id.sign(&contrib_msg(&NO_CONTEXT, &params, 1, id.node_id, &h(&enc_tensor(&t))));
 //!     let c = Contribution {
 //!         ctx: NO_CONTEXT,
 //!         sig_preimage: PreimageVersion::V2,
+//!         params,
 //!         rnd: 1,
 //!         node_id: id.node_id,
 //!         tensor: t,
@@ -92,8 +97,11 @@ pub mod resolve;
 pub mod state;
 pub mod wire;
 
+/// Re-exported so a caller can name the scale a receipt is on without depending on
+/// `acfa-aggregate` directly, and without hardcoding 16 -- see [`RoundParams`] and #77.
+pub use acfa_aggregate::FRAC_BITS;
 pub use entry::{Contribution, EquivProof};
-pub use identity::{Identity, Pki, PubKey, Sig};
+pub use identity::{Identity, Pki, PubKey, RoundParams, Sig};
 pub use receipt::{
     Invalid, Policy, Receipt, SelfConsistent, Verified, DEFAULT_MAX_VERIFY_COORDINATES,
 };

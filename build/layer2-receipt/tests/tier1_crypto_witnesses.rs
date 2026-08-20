@@ -40,6 +40,17 @@ use acfa_receipt::hash::{enc_tensor, h};
 use acfa_receipt::identity::{contrib_msg, is_usable_pubkey, verify, Identity, Pki, PubKey};
 use acfa_receipt::{Contribution, EquivProof, State};
 
+/// Krum at `f = 1` on this build's fixed-point scale.
+///
+/// A NAMED FIXTURE, NOT A DEFAULT. A contribution signed under different round parameters is
+/// filtered out of the round by `Receipt::issue`, exactly as a foreign `ctx` is, so a test that
+/// needs other parameters has to say so rather than inherit these silently.
+const PARAMS_DEFAULT: acfa_receipt::RoundParams = acfa_receipt::RoundParams {
+    rule: acfa_receipt::Rule::Krum,
+    f: 1,
+    frac_bits: acfa_receipt::FRAC_BITS,
+};
+
 /// A 32-byte value `VerifyingKey::from_bytes` genuinely REJECTS -- not merely a weak key.
 /// Found by sweep, not by construction; see the module note.
 fn malformed_pubkey() -> PubKey {
@@ -91,11 +102,13 @@ fn signed(id: &Identity, rnd: u64, t: &[i64]) -> Contribution {
     Contribution {
         ctx: acfa_receipt::identity::NO_CONTEXT,
         sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+        params: PARAMS_DEFAULT,
         rnd,
         node_id: id.node_id,
         tensor: t.to_vec(),
         sig: id.sign(&contrib_msg(
             &acfa_receipt::identity::NO_CONTEXT,
+            &PARAMS_DEFAULT,
             rnd,
             id.node_id,
             &th,
@@ -129,6 +142,7 @@ fn admit_excludes_a_contribution_whose_signature_does_not_verify() {
     s.add_contribution(Contribution {
         ctx: acfa_receipt::identity::NO_CONTEXT,
         sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+        params: PARAMS_DEFAULT,
         rnd: 1,
         node_id: c.node_id,
         tensor: vec![99, 99],
@@ -159,12 +173,15 @@ fn real_proof(id: &Identity, rnd: u64) -> EquivProof {
     let h2 = h(&enc_tensor(&[3i64, 4]));
     EquivProof::canonical(
         acfa_receipt::identity::NO_CONTEXT,
+        acfa_receipt::identity::PreimageVersion::V2,
+        PARAMS_DEFAULT,
         rnd,
         id.node_id,
         (
             h1,
             id.sign(&contrib_msg(
                 &acfa_receipt::identity::NO_CONTEXT,
+                &PARAMS_DEFAULT,
                 rnd,
                 id.node_id,
                 &h1,
@@ -174,6 +191,7 @@ fn real_proof(id: &Identity, rnd: u64) -> EquivProof {
             h2,
             id.sign(&contrib_msg(
                 &acfa_receipt::identity::NO_CONTEXT,
+                &PARAMS_DEFAULT,
                 rnd,
                 id.node_id,
                 &h2,
@@ -248,6 +266,8 @@ fn a_fabricated_proof_does_not_convict_through_the_state_door() {
     let h2 = h(&enc_tensor(&[3i64, 4]));
     s.add_proof(EquivProof::canonical(
         acfa_receipt::identity::NO_CONTEXT,
+        acfa_receipt::identity::PreimageVersion::V2,
+        PARAMS_DEFAULT,
         1,
         victim.node_id,
         (h1, [0u8; 64]),

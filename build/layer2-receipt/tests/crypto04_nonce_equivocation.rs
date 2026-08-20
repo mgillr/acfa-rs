@@ -35,18 +35,29 @@ use acfa_receipt::hash::{enc_tensor, h};
 use acfa_receipt::identity::{contrib_msg, verify, Identity, Pki, Sig};
 use acfa_receipt::State;
 
+/// Krum at `f = 1` on this build's fixed-point scale.
+///
+/// A NAMED FIXTURE, NOT A DEFAULT. A contribution signed under different round parameters is
+/// filtered out of the round by `Receipt::issue`, exactly as a foreign `ctx` is, so a test that
+/// needs other parameters has to say so rather than inherit these silently.
+const PARAMS_DEFAULT: acfa_receipt::RoundParams = acfa_receipt::RoundParams {
+    rule: acfa_receipt::Rule::Krum,
+    f: 1,
+    frac_bits: acfa_receipt::FRAC_BITS,
+};
+
 /// Node 1 = `Identity::from_secret(1, &[1; 32])`, round 1, tensor `[1, 2]`, `NO_CONTEXT`.
 /// Two distinct valid signatures over the one `contrib_msg` preimage.
 ///
 /// REGENERATED IN v0.4.0. The v1 preimage was `ACFA-CONTRIB|round|tensor_hash` (54 bytes); the
-/// v2 preimage binds the context and the node id as well (90 bytes), so the old constants went
+/// v2 preimage binds the context, node id AND the round parameters (99 bytes), so old constants go
 /// stale exactly as the header comment predicted. `fixtures_are_still_live` caught it and named
 /// the remedy; these were re-derived out-of-tree with a chosen-nonce signer and are re-validated
 /// against this crate's own verifier on every run.
-const SIG_A: &str = "d5978fe3ced096efa378cb6681f161e03a0db1443a00112b8fb1c7096ce63820\
-                     ec4cfec8881c0bb58a61428b06871fc09802a6c1b1bcf3f83f2a88ac000d5209";
-const SIG_B: &str = "20af240ecdd578c608a9dfb7e868fe0e0b4e9284ff41750d9d44b5620bf0fba3\
-                     87eb6d2a94bbe3651cb1b2cde4d2f59c5edd0d99423f4f4306470ff18c9a240e";
+const SIG_A: &str = "abcfd403e8bc338fd93d6bc7dbd3326100a6cf2a15a4bae018065b35bc164e6b\
+                     c569300033e9c6bbf58080865315ea9a891a32f11a0a533a71fee76e0d44120a";
+const SIG_B: &str = "d483c814057859662fbb04dec0cd61c289407a2af2bf887d9f907639dc5eabd6\
+                     677999217f02874950a523a7af81597a641c73b33961e97fb0571b5b95f65a03";
 
 fn unhex64(s: &str) -> Sig {
     let mut out = [0u8; 64];
@@ -61,6 +72,7 @@ fn setup() -> (Identity, Pki, Vec<u8>) {
     let pki: Pki = [(1u32, a.public())].into_iter().collect();
     let msg = contrib_msg(
         &acfa_receipt::identity::NO_CONTEXT,
+        &PARAMS_DEFAULT,
         1,
         1,
         &h(&enc_tensor(&[1i64, 2i64])),
@@ -72,6 +84,7 @@ fn contrib(sig: Sig) -> Contribution {
     Contribution {
         ctx: acfa_receipt::identity::NO_CONTEXT,
         sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+        params: PARAMS_DEFAULT,
         rnd: 1,
         node_id: 1,
         tensor: vec![1, 2],
@@ -89,7 +102,7 @@ fn fixtures_are_still_live() {
     assert!(
         verify(&a.public(), &msg, &sa) && verify(&a.public(), &msg, &sb),
         "FIXTURES ARE STALE, NOT BROKEN: the constants in this file are signatures over \
-         contrib_msg(NO_CONTEXT, 1, 1, h(enc_tensor([1,2]))). One of those has changed, so \
+         contrib_msg over NO_CONTEXT, Krum/f=1/frac=16, round 1, node 1, h(enc_tensor([1,2])). \
          the vectors no longer match the preimage. REGENERATE THEM against the new \
          definition -- this is not a failure of the crypto-04 fix."
     );
@@ -120,6 +133,7 @@ fn fixtures_are_still_live() {
     );
     let wrong_round = contrib_msg(
         &acfa_receipt::identity::NO_CONTEXT,
+        &PARAMS_DEFAULT,
         2,
         1,
         &h(&enc_tensor(&[1i64, 2i64])),

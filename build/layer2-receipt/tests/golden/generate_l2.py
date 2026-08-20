@@ -57,13 +57,16 @@ def node(i: int) -> A.Node:
 # Every golden is generated under a FIXED, NON-ZERO context so the vectors actually exercise
 # the ctx bytes. A zero context would let a Rust side that dropped ctx entirely still match.
 GOLDEN_CTX = bytes(range(32))
+# The round parameters the golden scenarios are signed under. Named, not defaulted: the preimage
+# and the leaf both commit to these, so a change here moves every vector.
+GOLDEN_PARAMS = A.RoundParams(rule="krum", f=1, frac_bits=A.Q_FRAC_BITS)
 
 
 def contrib(n: A.Node, rnd: int, tensor):
     t = tuple(tensor)
     th = A.H(A.enc_tensor(t))
-    return A.Contribution(ctx=GOLDEN_CTX, rnd=rnd, node_id=n.node_id, tensor=t,
-                          sig=n.sign(A.contrib_msg(GOLDEN_CTX, rnd, n.node_id, th)))
+    return A.Contribution(ctx=GOLDEN_CTX, params=GOLDEN_PARAMS, rnd=rnd, node_id=n.node_id, tensor=t,
+                          sig=n.sign(A.contrib_msg(GOLDEN_CTX, GOLDEN_PARAMS, rnd, n.node_id, th)))
 
 
 def main() -> int:
@@ -83,11 +86,11 @@ def main() -> int:
     ]
     out["contrib_msg"] = [
         {"ctx": hx(GOLDEN_CTX), "rnd": 0, "node_id": 0, "th": hx(b"\x00" * 32),
-         "hex": hx(A.contrib_msg(GOLDEN_CTX, 0, 0, b"\x00" * 32))},
+         "hex": hx(A.contrib_msg(GOLDEN_CTX, GOLDEN_PARAMS, 0, 0, b"\x00" * 32))},
         {"ctx": hx(GOLDEN_CTX), "rnd": 7, "node_id": 3, "th": hx(A.H(b"x")),
-         "hex": hx(A.contrib_msg(GOLDEN_CTX, 7, 3, A.H(b"x")))},
+         "hex": hx(A.contrib_msg(GOLDEN_CTX, GOLDEN_PARAMS, 7, 3, A.H(b"x")))},
         {"ctx": hx(GOLDEN_CTX), "rnd": 2**63 - 1, "node_id": 4294967295, "th": hx(A.H(b"y")),
-         "hex": hx(A.contrib_msg(GOLDEN_CTX, 2**63 - 1, 4294967295, A.H(b"y")))},
+         "hex": hx(A.contrib_msg(GOLDEN_CTX, GOLDEN_PARAMS, 2**63 - 1, 4294967295, A.H(b"y")))},
     ]
     # v1 retained: the preimage old receipts were signed over, pinned so the retained path
     # cannot drift. If this vector ever changes, every receipt in the world stops verifying.
@@ -139,7 +142,7 @@ def main() -> int:
     alt = contrib(nodes[0], 1, [999, 999, 999])
     (h1, s1), (h2, s2) = sorted([(cs[0].tensor_hash(), cs[0].sig),
                                  (alt.tensor_hash(), alt.sig)])
-    proof = A.EquivProof(GOLDEN_CTX, 1, 1, h1, h2, s1, s2)
+    proof = A.EquivProof(GOLDEN_CTX, GOLDEN_PARAMS, 1, 1, h1, h2, s1, s2)
     out["equivocation"] = {
         "alt": {"rnd": alt.rnd, "node_id": alt.node_id, "tensor": list(alt.tensor),
                 "sig": hx(alt.sig), "leaf": hx(alt.leaf())},

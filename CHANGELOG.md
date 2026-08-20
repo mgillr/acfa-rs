@@ -12,7 +12,7 @@ not track the tag; see the note under v0.2.0.
 fingerprint, printed by `cargo run --release --example digest` in `build/layer2-receipt`:
 
 ```
-701a05a332a539697b5415c6d35ca70ca327992a09a80e5c628081b3f890c287
+4664c321388267507c825b8e1b5ef6c2c082879bb871d2c0fff557d514b2fedf
 ```
 
 This value is byte-identical on every supported architecture including big-endian s390x. A change
@@ -46,11 +46,25 @@ correctly**, by evidence that authenticated perfectly.
 ### Fixed
 
 - **The signed preimage now binds the context and the node id.**
-  `ACFA-CONTRIB2|ctx|round|node_id|tensor_hash` (90 bytes), replacing
+  `ACFA-CONTRIB2|ctx|rule|f|frac_bits|round|node_id|tensor_hash` (99 bytes), replacing
   `ACFA-CONTRIB|round|tensor_hash` (54). `ctx` is an opaque, caller-defined 32-byte commitment
   the protocol never parses — a study id, a tenant id, a cohort hash, whatever the deployment
   means by "about". Equivocation detection is scoped to a single context, so two contributions
   made under different `ctx` values can no longer be paired.
+- **The preimage also binds the round parameters — rule, fault bound, and fixed-point scale
+  (closes #77).** `FRAC_BITS` was a compile-time constant carried nowhere, so two builds at
+  different scales produced different aggregates from identical real-valued inputs, both
+  internally consistent, both verifying, with nothing on the wire saying they disagreed. The
+  scale is now on the receipt and in every signature, and `Policy` refuses a mismatch **by name**
+  as `ScaleMismatch` rather than comparing numbers from two different grids. `rule` and `f` are
+  bound for the adjacent reason: without them an issuer can present contributions offered for one
+  aggregation in a round running another, and the signer is recorded as having consented to
+  something it never saw.
+- **A checker can now pin the context.** `Policy.ctx`, `Invalid::ContextMismatch`, and a `--ctx`
+  flag on `acfa-verify`. #79 made the ISSUER commit to a context and gave the CHECKER no way to
+  say which one it expected, so a receipt from another deployment sharing a PKI verified as
+  VERIFIED with nothing shown. `None` is still accepted — a checker may genuinely not know the
+  context — but it now prints NOT PINNED, exactly as an unpinned rule does.
 - **A new wire magic rather than a version bump.** `ACFA-R1` → `ACFA-R2` (and `ACFA-X1` →
   `ACFA-X2` for redacted receipts). v1 and v2 differ in what their signatures *mean*, not merely
   in layout, so the decoder must never be one branch away from applying v2 rules to v1 bytes.
@@ -63,7 +77,7 @@ correctly**, by evidence that authenticated perfectly.
 
 ```
 v0.1.0 - v0.3.0   bd13ba3209a940b2025368a63c546ffd59e2580a1b8aa7128cc9b423d1957e40
-v0.4.0            701a05a332a539697b5415c6d35ca70ca327992a09a80e5c628081b3f890c287
+v0.4.0            4664c321388267507c825b8e1b5ef6c2c082879bb871d2c0fff557d514b2fedf
 ```
 
 This is the only circumstance in which that value is permitted to move: a deliberate, documented
@@ -85,9 +99,6 @@ receipt v0.3.0 ever wrote.
 
 ### Known open
 
-- **#77** — `FRAC_BITS` is not part of the wire format, so a build compiled with a different
-  fixed-point scale reads another's receipts without complaint. Scheduled for the next preimage
-  change, together with the rule and `f` binding.
 - **#78** — every conviction shrinks the admitted set, which enlarges Lemma 12's `beta` and so
   makes certification harder. Honest-majority rounds with a convicted node may decline to certify.
 
@@ -227,7 +238,7 @@ closes the verifier-bound and composition defects found in round-3 review.
   bounding is work.
 
 ### Unchanged
-Cross-architecture fingerprint `701a05a3…`. No wire-format change in this release.
+Cross-architecture fingerprint `bd13ba32…`. No wire-format change in this release.
 
 ---
 

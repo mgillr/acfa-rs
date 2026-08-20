@@ -95,7 +95,7 @@ and armv7 (32-bit), ppc64le, and s390x (**big-endian**) under emulation.
 The big-endian row is the one that matters. A machine that lays out integers the other way
 round is where byte-identity breaks if it is going to. x86_64 little-endian and s390x
 big-endian produce the same SHA-256 over the full five-scenario fingerprint,
-`701a05a332a539697b5415c6d35ca70ca327992a09a80e5c628081b3f890c287`. Method and reproduction in
+`4664c321388267507c825b8e1b5ef6c2c082879bb871d2c0fff557d514b2fedf`. Method and reproduction in
 [`build/ARCHITECTURE-COVERAGE.md`](build/ARCHITECTURE-COVERAGE.md).
 
 ```mermaid
@@ -107,7 +107,7 @@ flowchart TB
   IN --> A4["i386 / armv7 (32-bit)"]
   IN --> A5["ppc64le"]
   IN --> A6["s390x (big-endian)"]
-  A1 --> H["Identical SHA-256 receipt<br/>701a05a3...f890c287"]
+  A1 --> H["Identical SHA-256 receipt<br/>4664c321...14b2fedf"]
   A2 --> H
   A3 --> H
   A4 --> H
@@ -136,7 +136,7 @@ the Python adapter, so `Cargo.toml` identifies the release; before v0.3.0 it did
 cd build/layer2-receipt && cargo run -q --release --example digest
 ```
 
-The comparable digest is `701a05a332a539697b5415c6d35ca70ca327992a09a80e5c628081b3f890c287` on
+The comparable digest is `4664c321388267507c825b8e1b5ef6c2c082879bb871d2c0fff557d514b2fedf` on
 every supported architecture, including big-endian s390x. It changes only on a deliberate,
 documented wire-version bump, and has done so exactly once: v0.1.0–v0.3.0 printed
 `bd13ba3209a940b2025368a63c546ffd59e2580a1b8aa7128cc9b423d1957e40`, and v0.4.0 moved it by
@@ -290,7 +290,7 @@ Receipts:
 ```rust
 use acfa_receipt::{Receipt, Policy, Rule, State};
 
-let receipt = Receipt::issue(&state, round, &pki, f, Rule::Krum);
+let receipt = Receipt::issue(&state, ctx, round, &pki, f, Rule::Krum);
 let bytes   = acfa_receipt::encode_checked(&receipt)?;  // refuses an f the wire cannot carry
 
 // Verification needs a policy you obtained independently, not the receipt's own.
@@ -323,7 +323,7 @@ let bytes    = acfa_receipt::wire::encode_redacted(&redacted);   // distinct mag
 let v        = redacted.verify(&Policy::new(trusted_pki, f))?;   // same admitted set, same convictions
 ```
 
-Lossless for verification, because a signature is over `contrib_msg(ctx, rnd, node_id, tensor_hash)` and a leaf
+Lossless for verification, because a signature is over `contrib_msg(ctx, params, rnd, node_id, tensor_hash)` and a leaf
 hashes the tensor *hash*, never the tensor -- and `EquivProof` was already plaintext-free. So
 authentication, the state root, admission and conviction all survive at full strength with the same
 answers. What it cannot do is re-execute the aggregate, which genuinely needs the vectors.
@@ -337,7 +337,7 @@ shrinks only for `d >= 4`.
 **Retiring settled rounds.** `State::merge` bounds the *live* contribution set, so a replica that
 never retires anything reaches that bound as a function of elapsed rounds and then fails every
 later merge permanently. `prune_through(round)` retires a round's contributions to conviction
-witnesses -- `(rnd, node_id, tensor_hash, sig)`, about 108 bytes -- exactly enough to still detect
+witnesses -- `(ctx, params, rnd, node_id, tensor_hash, sig)`, about 149 bytes -- exactly enough to still detect
 and still prove equivocation, so detection strength is unchanged rather than traded. It bounds the
 constant, not the growth: retention is still linear in rounds.
 

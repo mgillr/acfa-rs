@@ -29,6 +29,17 @@ use acfa_receipt::identity::{contrib_msg, Identity, Pki};
 use acfa_receipt::{Contribution, State};
 use std::collections::BTreeSet;
 
+/// Krum at `f = 1` on this build's fixed-point scale.
+///
+/// A NAMED FIXTURE, NOT A DEFAULT. A contribution signed under different round parameters is
+/// filtered out of the round by `Receipt::issue`, exactly as a foreign `ctx` is, so a test that
+/// needs other parameters has to say so rather than inherit these silently.
+const PARAMS_DEFAULT: acfa_receipt::RoundParams = acfa_receipt::RoundParams {
+    rule: acfa_receipt::Rule::Krum,
+    f: 1,
+    frac_bits: acfa_receipt::FRAC_BITS,
+};
+
 fn permutations(v: &[usize]) -> Vec<Vec<usize>> {
     if v.len() <= 1 {
         return vec![v.to_vec()];
@@ -58,6 +69,7 @@ fn main() {
             let t = vec![i as i64 * 3, i as i64 + 1, 7 - i as i64];
             let sig = id.sign(&contrib_msg(
                 &acfa_receipt::identity::NO_CONTEXT,
+                &PARAMS_DEFAULT,
                 1,
                 id.node_id,
                 &h(&enc_tensor(&t)),
@@ -65,6 +77,7 @@ fn main() {
             Contribution {
                 ctx: acfa_receipt::identity::NO_CONTEXT,
                 sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+                params: PARAMS_DEFAULT,
                 rnd: 1,
                 node_id: id.node_id,
                 tensor: t,

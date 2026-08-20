@@ -21,6 +21,17 @@ use acfa_receipt::hash::{enc_tensor, h};
 use acfa_receipt::identity::{contrib_msg, Identity, Pki};
 use acfa_receipt::{Contribution, Policy, Receipt, Rule, State};
 
+/// Krum at `f = 1` on this build's fixed-point scale.
+///
+/// A NAMED FIXTURE, NOT A DEFAULT. A contribution signed under different round parameters is
+/// filtered out of the round by `Receipt::issue`, exactly as a foreign `ctx` is, so a test that
+/// needs other parameters has to say so rather than inherit these silently.
+const PARAMS_DEFAULT: acfa_receipt::RoundParams = acfa_receipt::RoundParams {
+    rule: acfa_receipt::Rule::Krum,
+    f: 1,
+    frac_bits: acfa_receipt::FRAC_BITS,
+};
+
 /// One key, many ids: `contrib_msg` does not bind the node id, so a single signature is valid
 /// for every id the PKI points at that key. Keeps a 400-round test instant without weakening
 /// anything the tests actually assert.
@@ -37,6 +48,7 @@ fn round_batch(base: &Identity, n: u32, rnd: u64) -> State {
     let th = h(&enc_tensor(&t));
     let sig = base.sign(&contrib_msg(
         &acfa_receipt::identity::NO_CONTEXT,
+        &PARAMS_DEFAULT,
         rnd,
         base.node_id,
         &th,
@@ -45,6 +57,7 @@ fn round_batch(base: &Identity, n: u32, rnd: u64) -> State {
         s.add_contribution(Contribution {
             ctx: acfa_receipt::identity::NO_CONTEXT,
             sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+            params: PARAMS_DEFAULT,
             rnd,
             node_id: id,
             tensor: t.clone(),
@@ -122,11 +135,13 @@ fn a_late_equivocation_for_a_pruned_round_still_convicts() {
         Contribution {
             ctx: acfa_receipt::identity::NO_CONTEXT,
             sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+            params: PARAMS_DEFAULT,
             rnd,
             node_id: id.node_id,
             tensor: t.to_vec(),
             sig: id.sign(&contrib_msg(
                 &acfa_receipt::identity::NO_CONTEXT,
+                &PARAMS_DEFAULT,
                 rnd,
                 id.node_id,
                 &th,
@@ -172,11 +187,13 @@ fn pruning_does_not_move_a_receipt_root() {
         Contribution {
             ctx: acfa_receipt::identity::NO_CONTEXT,
             sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+            params: PARAMS_DEFAULT,
             rnd,
             node_id: id.node_id,
             tensor: t.to_vec(),
             sig: id.sign(&contrib_msg(
                 &acfa_receipt::identity::NO_CONTEXT,
+                &PARAMS_DEFAULT,
                 rnd,
                 id.node_id,
                 &th,

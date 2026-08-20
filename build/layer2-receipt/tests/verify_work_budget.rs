@@ -44,6 +44,17 @@ const _: () = assert!(
 );
 use acfa_receipt::identity::{contrib_msg, Identity, Pki};
 use acfa_receipt::state::{derivable_proof_bound, MAX_MERGE_CONTRIBUTIONS, MAX_MERGE_PROOFS};
+
+/// Krum at `f = 1` on this build's fixed-point scale.
+///
+/// A NAMED FIXTURE, NOT A DEFAULT. A contribution signed under different round parameters is
+/// filtered out of the round by `Receipt::issue`, exactly as a foreign `ctx` is, so a test that
+/// needs other parameters has to say so rather than inherit these silently.
+const PARAMS_DEFAULT: acfa_receipt::RoundParams = acfa_receipt::RoundParams {
+    rule: acfa_receipt::Rule::Krum,
+    f: 1,
+    frac_bits: acfa_receipt::FRAC_BITS,
+};
 use acfa_receipt::{
     Contribution, Invalid, Policy, Receipt, Rule, State, DEFAULT_MAX_VERIFY_COORDINATES,
 };
@@ -73,6 +84,7 @@ fn attacker_receipt(n: u32, d: usize) -> (Receipt, Pki) {
             .collect();
         let sig = id.sign(&contrib_msg(
             &acfa_receipt::identity::NO_CONTEXT,
+            &PARAMS_DEFAULT,
             1,
             id.node_id,
             &h(&enc_tensor(&t)),
@@ -80,6 +92,7 @@ fn attacker_receipt(n: u32, d: usize) -> (Receipt, Pki) {
         state.add_contribution(Contribution {
             ctx: acfa_receipt::identity::NO_CONTEXT,
             sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+            params: PARAMS_DEFAULT,
             rnd: 1,
             node_id: id.node_id,
             tensor: t,

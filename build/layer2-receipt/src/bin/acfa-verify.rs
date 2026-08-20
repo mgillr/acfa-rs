@@ -108,7 +108,7 @@ fn flag_value(args: &[String], name: &str) -> Option<String> {
 }
 
 const USAGE: &str = "\
-acfa-verify [FILE] --pki <FILE> [--f <N>] [--rule krum|bulyan] [--require-bound]
+acfa-verify [FILE] --pki <FILE> [--f <N>] [--rule krum|bulyan] [--ctx <HEX64>] [--require-bound]
 
 Verifies an ACFA Layer 2 receipt offline. Reads stdin when FILE is absent.
 
@@ -121,6 +121,11 @@ Verifies an ACFA Layer 2 receipt offline. Reads stdin when FILE is absent.
                         Defaults to the receipt's own value, which is only safe if
                         you already know it matches your deployment.
   --rule krum|bulyan    require a specific aggregation rule.
+  --ctx <HEX64>         require the receipt to be about a specific event: 64 hex characters,
+                        the 32-byte context every signature in it commits to. Unset means the
+                        receipt is checked against ITS OWN claimed context, which is reported
+                        as NOT PINNED -- a receipt from another deployment is still internally
+                        valid, and without this flag nothing tells you it is not yours.
   --require-bound       fail a receipt whose admitted population is below the rule's
                         stated bound. NOTE this is a POPULATION check, not a safety
                         check: meeting the bound does not make a round safe.
@@ -180,10 +185,11 @@ fn main() -> ExitCode {
     // `--require-bound`, so the check the operator asked for was never applied and the tool
     // exited 0. A verifier that ignores what it was asked to do is worse than one that
     // refuses, because the operator has no way to notice.
-    const KNOWN: [&str; 8] = [
+    const KNOWN: [&str; 9] = [
         "--pki",
         "--f",
         "--rule",
+        "--ctx",
         "--require-bound",
         "--expect-state-root",
         "--max-coordinates",
@@ -244,6 +250,27 @@ fn main() -> ExitCode {
     let pki_path = flag_value(&args, "--pki");
     let f_override = flag_value(&args, "--f");
     let rule_want = flag_value(&args, "--rule");
+
+    // --ctx pins the EVENT. Malformed input is refused rather than ignored, for the same reason
+    // --max-coordinates is: an operator who mistypes the context they meant to require must not
+    // silently get "accepts anything" back, because that is the one outcome they were trying to
+    // rule out and it looks identical to success.
+    let ctx_want: Option<[u8; 32]> = match flag_value(&args, "--ctx") {
+        None => None,
+        Some(v) => {
+            let t = v.trim();
+            let bad = t.len() != 64 || !t.chars().all(|c| c.is_ascii_hexdigit());
+            if bad {
+                eprintln!("--ctx must be exactly 64 hex characters (a 32-byte context), got {t:?}");
+                return ExitCode::from(2);
+            }
+            let mut b = [0u8; 32];
+            for (i, byte) in b.iter_mut().enumerate() {
+                *byte = u8::from_str_radix(&t[i * 2..i * 2 + 2], 16).expect("validated hex");
+            }
+            Some(b)
+        }
+    };
 
     // The work budget. Refused rather than interpreted when malformed, for the same reason
     // `--require-bound=false` is: an operator who mistypes the ceiling they meant to raise
@@ -369,6 +396,11 @@ silently change the aggregate"
                 WireError::FaultBoundTooLarge { f } => {
                     format!("fault bound f = {f} does not fit the wire (encode-side error)")
                 }
+                // Also encode-side only, for the same reason.
+                WireError::ParamsDisagreeWithHeader { node_id } => format!(
+                    "node {node_id}'s round parameters disagree with the receipt header \
+                     (encode-side error)"
+                ),
             };
             eprintln!("acfa-verify: UNPARSEABLE -- {why}");
             return ExitCode::from(2);
@@ -441,7 +473,11 @@ silently change the aggregate"
     };
 
     let rule_was_pinned = rule_want.is_some();
+    let ctx_was_pinned = ctx_want.is_some();
     let mut policy = Policy::new(pki, f).with_max_coordinates(max_coordinates);
+    if let Some(c) = ctx_want {
+        policy = policy.about(c);
+    }
     if let Some(r) = rule_want {
         policy.rule = match r.as_str() {
             "krum" => Some(Rule::Krum),
@@ -485,6 +521,18 @@ silently change the aggregate"
                      rule; pass --rule to require the rule you expect"
                 );
             }
+            // #79 follow-on: ctx decides whether two signatures are about the same event at all,
+            // so an unpinned context is a LOUDER omission than an unpinned rule, not a quieter
+            // one. A receipt cannot lie about its context; it can be shown to someone who never
+            // asked. Naming it is what lets an operator notice that.
+            println!("  context      {}", hex32(&receipt.ctx));
+            if !ctx_was_pinned {
+                println!(
+                    "               NOT PINNED -- verified against the receipt's OWN claimed \
+                     context; pass --ctx to require the event you expect"
+                );
+            }
+            println!("  frac bits    {}", receipt.frac_bits);
             println!("  round        {}", v.round);
             println!("  state root   {}", hex32(&v.state_root));
             if expect_root.is_some() {
@@ -603,6 +651,22 @@ silently change the aggregate"
 fn report_invalid(e: &Invalid) {
     eprintln!("INVALID");
     match e {
+        Invalid::ContextMismatch { policy, receipt } => {
+            eprintln!("  this receipt is about a different event than you asked about");
+            eprintln!("  you asked about {}", hex32(policy));
+            eprintln!("  the receipt is about {}", hex32(receipt));
+            eprintln!("  the receipt is not forged -- every signature commits to its own context.");
+            eprintln!("  it simply belongs to another one, and you pinned yours with --ctx.");
+        }
+        Invalid::ScaleMismatch { policy, receipt } => {
+            eprintln!("  this receipt's numbers are on a different fixed-point grid than yours");
+            eprintln!(
+                "  you read FRAC_BITS={policy}, the receipt was written at FRAC_BITS={receipt}"
+            );
+            eprintln!("  the same real-valued input produces a DIFFERENT aggregate on each grid,");
+            eprintln!("  and both are internally consistent -- so comparing them would give you a");
+            eprintln!("  confidently wrong answer. Refused by name rather than compared.");
+        }
         Invalid::TooMuchDerivableWork { would_be, max } => {
             eprintln!("  this receipt would cost more work to check than it is allowed to");
             eprintln!("  up to {would_be} equivocation proofs derivable, limit {max}");

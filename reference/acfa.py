@@ -96,7 +96,8 @@ def verify(pk_raw: bytes, msg: bytes, sig: bytes) -> bool:
     except (InvalidSignature, ValueError):
         return False
 
-def contrib_msg(ctx: bytes, rnd: int, node_id: int, tensor_hash: bytes) -> bytes:
+def contrib_msg(ctx: bytes, params: "RoundParams", rnd: int, node_id: int,
+                tensor_hash: bytes) -> bytes:
     """v2 signed preimage: context and node id are INSIDE the signature.
 
     The v1 preimage (round and tensor hash only) said neither what a signature was about nor
@@ -104,22 +105,49 @@ def contrib_msg(ctx: bytes, rnd: int, node_id: int, tensor_hash: bytes) -> bytes
     contexts therefore satisfied the equivocation predicate -- a valid proof of cheating
     against a node that had done nothing wrong, and conviction is permanent (#79).
 
-    Every field is FIXED-WIDTH, so the concatenation is injective and no choice of ctx can be
-    re-cut to collide with a different (ctx, rnd, node, hash). Variable-length caller data
-    enters only as a 32-byte hash. That rule is what makes an opaque, caller-defined context
-    safe, and any future field must meet it.
+    It also binds the ROUND PARAMETERS -- the rule, the fault bound, and the fixed-point scale.
+    Without the scale, two builds compiled at different FRAC_BITS produce different aggregates
+    from identical real-valued inputs, both internally consistent and both verifying, with
+    nothing on the wire saying they disagree (#77). Without the rule and bound, contributions
+    offered for one aggregation can be presented in another the signer never consented to.
+
+    Every field is FIXED-WIDTH, so the concatenation is injective and no choice of ctx or
+    parameters can be re-cut to collide with a different (ctx, params, rnd, node, hash).
+    Variable-length caller data enters only as a 32-byte hash. That rule is what makes an
+    opaque, caller-defined context safe, and any future field must meet it.
     """
     assert len(ctx) == 32, "context commitment must be exactly 32 bytes"
     return (
         b"ACFA-CONTRIB2|"
         + ctx
+        + bytes([params.rule_wire()])
+        + params.f.to_bytes(4, "big")
+        + params.frac_bits.to_bytes(4, "big")
         + rnd.to_bytes(8, "big")
         + node_id.to_bytes(4, "big")
         + tensor_hash
     )
 
 
+def _params_bytes(p: "RoundParams") -> bytes:
+    """The fixed-width parameter block, identical in the preimage and in a leaf."""
+    return bytes([p.rule_wire()]) + p.f.to_bytes(4, "big") + p.frac_bits.to_bytes(4, "big")
+
+
 NO_CONTEXT = bytes(32)
+
+V1_FRAC_BITS = 16                      # every released v1 build was Q16.16
+
+
+@dataclass(frozen=True)
+class RoundParams:
+    """The arithmetic and robustness parameters a contribution was made under."""
+    rule: str = "krum"
+    f: int = 0
+    frac_bits: int = Q_FRAC_BITS
+
+    def rule_wire(self) -> int:
+        return {"krum": 0, "bulyan": 1}[self.rule]
 
 
 def contrib_msg_v1(rnd: int, tensor_hash: bytes) -> bytes:
@@ -130,6 +158,7 @@ def contrib_msg_v1(rnd: int, tensor_hash: bytes) -> bytes:
 @dataclass(frozen=True)
 class Contribution:
     ctx: bytes                         # opaque, caller-defined, never interpreted here
+    params: RoundParams
     rnd: int
     node_id: int
     tensor: Tuple[int, ...]            # fixed-point ints
@@ -139,7 +168,8 @@ class Contribution:
         return H(enc_tensor(self.tensor))
 
     def leaf(self) -> bytes:
-        return H(b"C|" + self.ctx + self.rnd.to_bytes(8, "big")
+        return H(b"C|" + self.ctx + _params_bytes(self.params)
+                 + self.rnd.to_bytes(8, "big")
                  + self.node_id.to_bytes(4, "big")
                  + self.tensor_hash() + self.sig)
 
@@ -152,6 +182,7 @@ class EquivProof:
     DIFFERENT contexts are not equivocation -- that is a node doing its job in two places, and
     convicting it for that was a critical defect (#79)."""
     ctx: bytes
+    params: RoundParams
     rnd: int
     node_id: int
     h1: bytes
@@ -160,7 +191,8 @@ class EquivProof:
     sig2: bytes
 
     def leaf(self) -> bytes:
-        return H(b"P|" + self.ctx + self.rnd.to_bytes(8, "big")
+        return H(b"P|" + self.ctx + _params_bytes(self.params)
+                 + self.rnd.to_bytes(8, "big")
                  + self.node_id.to_bytes(4, "big")
                  + self.h1 + self.h2 + self.sig1 + self.sig2)
 
@@ -168,8 +200,10 @@ class EquivProof:
         if self.h1 == self.h2 or self.node_id not in pki:
             return False
         pk = pki[self.node_id]
-        return (verify(pk, contrib_msg(self.ctx, self.rnd, self.node_id, self.h1), self.sig1)
-                and verify(pk, contrib_msg(self.ctx, self.rnd, self.node_id, self.h2), self.sig2))
+        return (verify(pk, contrib_msg(self.ctx, self.params, self.rnd, self.node_id, self.h1),
+                       self.sig1)
+                and verify(pk, contrib_msg(self.ctx, self.params, self.rnd, self.node_id, self.h2),
+                           self.sig2))
 
 # ---------------------------------------------------------------- CRDT state
 @dataclass
@@ -204,7 +238,8 @@ def admit(state: State, rnd: int, pki: Dict[int, bytes]) -> List[Contribution]:
     for c in state.C.values():
         if c.rnd != rnd or c.node_id in bad or c.node_id not in pki:
             continue
-        if not verify(pki[c.node_id], contrib_msg(c.ctx, rnd, c.node_id, c.tensor_hash()), c.sig):
+        if not verify(pki[c.node_id],
+                      contrib_msg(c.ctx, c.params, rnd, c.node_id, c.tensor_hash()), c.sig):
             continue
         per_id.setdefault(c.node_id, []).append(c)
     out = []
@@ -339,15 +374,29 @@ class Replica:
             self.state.merge(item)
 
     def _auto_proof(self, new: Contribution) -> None:
-        """Any honest replica that observes two same-(round,node) different-content
-        signed contributions forms the self-authenticating proof itself."""
+        """Any honest replica that observes two signed contributions by one node, in one
+        round, in the SAME context and under the SAME round parameters, whose LEAVES differ,
+        forms the self-authenticating proof itself.
+
+        THE CONTEXT AND PARAMETER SCOPING ARE LOAD-BEARING (#79). Two contributions by one node
+        at one round number in different contexts -- two studies, two cohorts, a restart -- are
+        that node doing its job twice, not equivocating. Pairing them produces a valid proof of
+        cheating against a node that behaved correctly, and conviction is permanent.
+
+        KEYED ON THE LEAF, NOT THE TENSOR HASH (crypto-04). Ed25519 does not force a
+        deterministic nonce, so one signer can emit two DISTINCT valid signatures over the SAME
+        content. Those are one tensor hash and two leaves. Keying on content missed that case
+        entirely: the identity was excluded on leaf uniqueness and no proof was ever formed, so
+        an observer could not tell it from a node that simply went quiet.
+        """
         for c in self.state.C.values():
-            if (c.rnd == new.rnd and c.node_id == new.node_id
-                    and c.tensor_hash() != new.tensor_hash()):
+            if (c.ctx == new.ctx and c.params == new.params
+                    and c.rnd == new.rnd and c.node_id == new.node_id
+                    and c.leaf() != new.leaf()):
                 # canonical (h,sig) pairing: both observers derive the SAME proof object
                 (h1, s1), (h2, s2) = sorted(
                     [(c.tensor_hash(), c.sig), (new.tensor_hash(), new.sig)])
-                p = EquivProof(new.ctx, new.rnd, new.node_id, h1, h2, s1, s2)
+                p = EquivProof(new.ctx, new.params, new.rnd, new.node_id, h1, h2, s1, s2)
                 if p.valid(self.pki):
                     self.state.add_proof(p)
                 return

@@ -28,8 +28,8 @@ pub struct State {
     /// arrives later, or is deliberately withheld until the prune, escapes conviction entirely.
     /// That is the adversary the whole proof machinery exists to catch.
     ///
-    /// So pruning keeps the WITNESS and discards only the vector. `(rnd, node_id, tensor_hash,
-    /// sig)` is about 108 bytes and is exactly sufficient to both DETECT a conflict -- detection
+    /// So pruning keeps the WITNESS and discards only the vector. `(ctx, params, rnd, node_id, tensor_hash,
+    /// sig)` is about 149 bytes and is exactly sufficient to both DETECT a conflict -- detection
     /// keys on leaf inequality -- and to FORM the proof, since `EquivProof::canonical` takes
     /// `(tensor_hash, sig)` pairs and never reads a vector. Detection strength after pruning is
     /// therefore unchanged, not merely degraded gracefully.
@@ -45,7 +45,7 @@ pub struct State {
     /// crosses replicas.
     ///
     /// **This bounds the CONSTANT, not the growth.** Retention is still linear in rounds, at
-    /// ~108 bytes instead of ~8 KB. Truly bounding it needs a conviction horizon -- a round past
+    /// ~149 bytes instead of ~8 KB. Truly bounding it needs a conviction horizon -- a round past
     /// which equivocation stops being detectable at all -- which is a policy decision with a
     /// real security cost and is deliberately left open rather than chosen here.
     pub w: BTreeMap<[u8; 32], RedactedContribution>,
@@ -317,12 +317,15 @@ impl State {
         // is safe at all -- delete it and an equivocator simply waits for the prune horizon.
         for wc in self.w.values() {
             if wc.ctx == new.ctx
+                && wc.params == new.params
                 && wc.rnd == new.rnd
                 && wc.node_id == new.node_id
                 && wc.leaf() != nl
             {
                 let p = EquivProof::canonical(
                     new.ctx,
+                    new.sig_preimage,
+                    new.params,
                     new.rnd,
                     new.node_id,
                     (wc.tensor_hash, wc.sig),
@@ -342,9 +345,20 @@ impl State {
             // THE CONTEXT MUST MATCH. Two contributions by one node at one round number in
             // DIFFERENT contexts are not equivocation -- that is a node doing its job in two
             // places, and convicting it for that was #79.
-            if c.ctx == new.ctx && c.rnd == new.rnd && c.node_id == new.node_id && c.leaf() != nl {
+            // THE ROUND PARAMETERS MUST MATCH TOO, for the same reason the context must. A node
+            // that contributes to a Krum round and a Bulyan round, or to two rounds run at
+            // different fixed-point scales, is doing its job twice -- not equivocating. Pairing
+            // those would rebuild #79 one field over.
+            if c.ctx == new.ctx
+                && c.params == new.params
+                && c.rnd == new.rnd
+                && c.node_id == new.node_id
+                && c.leaf() != nl
+            {
                 let p = EquivProof::canonical(
                     new.ctx,
+                    new.sig_preimage,
+                    new.params,
                     new.rnd,
                     new.node_id,
                     (c.tensor_hash(), c.sig),
@@ -448,6 +462,14 @@ impl State {
 
 #[cfg(test)]
 mod tests {
+    /// Krum at `f = 1` on this build's scale. A NAMED fixture, not a default -- `Receipt::issue`
+    /// filters contributions whose parameters differ, so a test needing others must say so.
+    const PARAMS_DEFAULT: crate::identity::RoundParams = crate::identity::RoundParams {
+        rule: crate::resolve::Rule::Krum,
+        f: 1,
+        frac_bits: acfa_aggregate::FRAC_BITS,
+    };
+
     use super::*;
     use crate::hash::{enc_tensor, h};
     use crate::identity::{contrib_msg, Identity};
@@ -636,11 +658,13 @@ mod tests {
         Contribution {
             ctx: crate::identity::NO_CONTEXT,
             sig_preimage: crate::identity::PreimageVersion::V2,
+            params: PARAMS_DEFAULT,
             rnd,
             node_id: a.node_id,
             tensor: t.to_vec(),
             sig: a.sign(&contrib_msg(
                 &crate::identity::NO_CONTEXT,
+                &PARAMS_DEFAULT,
                 rnd,
                 a.node_id,
                 &th,
@@ -748,6 +772,7 @@ mod tests {
         s.add_proof(EquivProof {
             ctx: crate::identity::NO_CONTEXT,
             sig_preimage: crate::identity::PreimageVersion::V2,
+            params: PARAMS_DEFAULT,
             rnd: 1,
             node_id: 1,
             h1: [1u8; 32],

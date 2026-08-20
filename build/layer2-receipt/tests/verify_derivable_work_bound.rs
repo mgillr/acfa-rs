@@ -32,6 +32,17 @@ use acfa_receipt::identity::{contrib_msg, Identity, Pki};
 use acfa_receipt::state::MAX_MERGE_PROOFS;
 use acfa_receipt::{Contribution, Invalid, Policy, Receipt, Rule, State};
 
+/// Krum at `f = 1` on this build's fixed-point scale.
+///
+/// A NAMED FIXTURE, NOT A DEFAULT. A contribution signed under different round parameters is
+/// filtered out of the round by `Receipt::issue`, exactly as a foreign `ctx` is, so a test that
+/// needs other parameters has to say so rather than inherit these silently.
+const PARAMS_DEFAULT: acfa_receipt::RoundParams = acfa_receipt::RoundParams {
+    rule: acfa_receipt::Rule::Krum,
+    f: 1,
+    frac_bits: acfa_receipt::FRAC_BITS,
+};
+
 /// `m` contributions from ONE node id, inserted RAW so no proofs are derived at build time.
 fn raw_state(m: usize) -> (Receipt, Pki) {
     let id = Identity::from_secret(1, &[1u8; 32]);
@@ -41,6 +52,7 @@ fn raw_state(m: usize) -> (Receipt, Pki) {
         let t = vec![j as i64, (j as i64) * 7 - 3, 1234];
         let sig = id.sign(&contrib_msg(
             &acfa_receipt::identity::NO_CONTEXT,
+            &PARAMS_DEFAULT,
             1,
             id.node_id,
             &h(&enc_tensor(&t)),
@@ -48,6 +60,7 @@ fn raw_state(m: usize) -> (Receipt, Pki) {
         s.add_contribution(Contribution {
             ctx: acfa_receipt::identity::NO_CONTEXT,
             sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+            params: PARAMS_DEFAULT,
             rnd: 1,
             node_id: id.node_id,
             tensor: t,
@@ -104,6 +117,7 @@ fn an_ordinary_receipt_still_verifies() {
         let t = vec![10 + k as i64, 20];
         let sig = id.sign(&contrib_msg(
             &acfa_receipt::identity::NO_CONTEXT,
+            &PARAMS_DEFAULT,
             1,
             id.node_id,
             &h(&enc_tensor(&t)),
@@ -112,6 +126,7 @@ fn an_ordinary_receipt_still_verifies() {
             Contribution {
                 ctx: acfa_receipt::identity::NO_CONTEXT,
                 sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+                params: PARAMS_DEFAULT,
                 rnd: 1,
                 node_id: id.node_id,
                 tensor: t,

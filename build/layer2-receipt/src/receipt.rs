@@ -19,6 +19,7 @@
 use crate::entry::{Contribution, EquivProof};
 use crate::identity::Context;
 use crate::identity::Pki;
+use crate::identity::RoundParams;
 use crate::resolve::{resolve, Resolution, Rule};
 use crate::state::State;
 use acfa_aggregate::MarginCertificate;
@@ -34,6 +35,13 @@ pub struct Receipt {
     pub round: u64,
     pub f: usize,
     pub rule: Rule,
+    /// **The fixed-point scale this receipt's numbers are expressed in (#77).**
+    ///
+    /// Carried so a checker built at a different scale refuses BY NAME instead of producing a
+    /// confidently wrong comparison. Two builds at different `FRAC_BITS` compute different
+    /// aggregates from the same real-valued inputs, and before this field both receipts verified,
+    /// both were internally consistent, and nothing on the wire said they disagreed.
+    pub frac_bits: u32,
     pub pki: Pki,
     pub contributions: Vec<Contribution>,
     pub proofs: Vec<EquivProof>,
@@ -129,6 +137,18 @@ pub struct Policy {
     pub f: usize,
     /// The rule the checker expects, if it cares. `None` accepts either.
     pub rule: Option<Rule>,
+    /// **The event the checker is asking about. `None` accepts whatever the receipt claims.**
+    ///
+    /// `None` is deliberately permitted and deliberately loud: a checker may genuinely not know
+    /// the context, and requiring one would put a restriction on deployments that this protocol
+    /// exists to stay out of. But an unset pin must never be mistaken for a satisfied one, so
+    /// `acfa-verify` prints NOT PINNED when it is `None`, exactly as it does for `rule`.
+    pub ctx: Option<Context>,
+    /// **The fixed-point scale the checker itself reads numbers in (#77).**
+    ///
+    /// Defaults to this build's `acfa_aggregate::FRAC_BITS` via [`Policy::new`]. A receipt on a
+    /// different grid is refused by name, never silently compared.
+    pub frac_bits: u32,
     /// **The checker's WORK budget, in tensor coordinates.** See
     /// [`DEFAULT_MAX_VERIFY_COORDINATES`] for the measurements behind the default.
     ///
@@ -172,8 +192,25 @@ impl Policy {
             pki,
             f,
             rule: None,
+            ctx: None,
+            frac_bits: acfa_aggregate::FRAC_BITS,
             max_coordinates: DEFAULT_MAX_VERIFY_COORDINATES,
         }
+    }
+
+    /// Read a receipt written at a DIFFERENT fixed-point scale than this build uses.
+    ///
+    /// Only meaningful for a checker that genuinely knows how to interpret the other grid. The
+    /// default is this build's own scale, and that is the safe answer.
+    pub fn at_scale(mut self, frac_bits: u32) -> Policy {
+        self.frac_bits = frac_bits;
+        self
+    }
+
+    /// Pin the event this checker is asking about.
+    pub fn about(mut self, ctx: Context) -> Policy {
+        self.ctx = Some(ctx);
+        self
     }
 
     pub fn expecting(mut self, rule: Rule) -> Policy {
@@ -246,6 +283,20 @@ pub enum Invalid {
     FaultBoundMismatch { policy: usize, receipt: usize },
     /// The receipt used a different aggregation rule than the checker requires.
     RuleMismatch { policy: Rule, receipt: Rule },
+    /// **The receipt's numbers are on a different fixed-point grid than the checker's (#77).**
+    ///
+    /// Refused BY NAME rather than compared anyway. Two builds at different `FRAC_BITS` produce
+    /// different aggregates from identical real-valued inputs, each internally consistent, so a
+    /// silent comparison yields a confidently wrong answer -- the precise failure this crate
+    /// exists to exclude.
+    ScaleMismatch { policy: u32, receipt: u32 },
+    /// **The receipt is about a different event than the checker asked about (#79 follow-on).**
+    ///
+    /// A receipt cannot lie about its own `ctx` -- every signature commits to it. What it CAN do
+    /// is be presented to a verifier that never asked. Two deployments sharing a PKI, an `f` and
+    /// a rule would otherwise each verify the other's receipts as `VERIFIED`, with nothing shown
+    /// to say the receipt belongs to another context.
+    ContextMismatch { policy: Context, receipt: Context },
     /// A carried contribution is not signed by its claimed author.
     BadContributionSignature { node_id: u32, leaf: [u8; 32] },
     /// A carried proof does not actually demonstrate equivocation.
@@ -305,6 +356,18 @@ impl core::fmt::Display for Invalid {
                 f,
                 "fault bound mismatch: the checker assumes f={policy}, the receipt claims \
                  f={receipt}"
+            ),
+            Invalid::ContextMismatch { policy, receipt } => write!(
+                f,
+                "context mismatch: the checker asked about {}, the receipt is about {}",
+                hex32(policy),
+                hex32(receipt)
+            ),
+            Invalid::ScaleMismatch { policy, receipt } => write!(
+                f,
+                "fixed-point scale mismatch: the checker reads FRAC_BITS={policy}, the receipt \
+                 was written at FRAC_BITS={receipt}. These are different grids; the values are \
+                 not comparable and were NOT compared"
             ),
             Invalid::RuleMismatch { policy, receipt } => write!(
                 f,
@@ -432,7 +495,11 @@ impl Receipt {
         f: usize,
         rule: Rule,
     ) -> Receipt {
-        let r: Resolution = resolve(state, round, pki, f, rule);
+        let params = RoundParams {
+            rule,
+            f: f as u32,
+            frac_bits: acfa_aggregate::FRAC_BITS,
+        };
 
         // SCOPE THE CARRIED SET TO THIS ROUND AND TO VALID SIGNATURES, and commit to the
         // root of what is carried.
@@ -467,7 +534,14 @@ impl Receipt {
         for c in state
             .c
             .values()
-            .filter(|c| c.ctx == ctx && c.rnd == round && c.signature_valid(pki))
+            // THE ROUND PARAMETERS MUST MATCH, for the same reason the context must. A
+            // contribution offered under a different rule, fault bound, or fixed-point scale was
+            // not offered to THIS round, and carrying it would record a node as having taken part
+            // in an aggregation it never consented to. Filtered here rather than rejected later so
+            // a mismatch produces an obviously empty round instead of a subtly wrong one.
+            .filter(|c| {
+                c.ctx == ctx && c.params == params && c.rnd == round && c.signature_valid(pki)
+            })
         {
             carried.add_contribution(c.clone());
         }
@@ -475,11 +549,28 @@ impl Receipt {
             carried.add_proof(p.clone());
         }
 
+        // RESOLVE OVER THE CARRIED SET, NOT THE RAW STATE.
+        //
+        // This is the whole point of the block above and it was briefly lost. `resolve` used to
+        // run on `state`, so once the filter learned to drop foreign CONTEXTS (#79) and then
+        // foreign round PARAMETERS, the receipt committed a state root over the filtered set and
+        // an aggregate over the unfiltered one -- two commitments covering two different sets,
+        // which is verbatim the defect the signature half of this filter was added to close.
+        // Measured while it was broken: a state signed at f=1 issued at f=0 carried ZERO
+        // contributions and still published `claimed_aggregate = Some([1, 0])`.
+        //
+        // Resolving over `carried` keeps issue and verify looking at one set by construction
+        // rather than by two filters being kept in step by hand. Conviction is unaffected:
+        // `carried` holds the ENTIRE proof set, so `resolve` still takes conviction from all of
+        // it, across rounds, exactly as before.
+        let r: Resolution = resolve(&carried, round, pki, f, rule);
+
         Receipt {
             ctx,
             round,
             f,
             rule,
+            frac_bits: acfa_aggregate::FRAC_BITS,
             pki: pki.clone(),
             contributions: carried.c.values().cloned().collect(),
             proofs: carried.e.values().cloned().collect(),
@@ -519,6 +610,22 @@ impl Receipt {
     pub fn verify(&self, policy: &Policy) -> Result<Verified, Invalid> {
         if self.pki != policy.pki {
             return Err(Invalid::PkiMismatch);
+        }
+        // BEFORE the arithmetic, not after: comparing numbers from two different grids produces a
+        // confidently wrong answer rather than an error, so the grid is checked first.
+        if let Some(want) = policy.ctx {
+            if want != self.ctx {
+                return Err(Invalid::ContextMismatch {
+                    policy: want,
+                    receipt: self.ctx,
+                });
+            }
+        }
+        if self.frac_bits != policy.frac_bits {
+            return Err(Invalid::ScaleMismatch {
+                policy: policy.frac_bits,
+                receipt: self.frac_bits,
+            });
         }
         if self.f != policy.f {
             return Err(Invalid::FaultBoundMismatch {
@@ -740,8 +847,20 @@ impl Receipt {
     }
 }
 
+fn hex32(b: &Context) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
 #[cfg(test)]
 mod tests {
+    /// Krum at `f = 1` on this build's scale. A NAMED fixture, not a default -- `Receipt::issue`
+    /// filters contributions whose parameters differ, so a test needing others must say so.
+    const PARAMS_DEFAULT: crate::identity::RoundParams = crate::identity::RoundParams {
+        rule: crate::resolve::Rule::Krum,
+        f: 1,
+        frac_bits: acfa_aggregate::FRAC_BITS,
+    };
+
     use super::*;
     use crate::hash::{enc_tensor, h};
     use crate::identity::{contrib_msg, Identity};
@@ -755,11 +874,13 @@ mod tests {
         Contribution {
             ctx: crate::identity::NO_CONTEXT,
             sig_preimage: crate::identity::PreimageVersion::V2,
+            params: PARAMS_DEFAULT,
             rnd,
             node_id: a.node_id,
             tensor: t.to_vec(),
             sig: a.sign(&contrib_msg(
                 &crate::identity::NO_CONTEXT,
+                &PARAMS_DEFAULT,
                 rnd,
                 a.node_id,
                 &th,
@@ -841,6 +962,7 @@ mod tests {
         r.proofs.push(EquivProof {
             ctx: crate::identity::NO_CONTEXT,
             sig_preimage: crate::identity::PreimageVersion::V2,
+            params: PARAMS_DEFAULT,
             rnd: 1,
             node_id: 2,
             h1: [7u8; 32],

@@ -19,7 +19,7 @@
 //! encoder just closed.
 
 use crate::entry::{Contribution, EquivProof};
-use crate::identity::{Pki, PreimageVersion, PubKey, Sig};
+use crate::identity::{Pki, PreimageVersion, PubKey, RoundParams, Sig};
 use crate::receipt::Receipt;
 use crate::redact::{RedactedContribution, RedactedReceipt};
 use crate::resolve::Rule;
@@ -48,6 +48,15 @@ pub const MAGIC_REDACTED_V2: &[u8; 8] = b"ACFA-X2\0";
 pub const MAGIC_REDACTED: &[u8; 8] = MAGIC_REDACTED_V2;
 pub const VERSION: u16 = 1;
 
+/// The fixed-point scale every released v1 build used.
+///
+/// `FRAC_BITS` was a compile-time constant through v0.3.0 and was never anything but 16, so a v1
+/// receipt unambiguously means Q16.16. It is written as its own constant rather than read from
+/// `acfa_aggregate::FRAC_BITS` ON PURPOSE: the moment this build's scale becomes configurable,
+/// reading the live constant would silently re-label every historical receipt with whatever
+/// scale the reader happens to be compiled at, which is the exact confusion #77 is about.
+pub const V1_FRAC_BITS: u32 = 16;
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum WireError {
     BadMagic,
@@ -73,6 +82,13 @@ pub enum WireError {
     FaultBoundTooLarge {
         f: usize,
     },
+    /// An entry's round parameters disagree with the receipt header they would be stamped from.
+    ///
+    /// Such a receipt does not survive its own round trip: the entries are ordered by leaves
+    /// computed from their own parameters and decoded under the header's, which reorders them.
+    ParamsDisagreeWithHeader {
+        node_id: u32,
+    },
 }
 
 impl core::fmt::Display for WireError {
@@ -92,6 +108,12 @@ impl core::fmt::Display for WireError {
             WireError::ValueOutOfRange => write!(
                 f,
                 "a tensor value lies outside the Q16.16 representable range (+/-2^31)"
+            ),
+            WireError::ParamsDisagreeWithHeader { node_id } => write!(
+                f,
+                "node {node_id}'s entry carries round parameters that differ from the receipt \
+                 header; the parameters are carried once in the header and stamped onto every \
+                 entry on decode, so this receipt would not decode back to itself"
             ),
             WireError::FaultBoundTooLarge { f: bound } => write!(
                 f,
@@ -208,6 +230,32 @@ pub fn encode_checked(r: &Receipt) -> Result<Vec<u8>, WireError> {
     if u32::try_from(r.f).is_err() {
         return Err(WireError::FaultBoundTooLarge { f: r.f });
     }
+    // EVERY ENTRY MUST AGREE WITH THE HEADER IT WILL BE STAMPED FROM.
+    //
+    // The round parameters are carried ONCE, in the header, and `decode` stamps every
+    // contribution and proof from them. So a receipt whose entries disagree with its own header
+    // is not merely odd -- `encode` then `decode` is NOT A FIXED POINT for it. The entries were
+    // ordered by leaves computed from THEIR parameters and come back hashed under the HEADER's,
+    // which reorders them, and the receipt is refused as non-canonical by our own decoder.
+    //
+    // `Receipt::issue` cannot construct one (it filters on exactly this equality), but the
+    // struct is public and a caller can. Refusing here means the failure is named at the point
+    // it is created rather than surfacing as an unexplained `NotCanonical` in whoever reads it.
+    let header = RoundParams {
+        rule: r.rule,
+        f: r.f as u32,
+        frac_bits: r.frac_bits,
+    };
+    for c in &r.contributions {
+        if c.params != header {
+            return Err(WireError::ParamsDisagreeWithHeader { node_id: c.node_id });
+        }
+    }
+    for p in &r.proofs {
+        if p.params != header {
+            return Err(WireError::ParamsDisagreeWithHeader { node_id: p.node_id });
+        }
+    }
     Ok(encode(r))
 }
 
@@ -219,6 +267,7 @@ pub fn encode(r: &Receipt) -> Vec<u8> {
     w.u64(r.round);
     w.u32(r.f as u32);
     w.u8(r.rule.as_wire());
+    w.u32(r.frac_bits);
 
     w.u32(r.pki.len() as u32);
     for (id, pk) in &r.pki {
@@ -357,6 +406,18 @@ pub fn decode(bytes: &[u8]) -> Result<Receipt, WireError> {
     let f = r.u32()? as usize;
     let rule_b = r.u8()?;
     let rule = Rule::from_wire(rule_b).ok_or(WireError::UnknownRule(rule_b))?;
+    // v2 carries the scale; v1 predates the field and was always Q16.16.
+    // Only the full-receipt magics can reach here; `decode_redacted` has its own test.
+    let frac_bits = if magic == MAGIC_V2 {
+        r.u32()?
+    } else {
+        V1_FRAC_BITS
+    };
+    let params = RoundParams {
+        rule,
+        f: f as u32,
+        frac_bits,
+    };
 
     let n_pki_raw = r.u32()?;
     let n_pki = r.count(n_pki_raw, 4 + 32)?;
@@ -417,6 +478,7 @@ pub fn decode(bytes: &[u8]) -> Result<Receipt, WireError> {
         contributions.push(Contribution {
             ctx,
             sig_preimage,
+            params,
             rnd,
             node_id,
             tensor,
@@ -436,6 +498,7 @@ pub fn decode(bytes: &[u8]) -> Result<Receipt, WireError> {
         proofs.push(EquivProof {
             ctx,
             sig_preimage,
+            params,
             rnd: r.u64()?,
             node_id: r.u32()?,
             h1: r.arr32()?,
@@ -480,6 +543,7 @@ pub fn decode(bytes: &[u8]) -> Result<Receipt, WireError> {
         round,
         f,
         rule,
+        frac_bits,
         pki,
         contributions,
         proofs,
@@ -505,6 +569,7 @@ pub fn encode_redacted(r: &RedactedReceipt) -> Vec<u8> {
     w.u64(r.round);
     w.u32(r.f as u32);
     w.u8(r.rule.as_wire());
+    w.u32(r.frac_bits);
 
     w.u32(r.pki.len() as u32);
     for (id, pk) in &r.pki {
@@ -581,6 +646,17 @@ pub fn decode_redacted(bytes: &[u8]) -> Result<RedactedReceipt, WireError> {
     let f = r.u32()? as usize;
     let rule_b = r.u8()?;
     let rule = Rule::from_wire(rule_b).ok_or(WireError::UnknownRule(rule_b))?;
+    // v2 carries the scale; v1 predates the field and was always Q16.16.
+    let frac_bits = if magic == MAGIC_V2 || magic == MAGIC_REDACTED_V2 {
+        r.u32()?
+    } else {
+        V1_FRAC_BITS
+    };
+    let params = RoundParams {
+        rule,
+        f: f as u32,
+        frac_bits,
+    };
 
     let n_pki_raw = r.u32()?;
     let n_pki = r.count(n_pki_raw, 4 + 32)?;
@@ -619,6 +695,7 @@ pub fn decode_redacted(bytes: &[u8]) -> Result<RedactedReceipt, WireError> {
         contributions.push(RedactedContribution {
             ctx,
             sig_preimage,
+            params,
             rnd,
             node_id,
             tensor_hash,
@@ -638,6 +715,7 @@ pub fn decode_redacted(bytes: &[u8]) -> Result<RedactedReceipt, WireError> {
         proofs.push(EquivProof {
             ctx,
             sig_preimage,
+            params,
             rnd: r.u64()?,
             node_id: r.u32()?,
             h1: r.arr32()?,
@@ -681,6 +759,7 @@ pub fn decode_redacted(bytes: &[u8]) -> Result<RedactedReceipt, WireError> {
         round,
         f,
         rule,
+        frac_bits,
         pki,
         contributions,
         proofs,

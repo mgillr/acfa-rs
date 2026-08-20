@@ -6,7 +6,7 @@ authors:
   - family-names: Gillespie
     given-names: Ryan
 repository-code: "https://github.com/mgillr/acfa-rs"
-version: "0.1.0"
+version: "0.4.0"
 date-released: "2026-08-16"
 license: Apache-2.0
 preferred-citation:

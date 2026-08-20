@@ -21,6 +21,15 @@ fn hex(b: &[u8]) -> String {
 }
 
 fn scenario(n: u32, equivocate: bool, rule: Rule, f: usize) -> (Receipt, Pki) {
+    // THE SCENARIO'S OWN PARAMETERS. `Receipt::issue` filters contributions whose parameters
+    // differ from the round's, so signing a Bulyan scenario under a Krum fixture publishes an
+    // aggregate computed over a set the receipt does not carry, and verification recomputes
+    // None. The fixture's own doc comment predicted this; the file did not obey it.
+    let params = acfa_receipt::RoundParams {
+        rule,
+        f: f as u32,
+        frac_bits: acfa_receipt::FRAC_BITS,
+    };
     let ids: Vec<Identity> = (1..=n)
         .map(|k| Identity::from_secret(k, &[k as u8; 32]))
         .collect();
@@ -37,6 +46,7 @@ fn scenario(n: u32, equivocate: bool, rule: Rule, f: usize) -> (Receipt, Pki) {
         ];
         let sig = id.sign(&contrib_msg(
             &acfa_receipt::identity::NO_CONTEXT,
+            &params,
             1,
             id.node_id,
             &h(&enc_tensor(&t)),
@@ -45,6 +55,7 @@ fn scenario(n: u32, equivocate: bool, rule: Rule, f: usize) -> (Receipt, Pki) {
             Contribution {
                 ctx: acfa_receipt::identity::NO_CONTEXT,
                 sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+                params,
                 rnd: 1,
                 node_id: id.node_id,
                 tensor: t,
@@ -57,6 +68,7 @@ fn scenario(n: u32, equivocate: bool, rule: Rule, f: usize) -> (Receipt, Pki) {
         let t = vec![9_999, -9_999, 1, -1];
         let sig = ids[0].sign(&contrib_msg(
             &acfa_receipt::identity::NO_CONTEXT,
+            &params,
             1,
             ids[0].node_id,
             &h(&enc_tensor(&t)),
@@ -65,6 +77,7 @@ fn scenario(n: u32, equivocate: bool, rule: Rule, f: usize) -> (Receipt, Pki) {
             Contribution {
                 ctx: acfa_receipt::identity::NO_CONTEXT,
                 sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+                params,
                 rnd: 1,
                 node_id: 1,
                 tensor: t,

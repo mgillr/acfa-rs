@@ -52,7 +52,9 @@
 
 use crate::entry::{Contribution, EquivProof};
 use crate::hash::{h, merkle_root};
-use crate::identity::{contrib_msg, contrib_msg_v1, verify, Context, Pki, PreimageVersion, Sig};
+use crate::identity::{
+    contrib_msg, contrib_msg_v1, verify, Context, Pki, PreimageVersion, RoundParams, Sig,
+};
 use crate::receipt::{Invalid, Receipt};
 use crate::resolve::Rule;
 use std::collections::{BTreeMap, BTreeSet};
@@ -69,6 +71,8 @@ pub struct RedactedContribution {
     pub ctx: Context,
     /// See [`crate::entry::Contribution::sig_preimage`].
     pub sig_preimage: PreimageVersion,
+    /// The round parameters this contribution was made under. See [`RoundParams`].
+    pub params: RoundParams,
     pub rnd: u64,
     pub node_id: u32,
     /// `h(enc_tensor(tensor))` of the removed vector -- what the signature actually signed.
@@ -81,13 +85,16 @@ impl RedactedContribution {
     /// hashes the tensor HASH, not the tensor. A test asserts the equality rather than trusting
     /// this comment.
     pub fn leaf(&self) -> [u8; 32] {
-        let mut b = Vec::with_capacity(2 + 32 + 8 + 4 + 32 + 64);
+        let mut b = Vec::with_capacity(2 + 32 + 1 + 4 + 4 + 8 + 4 + 32 + 64);
         b.extend_from_slice(b"C|");
         // Versioned for the same reason as `Contribution::leaf` -- see the comment there. A
         // redacted contribution must produce the SAME leaf as the full one it redacts, so this
         // has to track that function exactly.
         if matches!(self.sig_preimage, PreimageVersion::V2) {
             b.extend_from_slice(&self.ctx);
+            b.push(self.params.rule.as_wire());
+            b.extend_from_slice(&self.params.f.to_be_bytes());
+            b.extend_from_slice(&self.params.frac_bits.to_be_bytes());
         }
         b.extend_from_slice(&self.rnd.to_be_bytes());
         b.extend_from_slice(&self.node_id.to_be_bytes());
@@ -106,7 +113,13 @@ impl RedactedContribution {
                 }
                 PreimageVersion::V2 => verify(
                     pk,
-                    &contrib_msg(&self.ctx, self.rnd, self.node_id, &self.tensor_hash),
+                    &contrib_msg(
+                        &self.ctx,
+                        &self.params,
+                        self.rnd,
+                        self.node_id,
+                        &self.tensor_hash,
+                    ),
                     &self.sig,
                 ),
             },
@@ -119,6 +132,7 @@ impl From<&Contribution> for RedactedContribution {
         RedactedContribution {
             ctx: c.ctx,
             sig_preimage: c.sig_preimage,
+            params: c.params,
             rnd: c.rnd,
             node_id: c.node_id,
             tensor_hash: c.tensor_hash(),
@@ -135,6 +149,9 @@ pub struct RedactedReceipt {
     pub round: u64,
     pub f: usize,
     pub rule: Rule,
+    /// The fixed-point scale, carried for the same reason the full receipt carries it (#77).
+    /// Redaction removes the vectors; it must not remove the grid they were measured on.
+    pub frac_bits: u32,
     pub pki: Pki,
     pub contributions: Vec<RedactedContribution>,
     pub proofs: Vec<EquivProof>,
@@ -175,6 +192,7 @@ impl Receipt {
             round: self.round,
             f: self.f,
             rule: self.rule,
+            frac_bits: self.frac_bits,
             pki: self.pki.clone(),
             contributions: self.contributions.iter().map(Into::into).collect(),
             proofs: self.proofs.clone(),
@@ -195,6 +213,26 @@ impl RedactedReceipt {
     pub fn verify(&self, policy: &crate::receipt::Policy) -> Result<RedactedVerified, Invalid> {
         if self.pki != policy.pki {
             return Err(Invalid::PkiMismatch);
+        }
+        // THE SAME CHECKS AS THE FULL DOOR, IN THE SAME ORDER -- which this file claims and, until
+        // now, did not do. It stopped at pki/f/rule, so a redacted receipt from another study or
+        // another fixed-point grid verified `Ok` where the full receipt was refused by name. That
+        // is the wrong way round: redaction is documented here as the pruned-witness path that
+        // OUTLIVES every other artefact, so it is the one most likely to be read years later by
+        // someone who was never online, and least likely to have its provenance checked by hand.
+        if let Some(want) = policy.ctx {
+            if want != self.ctx {
+                return Err(Invalid::ContextMismatch {
+                    policy: want,
+                    receipt: self.ctx,
+                });
+            }
+        }
+        if self.frac_bits != policy.frac_bits {
+            return Err(Invalid::ScaleMismatch {
+                policy: policy.frac_bits,
+                receipt: self.frac_bits,
+            });
         }
         if self.f != policy.f {
             return Err(Invalid::FaultBoundMismatch {

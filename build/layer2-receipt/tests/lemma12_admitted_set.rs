@@ -18,21 +18,50 @@ use acfa_receipt::hash::{enc_tensor, h};
 use acfa_receipt::identity::{contrib_msg, Identity, Pki};
 use acfa_receipt::{Contribution, Policy, Receipt, Rule, State};
 
-fn signed(id: &Identity, rnd: u64, t: &[i64]) -> Contribution {
+/// Krum at `f = 1` on this build's fixed-point scale.
+///
+/// A NAMED FIXTURE, NOT A DEFAULT. A contribution signed under different round parameters is
+/// filtered out of the round by `Receipt::issue`, exactly as a foreign `ctx` is, so a test that
+/// needs other parameters has to say so rather than inherit these silently.
+const BULYAN_F1: acfa_receipt::RoundParams = acfa_receipt::RoundParams {
+    rule: acfa_receipt::Rule::Bulyan,
+    f: 1,
+    frac_bits: acfa_receipt::FRAC_BITS,
+};
+
+const PARAMS_DEFAULT: acfa_receipt::RoundParams = acfa_receipt::RoundParams {
+    rule: acfa_receipt::Rule::Krum,
+    f: 1,
+    frac_bits: acfa_receipt::FRAC_BITS,
+};
+
+fn signed_with(
+    id: &Identity,
+    params: acfa_receipt::RoundParams,
+    rnd: u64,
+    t: &[i64],
+) -> Contribution {
     let th = h(&enc_tensor(t));
     Contribution {
         ctx: acfa_receipt::identity::NO_CONTEXT,
         sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
+        params: PARAMS_DEFAULT,
         rnd,
         node_id: id.node_id,
         tensor: t.to_vec(),
         sig: id.sign(&contrib_msg(
             &acfa_receipt::identity::NO_CONTEXT,
+            &params,
             rnd,
             id.node_id,
             &th,
         )),
     }
+}
+
+/// The Krum fixture, for the tests whose round is Krum.
+fn signed(id: &Identity, rnd: u64, t: &[i64]) -> Contribution {
+    signed_with(id, PARAMS_DEFAULT, rnd, t)
 }
 
 /// An equivocator's contributions are CARRIED (they are the evidence) but NOT ADMITTED.
@@ -128,7 +157,10 @@ fn bulyan_yields_no_certificate_rather_than_a_borrowed_one() {
     let pki: Pki = ids.iter().map(|i| (i.node_id, i.public())).collect();
     let mut s = State::new();
     for (k, id) in ids.iter().enumerate() {
-        s.deliver(signed(id, 1, &[10 + k as i64, 20]), &pki);
+        // SIGNED UNDER BULYAN, because the round is Bulyan. `Receipt::issue` filters
+        // contributions whose parameters differ from the round's, so signing these as Krum
+        // would empty the round and this test would fail for a reason it is not about.
+        s.deliver(signed_with(id, BULYAN_F1, 1, &[10 + k as i64, 20]), &pki);
     }
     let receipt = Receipt::issue(
         &s,
