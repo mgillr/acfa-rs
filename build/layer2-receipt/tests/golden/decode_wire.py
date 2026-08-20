@@ -28,7 +28,10 @@ import json
 import sys
 import hashlib
 
-MAGIC = b"ACFA-R1\0"
+# Two magics, two signature meanings. Per the wire.rs doc comment, v2 is a NEW MAGIC rather
+# than a version bump *because the signatures mean different things*, so this decoder dispatches
+# on the magic and never lets one branch fall through to the other's rules.
+MAGICS = {b"ACFA-R1\0": 1, b"ACFA-R2\0": 2}
 VERSION = 1
 RULES = {0: "Krum", 1: "Bulyan"}
 
@@ -63,24 +66,35 @@ class R:
         return s.i == len(s.b)
 
 
-def leaf_c(rnd, node_id, tensor, sig):
-    """`C|` || rnd || node_id || sha256(enc_tensor) || sig, per the leaf() doc comment.
+def leaf_c(ctx, rnd, node_id, tensor, sig):
+    """`C|` [|| ctx] || rnd || node_id || sha256(enc_tensor) || sig, per the leaf() doc comment.
 
     enc_tensor is the decimal rendering of each value joined by `|`, per hash.rs.
+
+    THE POSITION OF ctx WAS NOT SPECIFIED BY THE DOC COMMENTS. They say a v2 receipt "carries an
+    explicit context commitment" and that it is "inside each signature", but neither the leaf()
+    comment nor the format rules say WHERE. This decoder assumes declaration order -- `ctx` is the
+    first field of both `Receipt` and `Contribution` -- and the published bytes then confirm or
+    refute that reading. That is the whole point of a second decoder: an assumption that survives
+    contact with the real bytes is a spec that is legible, and one that does not is a spec gap.
     """
     enc = "|".join(str(v) for v in tensor).encode()
     th = hashlib.sha256(enc).digest()
-    b = b"C|" + rnd.to_bytes(8, "big") + node_id.to_bytes(4, "big") + th + sig
+    b = b"C|" + (ctx if ctx is not None else b"")
+    b += rnd.to_bytes(8, "big") + node_id.to_bytes(4, "big") + th + sig
     return hashlib.sha256(b).digest()
 
 
 def decode(b):
     r = R(b)
-    if r.take(8) != MAGIC:
-        raise ValueError("bad magic")
+    m = bytes(r.take(8))
+    if m not in MAGICS:
+        raise ValueError(f"bad magic {m!r}")
+    wire = MAGICS[m]
     v = r.u16()
     if v != VERSION:
         raise ValueError(f"bad version {v}")
+    ctx = bytes(r.take(32)) if wire == 2 else None
     round_ = r.u64()
     f = r.u32()
     rk = r.u8()
@@ -108,7 +122,7 @@ def decode(b):
         tl = r.u32()
         tensor = [r.i64() for _ in range(tl)]
         sig = r.take(64)
-        lf = leaf_c(rnd, nid, tensor, sig)
+        lf = leaf_c(ctx, rnd, nid, tensor, sig)
         if lastleaf is not None and lf <= lastleaf:
             raise ValueError("contributions not ascending by leaf")
         lastleaf = lf
@@ -134,7 +148,8 @@ def decode(b):
         raise ValueError(f"presence byte must be 0 or 1, got {present}")
     if not r.done():
         raise ValueError(f"trailing bytes: {len(b) - r.i}")
-    return dict(round=round_, f=f, rule=rule, pki_n=len(pki), contribs=len(cons),
+    return dict(wire=wire, ctx=(ctx.hex() if ctx is not None else None),
+                round=round_, f=f, rule=rule, pki_n=len(pki), contribs=len(cons),
                 proofs=nprf, state_root=sr.hex(), output_root=orr.hex(), agg=agg)
 
 

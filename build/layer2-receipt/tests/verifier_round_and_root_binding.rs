@@ -39,10 +39,17 @@ use acfa_receipt::{Contribution, Invalid, Policy, Receipt, Rule, State};
 fn signed(id: &Identity, rnd: u64, t: &[i64]) -> Contribution {
     let th = h(&enc_tensor(t));
     Contribution {
+        ctx: acfa_receipt::identity::NO_CONTEXT,
+        sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
         rnd,
         node_id: id.node_id,
         tensor: t.to_vec(),
-        sig: id.sign(&contrib_msg(rnd, &th)),
+        sig: id.sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            rnd,
+            id.node_id,
+            &th,
+        )),
     }
 }
 
@@ -55,7 +62,14 @@ fn fixture() -> (Vec<Identity>, Pki, Receipt) {
     for (k, id) in ids.iter().enumerate() {
         s.deliver(signed(id, 1, &[100 + k as i64, 200 - k as i64]), &pki);
     }
-    let r = Receipt::issue(&s, 1, &pki, 1, Rule::Krum);
+    let r = Receipt::issue(
+        &s,
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        1,
+        Rule::Krum,
+    );
     (ids, pki, r)
 }
 

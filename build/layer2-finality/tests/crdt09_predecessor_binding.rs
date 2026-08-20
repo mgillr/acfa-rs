@@ -20,10 +20,17 @@ fn room(n: u32) -> (Vec<Identity>, Pki) {
 fn leaf(a: &Identity, t: &[i64]) -> [u8; 32] {
     let th = h(&enc_tensor(t));
     Contribution {
+        ctx: acfa_receipt::identity::NO_CONTEXT,
+        sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
         rnd: 1,
         node_id: a.node_id,
         tensor: t.to_vec(),
-        sig: a.sign(&contrib_msg(1, &th)),
+        sig: a.sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            1,
+            a.node_id,
+            &th,
+        )),
     }
     .leaf()
 }
@@ -86,10 +93,17 @@ fn the_certificate_preimage_does_not_yet_carry_the_anchor() {
     for id in &ids {
         s.deliver(
             Contribution {
+                ctx: acfa_receipt::identity::NO_CONTEXT,
+                sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
                 rnd: 1,
                 node_id: id.node_id,
                 tensor: vec![1, 2],
-                sig: id.sign(&contrib_msg(1, &h(&enc_tensor(&[1, 2])))),
+                sig: id.sign(&contrib_msg(
+                    &acfa_receipt::identity::NO_CONTEXT,
+                    1,
+                    id.node_id,
+                    &h(&enc_tensor(&[1, 2])),
+                )),
             },
             &pki,
         );

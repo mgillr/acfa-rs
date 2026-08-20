@@ -10,7 +10,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-FP="bd13ba3209a940b2025368a63c546ffd59e2580a1b8aa7128cc9b423d1957e40"
+FP="701a05a332a539697b5415c6d35ca70ca327992a09a80e5c628081b3f890c287"
 fail=0
 
 echo "== fingerprint unchanged (byte-identity is load-bearing; a change needs a wire-version bump) =="
@@ -18,6 +18,15 @@ if grep -rq "$FP" build/ README.md 2>/dev/null; then
   echo "  OK  fingerprint present"
 else
   echo "  FAIL fingerprint $FP GONE -- byte-identity changed without an intended wire-version bump"; fail=1
+fi
+
+echo "== the pre-v0.4.0 fingerprint is still recorded as history (compat promise not erased) =="
+LEGACY="bd13ba3209a940b2025368a63c546ffd59e2580a1b8aa7128cc9b423d1957e40"
+if grep -rq "$LEGACY" COMPATIBILITY.md CHANGELOG.md README.md 2>/dev/null; then
+  echo "  OK  legacy fingerprint documented"
+else
+  echo "  FAIL legacy fingerprint $LEGACY is no longer documented -- v0.1.0-v0.3.0 receipts are"
+  echo "       still readable and their fingerprint must stay on the record, not be overwritten"; fail=1
 fi
 
 echo "== every finding's guard test file exists (a revert cannot delete its own alarm) =="
@@ -36,6 +45,7 @@ GUARDS=(
   "build/layer2-receipt/tests/crdt11_leaf_disjointness.rs"
   "build/layer2-receipt/tests/crypto02_key_strength.rs"
   "build/layer2-receipt/tests/crypto04_nonce_equivocation.rs"
+  "build/layer2-receipt/tests/compat_v1_receipts.rs"
   "build/layer2-receipt/tests/crypto08_rule_pinning.rs"
   "build/layer2-receipt/tests/rust04_argv.rs"
   "build/layer2-receipt/tests/rust08_expected_state_root.rs"

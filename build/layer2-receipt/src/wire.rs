@@ -19,12 +19,21 @@
 //! encoder just closed.
 
 use crate::entry::{Contribution, EquivProof};
-use crate::identity::{Pki, PubKey, Sig};
+use crate::identity::{Pki, PreimageVersion, PubKey, Sig};
 use crate::receipt::Receipt;
 use crate::redact::{RedactedContribution, RedactedReceipt};
 use crate::resolve::Rule;
 
-pub const MAGIC: &[u8; 8] = b"ACFA-R1\0";
+pub const MAGIC_V1: &[u8; 8] = b"ACFA-R1\0";
+/// Wire magic for a v0.4.0+ receipt: carries an explicit context commitment.
+///
+/// A NEW MAGIC RATHER THAN A VERSION BUMP, deliberately. The v1 and v2 formats differ in what
+/// their SIGNATURES mean, not merely in their layout, so a decoder must never be one branch away
+/// from applying v2 rules to v1 bytes. Distinct magics make that a decode dispatch instead of a
+/// conditional a maintainer can collapse.
+pub const MAGIC_V2: &[u8; 8] = b"ACFA-R2\0";
+/// The magic this build EMITS. Reading still accepts [`MAGIC_V1`] forever -- see COMPATIBILITY.md.
+pub const MAGIC: &[u8; 8] = MAGIC_V2;
 /// Wire magic for a REDACTED receipt.
 ///
 /// Deliberately a different string, not a flag inside the existing format. A full-receipt
@@ -32,7 +41,11 @@ pub const MAGIC: &[u8; 8] = b"ACFA-R1\0";
 /// be handed a receipt carrying less evidence than it believes it has. A version bit inside one
 /// format would have made that a branch someone could forget to take; a different magic makes
 /// it a decode failure.
-pub const MAGIC_REDACTED: &[u8; 8] = b"ACFA-X1\0";
+pub const MAGIC_REDACTED_V1: &[u8; 8] = b"ACFA-X1\0";
+/// Redacted receipt, v0.4.0+ -- carries the context commitment.
+pub const MAGIC_REDACTED_V2: &[u8; 8] = b"ACFA-X2\0";
+/// The redacted magic this build emits.
+pub const MAGIC_REDACTED: &[u8; 8] = MAGIC_REDACTED_V2;
 pub const VERSION: u16 = 1;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -202,6 +215,7 @@ pub fn encode(r: &Receipt) -> Vec<u8> {
     let mut w = W(Vec::new());
     w.raw(MAGIC);
     w.u16(VERSION);
+    w.raw(&r.ctx);
     w.u64(r.round);
     w.u32(r.f as u32);
     w.u8(r.rule.as_wire());
@@ -318,13 +332,27 @@ impl<'a> R<'a> {
 
 pub fn decode(bytes: &[u8]) -> Result<Receipt, WireError> {
     let mut r = R { b: bytes, i: 0 };
-    if r.take(8)? != MAGIC {
+    // DISPATCH ON MAGIC, NOT ON A FLAG. v1 and v2 differ in what their signatures MEAN, so the two
+    // paths must not share a branch that a later edit could collapse.
+    let magic = r.take(8)?;
+    let (ctx, sig_preimage) = if magic == MAGIC_V2 {
+        let v = r.u16()?;
+        if v != VERSION {
+            return Err(WireError::UnsupportedVersion(v));
+        }
+        (r.arr32()?, PreimageVersion::V2)
+    } else if magic == MAGIC_V1 {
+        let v = r.u16()?;
+        if v != VERSION {
+            return Err(WireError::UnsupportedVersion(v));
+        }
+        // A v1 receipt names no context and its signatures are over the v1 preimage. It keeps
+        // verifying forever; it simply cannot be re-encoded as v2, because no context exists to
+        // put there and inventing one would forge a binding nobody signed.
+        (crate::identity::NO_CONTEXT, PreimageVersion::V1)
+    } else {
         return Err(WireError::BadMagic);
-    }
-    let v = r.u16()?;
-    if v != VERSION {
-        return Err(WireError::UnsupportedVersion(v));
-    }
+    };
     let round = r.u64()?;
     let f = r.u32()? as usize;
     let rule_b = r.u8()?;
@@ -387,6 +415,8 @@ pub fn decode(bytes: &[u8]) -> Result<Receipt, WireError> {
         }
         let sig = r.arr64()?;
         contributions.push(Contribution {
+            ctx,
+            sig_preimage,
             rnd,
             node_id,
             tensor,
@@ -404,6 +434,8 @@ pub fn decode(bytes: &[u8]) -> Result<Receipt, WireError> {
     let mut proofs = Vec::with_capacity(n_p);
     for _ in 0..n_p {
         proofs.push(EquivProof {
+            ctx,
+            sig_preimage,
             rnd: r.u64()?,
             node_id: r.u32()?,
             h1: r.arr32()?,
@@ -444,6 +476,7 @@ pub fn decode(bytes: &[u8]) -> Result<Receipt, WireError> {
     }
 
     Ok(Receipt {
+        ctx,
         round,
         f,
         rule,
@@ -468,6 +501,7 @@ pub fn encode_redacted(r: &RedactedReceipt) -> Vec<u8> {
     let mut w = W(Vec::new());
     w.raw(MAGIC_REDACTED);
     w.u16(VERSION);
+    w.raw(&r.ctx);
     w.u64(r.round);
     w.u32(r.f as u32);
     w.u8(r.rule.as_wire());
@@ -527,13 +561,22 @@ pub fn encode_redacted(r: &RedactedReceipt) -> Vec<u8> {
 /// present, canonical leaf ordering, and no trailing bytes.
 pub fn decode_redacted(bytes: &[u8]) -> Result<RedactedReceipt, WireError> {
     let mut r = R { b: bytes, i: 0 };
-    if r.take(8)? != MAGIC_REDACTED {
+    let magic = r.take(8)?;
+    let (ctx, sig_preimage) = if magic == MAGIC_REDACTED_V2 {
+        let v = r.u16()?;
+        if v != VERSION {
+            return Err(WireError::UnsupportedVersion(v));
+        }
+        (r.arr32()?, PreimageVersion::V2)
+    } else if magic == MAGIC_REDACTED_V1 {
+        let v = r.u16()?;
+        if v != VERSION {
+            return Err(WireError::UnsupportedVersion(v));
+        }
+        (crate::identity::NO_CONTEXT, PreimageVersion::V1)
+    } else {
         return Err(WireError::BadMagic);
-    }
-    let v = r.u16()?;
-    if v != VERSION {
-        return Err(WireError::UnsupportedVersion(v));
-    }
+    };
     let round = r.u64()?;
     let f = r.u32()? as usize;
     let rule_b = r.u8()?;
@@ -574,6 +617,8 @@ pub fn decode_redacted(bytes: &[u8]) -> Result<RedactedReceipt, WireError> {
         let tensor_hash = r.arr32()?;
         let sig = r.arr64()?;
         contributions.push(RedactedContribution {
+            ctx,
+            sig_preimage,
             rnd,
             node_id,
             tensor_hash,
@@ -591,6 +636,8 @@ pub fn decode_redacted(bytes: &[u8]) -> Result<RedactedReceipt, WireError> {
     let mut proofs: Vec<EquivProof> = Vec::with_capacity(n_p);
     for _ in 0..n_p {
         proofs.push(EquivProof {
+            ctx,
+            sig_preimage,
             rnd: r.u64()?,
             node_id: r.u32()?,
             h1: r.arr32()?,
@@ -630,6 +677,7 @@ pub fn decode_redacted(bytes: &[u8]) -> Result<RedactedReceipt, WireError> {
     }
 
     Ok(RedactedReceipt {
+        ctx,
         round,
         f,
         rule,

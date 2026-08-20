@@ -96,12 +96,40 @@ def verify(pk_raw: bytes, msg: bytes, sig: bytes) -> bool:
     except (InvalidSignature, ValueError):
         return False
 
-def contrib_msg(rnd: int, tensor_hash: bytes) -> bytes:
+def contrib_msg(ctx: bytes, rnd: int, node_id: int, tensor_hash: bytes) -> bytes:
+    """v2 signed preimage: context and node id are INSIDE the signature.
+
+    The v1 preimage (round and tensor hash only) said neither what a signature was about nor
+    who wrote it. Two honest contributions by one node at one round number in two different
+    contexts therefore satisfied the equivocation predicate -- a valid proof of cheating
+    against a node that had done nothing wrong, and conviction is permanent (#79).
+
+    Every field is FIXED-WIDTH, so the concatenation is injective and no choice of ctx can be
+    re-cut to collide with a different (ctx, rnd, node, hash). Variable-length caller data
+    enters only as a 32-byte hash. That rule is what makes an opaque, caller-defined context
+    safe, and any future field must meet it.
+    """
+    assert len(ctx) == 32, "context commitment must be exactly 32 bytes"
+    return (
+        b"ACFA-CONTRIB2|"
+        + ctx
+        + rnd.to_bytes(8, "big")
+        + node_id.to_bytes(4, "big")
+        + tensor_hash
+    )
+
+
+NO_CONTEXT = bytes(32)
+
+
+def contrib_msg_v1(rnd: int, tensor_hash: bytes) -> bytes:
+    """Retained so receipts written before v0.4.0 keep verifying. Never used for new ones."""
     return b"ACFA-CONTRIB|" + rnd.to_bytes(8, "big") + b"|" + tensor_hash
 
 # ---------------------------------------------------------------- entries
 @dataclass(frozen=True)
 class Contribution:
+    ctx: bytes                         # opaque, caller-defined, never interpreted here
     rnd: int
     node_id: int
     tensor: Tuple[int, ...]            # fixed-point ints
@@ -111,14 +139,19 @@ class Contribution:
         return H(enc_tensor(self.tensor))
 
     def leaf(self) -> bytes:
-        return H(b"C|" + self.rnd.to_bytes(8, "big")
+        return H(b"C|" + self.ctx + self.rnd.to_bytes(8, "big")
                  + self.node_id.to_bytes(4, "big")
                  + self.tensor_hash() + self.sig)
 
 @dataclass(frozen=True)
 class EquivProof:
     """Self-authenticating: two valid signatures by the same key, same round,
-    different content. Verifiable offline by anyone holding the PKI."""
+    different content. Verifiable offline by anyone holding the PKI.
+
+    THE CONTEXT IS PART OF THE PROOF. Two contributions by one node at one round number in
+    DIFFERENT contexts are not equivocation -- that is a node doing its job in two places, and
+    convicting it for that was a critical defect (#79)."""
+    ctx: bytes
     rnd: int
     node_id: int
     h1: bytes
@@ -127,7 +160,7 @@ class EquivProof:
     sig2: bytes
 
     def leaf(self) -> bytes:
-        return H(b"P|" + self.rnd.to_bytes(8, "big")
+        return H(b"P|" + self.ctx + self.rnd.to_bytes(8, "big")
                  + self.node_id.to_bytes(4, "big")
                  + self.h1 + self.h2 + self.sig1 + self.sig2)
 
@@ -135,8 +168,8 @@ class EquivProof:
         if self.h1 == self.h2 or self.node_id not in pki:
             return False
         pk = pki[self.node_id]
-        return (verify(pk, contrib_msg(self.rnd, self.h1), self.sig1)
-                and verify(pk, contrib_msg(self.rnd, self.h2), self.sig2))
+        return (verify(pk, contrib_msg(self.ctx, self.rnd, self.node_id, self.h1), self.sig1)
+                and verify(pk, contrib_msg(self.ctx, self.rnd, self.node_id, self.h2), self.sig2))
 
 # ---------------------------------------------------------------- CRDT state
 @dataclass
@@ -171,7 +204,7 @@ def admit(state: State, rnd: int, pki: Dict[int, bytes]) -> List[Contribution]:
     for c in state.C.values():
         if c.rnd != rnd or c.node_id in bad or c.node_id not in pki:
             continue
-        if not verify(pki[c.node_id], contrib_msg(rnd, c.tensor_hash()), c.sig):
+        if not verify(pki[c.node_id], contrib_msg(c.ctx, rnd, c.node_id, c.tensor_hash()), c.sig):
             continue
         per_id.setdefault(c.node_id, []).append(c)
     out = []
@@ -314,7 +347,7 @@ class Replica:
                 # canonical (h,sig) pairing: both observers derive the SAME proof object
                 (h1, s1), (h2, s2) = sorted(
                     [(c.tensor_hash(), c.sig), (new.tensor_hash(), new.sig)])
-                p = EquivProof(new.rnd, new.node_id, h1, h2, s1, s2)
+                p = EquivProof(new.ctx, new.rnd, new.node_id, h1, h2, s1, s2)
                 if p.valid(self.pki):
                     self.state.add_proof(p)
                 return

@@ -18,10 +18,17 @@ use acfa_receipt::{Contribution, Policy, Receipt, Rule, State};
 fn signed(id: &Identity, rnd: u64, t: &[i64]) -> Contribution {
     let th = h(&enc_tensor(t));
     Contribution {
+        ctx: acfa_receipt::identity::NO_CONTEXT,
+        sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
         rnd,
         node_id: id.node_id,
         tensor: t.to_vec(),
-        sig: id.sign(&contrib_msg(rnd, &th)),
+        sig: id.sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            rnd,
+            id.node_id,
+            &th,
+        )),
     }
 }
 
@@ -38,7 +45,17 @@ fn fixture() -> (Receipt, Pki) {
     }
     s.deliver(signed(&ids[6], 1, &[9_000, 9_000]), &pki);
     s.deliver(signed(&ids[6], 1, &[-9_000, -9_000]), &pki);
-    (Receipt::issue(&s, 1, &pki, 1, Rule::Krum), pki)
+    (
+        Receipt::issue(
+            &s,
+            acfa_receipt::identity::NO_CONTEXT,
+            1,
+            &pki,
+            1,
+            Rule::Krum,
+        ),
+        pki,
+    )
 }
 
 /// The leaf is byte-identical, which is WHY everything downstream of it survives.
@@ -116,7 +133,14 @@ fn the_redacted_artefact_contains_no_plaintext_vector() {
     s.deliver(signed(&id, 1, &[SECRET, SECRET + 1]), &pki);
     s.deliver(signed(&other, 1, &[7, 8]), &pki);
     s.deliver(signed(&third, 1, &[9, 10]), &pki);
-    let r = Receipt::issue(&s, 1, &pki, 0, Rule::Krum);
+    let r = Receipt::issue(
+        &s,
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        0,
+        Rule::Krum,
+    );
 
     // Premise: the FULL receipt does leak it. Without this the test could pass because the
     // value was never there.
@@ -257,7 +281,14 @@ fn the_encoded_redacted_bytes_contain_no_plaintext_vector() {
     s.deliver(signed(&ids[0], 1, &vec_a), &pki);
     s.deliver(signed(&ids[1], 1, &vec_b), &pki);
     s.deliver(signed(&ids[2], 1, &vec_c), &pki);
-    let r = Receipt::issue(&s, 1, &pki, 0, Rule::Krum);
+    let r = Receipt::issue(
+        &s,
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        0,
+        Rule::Krum,
+    );
 
     let needle = SECRET.to_be_bytes();
     let full_bytes = acfa_receipt::wire::encode(&r);

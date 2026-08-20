@@ -89,10 +89,17 @@ fn is_usable_pubkey_refuses_a_malformed_encoding() {
 fn signed(id: &Identity, rnd: u64, t: &[i64]) -> Contribution {
     let th = h(&enc_tensor(t));
     Contribution {
+        ctx: acfa_receipt::identity::NO_CONTEXT,
+        sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
         rnd,
         node_id: id.node_id,
         tensor: t.to_vec(),
-        sig: id.sign(&contrib_msg(rnd, &th)),
+        sig: id.sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            rnd,
+            id.node_id,
+            &th,
+        )),
     }
 }
 
@@ -120,6 +127,8 @@ fn admit_excludes_a_contribution_whose_signature_does_not_verify() {
     s.add_contribution(signed(&b, 1, &[11, 21]));
     // A KNOWN identity, in the PKI, with a signature that is simply wrong.
     s.add_contribution(Contribution {
+        ctx: acfa_receipt::identity::NO_CONTEXT,
+        sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
         rnd: 1,
         node_id: c.node_id,
         tensor: vec![99, 99],
@@ -149,10 +158,27 @@ fn real_proof(id: &Identity, rnd: u64) -> EquivProof {
     let h1 = h(&enc_tensor(&[1i64, 2]));
     let h2 = h(&enc_tensor(&[3i64, 4]));
     EquivProof::canonical(
+        acfa_receipt::identity::NO_CONTEXT,
         rnd,
         id.node_id,
-        (h1, id.sign(&contrib_msg(rnd, &h1))),
-        (h2, id.sign(&contrib_msg(rnd, &h2))),
+        (
+            h1,
+            id.sign(&contrib_msg(
+                &acfa_receipt::identity::NO_CONTEXT,
+                rnd,
+                id.node_id,
+                &h1,
+            )),
+        ),
+        (
+            h2,
+            id.sign(&contrib_msg(
+                &acfa_receipt::identity::NO_CONTEXT,
+                rnd,
+                id.node_id,
+                &h2,
+            )),
+        ),
     )
 }
 
@@ -221,6 +247,7 @@ fn a_fabricated_proof_does_not_convict_through_the_state_door() {
     let h1 = h(&enc_tensor(&[1i64, 2]));
     let h2 = h(&enc_tensor(&[3i64, 4]));
     s.add_proof(EquivProof::canonical(
+        acfa_receipt::identity::NO_CONTEXT,
         1,
         victim.node_id,
         (h1, [0u8; 64]),

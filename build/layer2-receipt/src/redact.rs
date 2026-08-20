@@ -52,7 +52,7 @@
 
 use crate::entry::{Contribution, EquivProof};
 use crate::hash::{h, merkle_root};
-use crate::identity::{contrib_msg, verify, Pki, Sig};
+use crate::identity::{contrib_msg, contrib_msg_v1, verify, Context, Pki, PreimageVersion, Sig};
 use crate::receipt::{Invalid, Receipt};
 use crate::resolve::Rule;
 use std::collections::{BTreeMap, BTreeSet};
@@ -63,6 +63,12 @@ use std::collections::{BTreeMap, BTreeSet};
 /// dropping the tensor costs no verification strength.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RedactedContribution {
+    /// The same opaque context the full contribution carried. **Redaction must not drop it**: the
+    /// pruned-witness path outlives every other, so a context-blind witness would keep #79 alive in
+    /// exactly the record that survives longest.
+    pub ctx: Context,
+    /// See [`crate::entry::Contribution::sig_preimage`].
+    pub sig_preimage: PreimageVersion,
     pub rnd: u64,
     pub node_id: u32,
     /// `h(enc_tensor(tensor))` of the removed vector -- what the signature actually signed.
@@ -75,8 +81,14 @@ impl RedactedContribution {
     /// hashes the tensor HASH, not the tensor. A test asserts the equality rather than trusting
     /// this comment.
     pub fn leaf(&self) -> [u8; 32] {
-        let mut b = Vec::with_capacity(2 + 8 + 4 + 32 + 64);
+        let mut b = Vec::with_capacity(2 + 32 + 8 + 4 + 32 + 64);
         b.extend_from_slice(b"C|");
+        // Versioned for the same reason as `Contribution::leaf` -- see the comment there. A
+        // redacted contribution must produce the SAME leaf as the full one it redacts, so this
+        // has to track that function exactly.
+        if matches!(self.sig_preimage, PreimageVersion::V2) {
+            b.extend_from_slice(&self.ctx);
+        }
         b.extend_from_slice(&self.rnd.to_be_bytes());
         b.extend_from_slice(&self.node_id.to_be_bytes());
         b.extend_from_slice(&self.tensor_hash);
@@ -88,7 +100,16 @@ impl RedactedContribution {
     pub fn signature_valid(&self, pki: &Pki) -> bool {
         match pki.get(&self.node_id) {
             None => false,
-            Some(pk) => verify(pk, &contrib_msg(self.rnd, &self.tensor_hash), &self.sig),
+            Some(pk) => match self.sig_preimage {
+                PreimageVersion::V1 => {
+                    verify(pk, &contrib_msg_v1(self.rnd, &self.tensor_hash), &self.sig)
+                }
+                PreimageVersion::V2 => verify(
+                    pk,
+                    &contrib_msg(&self.ctx, self.rnd, self.node_id, &self.tensor_hash),
+                    &self.sig,
+                ),
+            },
         }
     }
 }
@@ -96,6 +117,8 @@ impl RedactedContribution {
 impl From<&Contribution> for RedactedContribution {
     fn from(c: &Contribution) -> Self {
         RedactedContribution {
+            ctx: c.ctx,
+            sig_preimage: c.sig_preimage,
             rnd: c.rnd,
             node_id: c.node_id,
             tensor_hash: c.tensor_hash(),
@@ -107,6 +130,8 @@ impl From<&Contribution> for RedactedContribution {
 /// A receipt with every participant's vector removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RedactedReceipt {
+    /// The context this receipt is about. Redaction removes the vectors, never the binding.
+    pub ctx: Context,
     pub round: u64,
     pub f: usize,
     pub rule: Rule,
@@ -146,6 +171,7 @@ impl Receipt {
     /// what the receipt commits to, which is the one thing it must never do.
     pub fn redact(&self) -> RedactedReceipt {
         RedactedReceipt {
+            ctx: self.ctx,
             round: self.round,
             f: self.f,
             rule: self.rule,

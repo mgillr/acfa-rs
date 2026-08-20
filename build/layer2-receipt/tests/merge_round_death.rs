@@ -35,9 +35,16 @@ fn round_batch(base: &Identity, n: u32, rnd: u64) -> State {
     let mut s = State::new();
     let t = vec![rnd as i64, 2];
     let th = h(&enc_tensor(&t));
-    let sig = base.sign(&contrib_msg(rnd, &th));
+    let sig = base.sign(&contrib_msg(
+        &acfa_receipt::identity::NO_CONTEXT,
+        rnd,
+        base.node_id,
+        &th,
+    ));
     for id in 0..n {
         s.add_contribution(Contribution {
+            ctx: acfa_receipt::identity::NO_CONTEXT,
+            sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
             rnd,
             node_id: id,
             tensor: t.clone(),
@@ -113,10 +120,17 @@ fn a_late_equivocation_for_a_pruned_round_still_convicts() {
     let signed = |id: &Identity, rnd: u64, t: &[i64]| {
         let th = h(&enc_tensor(t));
         Contribution {
+            ctx: acfa_receipt::identity::NO_CONTEXT,
+            sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
             rnd,
             node_id: id.node_id,
             tensor: t.to_vec(),
-            sig: id.sign(&contrib_msg(rnd, &th)),
+            sig: id.sign(&contrib_msg(
+                &acfa_receipt::identity::NO_CONTEXT,
+                rnd,
+                id.node_id,
+                &th,
+            )),
         }
     };
 
@@ -156,10 +170,17 @@ fn pruning_does_not_move_a_receipt_root() {
     let signed = |id: &Identity, rnd: u64, t: &[i64]| {
         let th = h(&enc_tensor(t));
         Contribution {
+            ctx: acfa_receipt::identity::NO_CONTEXT,
+            sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
             rnd,
             node_id: id.node_id,
             tensor: t.to_vec(),
-            sig: id.sign(&contrib_msg(rnd, &th)),
+            sig: id.sign(&contrib_msg(
+                &acfa_receipt::identity::NO_CONTEXT,
+                rnd,
+                id.node_id,
+                &th,
+            )),
         }
     };
 
@@ -168,9 +189,23 @@ fn pruning_does_not_move_a_receipt_root() {
         s.deliver(signed(id, 1, &[1, 2]), &pki);
         s.deliver(signed(id, 2, &[3, 4]), &pki);
     }
-    let before = Receipt::issue(&s, 2, &pki, 1, Rule::Krum);
+    let before = Receipt::issue(
+        &s,
+        acfa_receipt::identity::NO_CONTEXT,
+        2,
+        &pki,
+        1,
+        Rule::Krum,
+    );
     s.prune_through(1); // retire round 1 only
-    let after = Receipt::issue(&s, 2, &pki, 1, Rule::Krum);
+    let after = Receipt::issue(
+        &s,
+        acfa_receipt::identity::NO_CONTEXT,
+        2,
+        &pki,
+        1,
+        Rule::Krum,
+    );
 
     assert_eq!(
         before.claimed_state_root, after.claimed_state_root,

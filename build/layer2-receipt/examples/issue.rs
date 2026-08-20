@@ -26,9 +26,16 @@ fn build(ids: &[Identity], equivocate: bool) -> (State, Pki) {
     let mut state = State::new();
     for (i, id) in ids.iter().enumerate() {
         let t = vec![i as i64 * 3, i as i64 + 1, 7 - i as i64];
-        let sig = id.sign(&contrib_msg(1, &h(&enc_tensor(&t))));
+        let sig = id.sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            1,
+            id.node_id,
+            &h(&enc_tensor(&t)),
+        ));
         state.deliver(
             Contribution {
+                ctx: acfa_receipt::identity::NO_CONTEXT,
+                sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
                 rnd: 1,
                 node_id: id.node_id,
                 tensor: t,
@@ -39,9 +46,16 @@ fn build(ids: &[Identity], equivocate: bool) -> (State, Pki) {
     }
     if equivocate {
         let t = vec![9999, 9999, 9999];
-        let sig = ids[0].sign(&contrib_msg(1, &h(&enc_tensor(&t))));
+        let sig = ids[0].sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            1,
+            ids[0].node_id,
+            &h(&enc_tensor(&t)),
+        ));
         state.deliver(
             Contribution {
+                ctx: acfa_receipt::identity::NO_CONTEXT,
+                sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
                 rnd: 1,
                 node_id: ids[0].node_id,
                 tensor: t,
@@ -85,21 +99,42 @@ fn main() {
     };
 
     let (state, pki) = build(&ids, has("--equivocate"));
-    let mut receipt = Receipt::issue(&state, 1, &pki, 1, Rule::Krum);
+    let mut receipt = Receipt::issue(
+        &state,
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        1,
+        Rule::Krum,
+    );
 
     if has("--withhold") {
         // Both halves of an equivocation present, no proof formed: the receipt holds the
         // evidence and never computes the conviction.
         let t = vec![9999, 9999, 9999];
-        let sig = ids[0].sign(&contrib_msg(1, &h(&enc_tensor(&t))));
+        let sig = ids[0].sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            1,
+            ids[0].node_id,
+            &h(&enc_tensor(&t)),
+        ));
         let mut st2 = state;
         st2.add_contribution(Contribution {
+            ctx: acfa_receipt::identity::NO_CONTEXT,
+            sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
             rnd: 1,
             node_id: ids[0].node_id,
             tensor: t,
             sig,
         });
-        let r = Receipt::issue(&st2, 1, &pki, 1, Rule::Krum);
+        let r = Receipt::issue(
+            &st2,
+            acfa_receipt::identity::NO_CONTEXT,
+            1,
+            &pki,
+            1,
+            Rule::Krum,
+        );
         std::io::stdout()
             .write_all(&encode(&r))
             .expect("write receipt");

@@ -26,7 +26,7 @@ Verify the copy is unmodified:
 cd reference && shasum -a 256 -c SHA256SUMS
 ```
 
-`43e45bfa...` is the pinned hash of this file (`SHA256SUMS`, checked in CI). If you change it, the goldens change, the
+`3865b190...` is the pinned hash of this file (`SHA256SUMS`, checked in CI). If you change it, the goldens change, the
 cross-implementation tests fail, and that is the intended behaviour: the whole point of
 this file is to be a second, independently written implementation that the Rust must
 agree with byte for byte. Do not edit it to make a test pass.

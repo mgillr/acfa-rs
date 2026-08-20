@@ -47,9 +47,16 @@ fn sample(n: u32, rule: Rule) -> (Receipt, Pki) {
     let mut s = State::new();
     for (i, id) in ids.iter().enumerate() {
         let t = vec![i as i64 * 3 - 5, -(i as i64), 1234];
-        let sig = id.sign(&contrib_msg(1, &h(&enc_tensor(&t))));
+        let sig = id.sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            1,
+            id.node_id,
+            &h(&enc_tensor(&t)),
+        ));
         s.deliver(
             Contribution {
+                ctx: acfa_receipt::identity::NO_CONTEXT,
+                sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
                 rnd: 1,
                 node_id: id.node_id,
                 tensor: t,
@@ -58,7 +65,10 @@ fn sample(n: u32, rule: Rule) -> (Receipt, Pki) {
             &pki,
         );
     }
-    (Receipt::issue(&s, 1, &pki, 1, rule), pki)
+    (
+        Receipt::issue(&s, acfa_receipt::identity::NO_CONTEXT, 1, &pki, 1, rule),
+        pki,
+    )
 }
 
 #[test]

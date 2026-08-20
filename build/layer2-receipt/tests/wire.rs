@@ -18,10 +18,17 @@ fn ident(n: u32) -> Identity {
 fn contrib(a: &Identity, rnd: u64, t: &[i64]) -> Contribution {
     let th = h(&enc_tensor(t));
     Contribution {
+        ctx: acfa_receipt::identity::NO_CONTEXT,
+        sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
         rnd,
         node_id: a.node_id,
         tensor: t.to_vec(),
-        sig: a.sign(&contrib_msg(rnd, &th)),
+        sig: a.sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            rnd,
+            a.node_id,
+            &th,
+        )),
     }
 }
 
@@ -32,7 +39,17 @@ fn sample(n: u32) -> (Receipt, Pki) {
     for (i, id) in ids.iter().enumerate() {
         s.deliver(contrib(id, 1, &[i as i64 * 3, i as i64 + 1]), &pki);
     }
-    (Receipt::issue(&s, 1, &pki, 1, Rule::Krum), pki)
+    (
+        Receipt::issue(
+            &s,
+            acfa_receipt::identity::NO_CONTEXT,
+            1,
+            &pki,
+            1,
+            Rule::Krum,
+        ),
+        pki,
+    )
 }
 
 #[test]
@@ -64,7 +81,14 @@ fn a_decoded_receipt_still_verifies() {
 fn an_empty_round_round_trips_with_no_aggregate() {
     let ids: Vec<Identity> = (1..=3).map(ident).collect();
     let pki: Pki = ids.iter().map(|i| (i.node_id, i.public())).collect();
-    let r = Receipt::issue(&State::new(), 9, &pki, 1, Rule::Krum);
+    let r = Receipt::issue(
+        &State::new(),
+        acfa_receipt::identity::NO_CONTEXT,
+        9,
+        &pki,
+        1,
+        Rule::Krum,
+    );
     assert!(r.claimed_aggregate.is_none());
     let back = decode(&encode(&r)).unwrap();
     assert_eq!(r, back);
@@ -80,7 +104,7 @@ fn both_rules_survive_the_wire() {
         for (i, id) in ids.iter().enumerate() {
             s.deliver(contrib(id, 1, &[i as i64, i as i64 * 2]), &pki);
         }
-        let r = Receipt::issue(&s, 1, &pki, 1, rule);
+        let r = Receipt::issue(&s, acfa_receipt::identity::NO_CONTEXT, 1, &pki, 1, rule);
         assert_eq!(decode(&encode(&r)).unwrap().rule, rule);
     }
 }
@@ -124,7 +148,7 @@ fn an_unknown_rule_is_refused_rather_than_defaulted() {
     // the verifier apply another.
     let (r, _) = sample(4);
     let mut bytes = encode(&r);
-    let rule_off = 8 + 2 + 8 + 4;
+    let rule_off = 8 + 2 + 32 + 8 + 4; // magic, version, ctx, round, f
     bytes[rule_off] = 0xAA;
     assert_eq!(decode(&bytes).unwrap_err(), WireError::UnknownRule(0xAA));
 }
@@ -155,7 +179,7 @@ fn out_of_order_contributions_are_refused_as_non_canonical() {
 
     // Now corrupt the order directly in the byte stream.
     let mut hand = canonical.clone();
-    let head = 8 + 2 + 8 + 4 + 1;
+    let head = 8 + 2 + 32 + 8 + 4 + 1; // magic, version, ctx, round, f, rule
     let n_pki = u32::from_be_bytes(hand[head..head + 4].try_into().unwrap()) as usize;
     let c_off = head + 4 + n_pki * 36;
     let n_c = u32::from_be_bytes(hand[c_off..c_off + 4].try_into().unwrap()) as usize;
@@ -178,7 +202,7 @@ fn out_of_order_contributions_are_refused_as_non_canonical() {
 fn a_duplicated_identity_in_the_pki_is_refused() {
     let (r, _) = sample(3);
     let bytes = encode(&r);
-    let head = 8 + 2 + 8 + 4 + 1;
+    let head = 8 + 2 + 32 + 8 + 4 + 1; // magic, version, ctx, round, f, rule
     let mut hand = bytes.clone();
     // Overwrite the second identity's id with the first's: no longer ascending.
     let first_id = hand[head + 4..head + 8].to_vec();
@@ -201,7 +225,7 @@ fn a_hostile_length_prefix_cannot_make_the_verifier_allocate() {
     // explicitly instead of trusting the platform to notice.
     let (r, _) = sample(4);
     let bytes = encode(&r);
-    let head = 8 + 2 + 8 + 4 + 1;
+    let head = 8 + 2 + 32 + 8 + 4 + 1; // magic, version, ctx, round, f, rule
 
     // Every count field in the format, each blown up to ~4 billion.
     let n_pki = u32::from_be_bytes(bytes[head..head + 4].try_into().unwrap()) as usize;
@@ -264,7 +288,14 @@ fn a_receipt_carrying_a_fabricated_pki_is_refused() {
     for (i, id) in forger.iter().enumerate() {
         s.deliver(contrib(id, 1, &[i as i64, 0]), &forged_pki);
     }
-    let forged = Receipt::issue(&s, 1, &forged_pki, 1, Rule::Krum);
+    let forged = Receipt::issue(
+        &s,
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &forged_pki,
+        1,
+        Rule::Krum,
+    );
 
     // Internally consistent: the forgery is well-formed.
     assert!(forged.check_self_consistent().is_ok());
@@ -287,7 +318,14 @@ fn the_fault_bound_cannot_be_chosen_by_the_receipt() {
     for (i, id) in ids.iter().enumerate() {
         s.deliver(contrib(id, 1, &[i as i64, 0]), &pki);
     }
-    let flattering = Receipt::issue(&s, 1, &pki, 0, Rule::Krum);
+    let flattering = Receipt::issue(
+        &s,
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        0,
+        Rule::Krum,
+    );
     assert!(
         flattering.check_self_consistent().is_ok(),
         "self-consistent, and that is exactly why it is not enough"
@@ -349,9 +387,16 @@ fn a_receipt_holding_both_halves_reports_the_conviction_it_did_not_make() {
     s.add_contribution(contrib(&ids[0], 1, &[3, 3]));
     s.add_contribution(contrib(&ids[0], 1, &[7, 7]));
 
-    let v = Receipt::issue(&s, 1, &pki, 1, Rule::Krum)
-        .verify(&Policy::new(pki, 1))
-        .expect("still a valid receipt: the aggregate is right");
+    let v = Receipt::issue(
+        &s,
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        1,
+        Rule::Krum,
+    )
+    .verify(&Policy::new(pki, 1))
+    .expect("still a valid receipt: the aggregate is right");
 
     assert!(v.convicted.is_empty(), "the receipt carries no proof");
     assert_eq!(
@@ -384,6 +429,7 @@ fn conviction_carries_across_rounds_by_design() {
     let a0 = contrib(&ids[0], 0, &[1, 1]);
     let b0 = contrib(&ids[0], 0, &[9, 9]);
     let old = acfa_receipt::EquivProof::canonical(
+        acfa_receipt::identity::NO_CONTEXT,
         0,
         1,
         (a0.tensor_hash(), a0.sig),
@@ -397,9 +443,16 @@ fn conviction_carries_across_rounds_by_design() {
     }
     s.add_proof(old);
 
-    let v = Receipt::issue(&s, 5, &pki, 1, Rule::Krum)
-        .verify(&Policy::new(pki, 1))
-        .expect("verifies");
+    let v = Receipt::issue(
+        &s,
+        acfa_receipt::identity::NO_CONTEXT,
+        5,
+        &pki,
+        1,
+        Rule::Krum,
+    )
+    .verify(&Policy::new(pki, 1))
+    .expect("verifies");
     assert_eq!(
         v.convicted,
         vec![1],

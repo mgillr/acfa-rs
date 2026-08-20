@@ -32,9 +32,16 @@ fn build(n: u32, d: usize) -> (State, Pki) {
         let t: Vec<i64> = (0..d)
             .map(|k| ((i * 7 + k * 13) as i64 % 2048) - 1024)
             .collect();
-        let sig = id.sign(&contrib_msg(1, &h(&enc_tensor(&t))));
+        let sig = id.sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            1,
+            id.node_id,
+            &h(&enc_tensor(&t)),
+        ));
         state.deliver(
             Contribution {
+                ctx: acfa_receipt::identity::NO_CONTEXT,
+                sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
                 rnd: 1,
                 node_id: id.node_id,
                 tensor: t,
@@ -74,7 +81,14 @@ fn main() {
         let f = 1;
 
         let t0 = Instant::now();
-        let receipt = Receipt::issue(&state, 1, &pki, f, Rule::Krum);
+        let receipt = Receipt::issue(
+            &state,
+            acfa_receipt::identity::NO_CONTEXT,
+            1,
+            &pki,
+            f,
+            Rule::Krum,
+        );
         let issue = t0.elapsed();
 
         let bytes = encode(&receipt);

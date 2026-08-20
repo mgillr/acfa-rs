@@ -74,8 +74,12 @@ use acfa_receipt::{decode, encode, Contribution, Policy, Receipt, Rule, State, W
 /// a record swap a pure reordering rather than a reshaping of the stream.
 const PROOF_REC: usize = 8 + 4 + 32 + 32 + 64 + 64; // rnd, node_id, h1, h2, sig1, sig2
 
-/// magic(8) + version(2) + round(8) + f(4) + rule(1)
-const HEAD: usize = 8 + 2 + 8 + 4 + 1;
+/// magic(8) + version(2) + ctx(32) + round(8) + f(4) + rule(1)
+///
+/// The ctx term arrived in v0.4.0. The walk below is cross-checked against the receipt's own
+/// proof count and the trailing state root, which is why a stale HEAD failed loudly here
+/// instead of quietly walking into the middle of a signature.
+const HEAD: usize = 8 + 2 + 32 + 8 + 4 + 1;
 
 fn ident(n: u32) -> Identity {
     Identity::from_secret(n, &[n as u8; 32])
@@ -84,10 +88,17 @@ fn ident(n: u32) -> Identity {
 fn contrib(a: &Identity, rnd: u64, t: &[i64]) -> Contribution {
     let th = h(&enc_tensor(t));
     Contribution {
+        ctx: acfa_receipt::identity::NO_CONTEXT,
+        sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
         rnd,
         node_id: a.node_id,
         tensor: t.to_vec(),
-        sig: a.sign(&contrib_msg(rnd, &th)),
+        sig: a.sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            rnd,
+            a.node_id,
+            &th,
+        )),
     }
 }
 
@@ -114,7 +125,14 @@ fn receipt_with_proofs(n: u32, equivocators: &[u32], f: usize) -> (Receipt, Pki)
         // A different tensor for the same (node, round): this is the equivocation.
         s.deliver(contrib(id, 1, &[-7 - *e as i64, 11 + *e as i64]), &pki);
     }
-    let r = Receipt::issue(&s, 1, &pki, f, Rule::Krum);
+    let r = Receipt::issue(
+        &s,
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        f,
+        Rule::Krum,
+    );
     assert_eq!(
         r.proofs.len(),
         equivocators.len(),
@@ -209,7 +227,7 @@ fn out_of_order_proofs_are_refused_as_non_canonical() {
     // the collection that carries the CONVICTIONS. Without this guard two receipts differing
     // only in the order of their proof records both decode, to the same logical receipt, and
     // the bytes therefore stop determining the receipt for the accountability half.
-    let (r, pki) = receipt_with_proofs(9, &[2, 5, 7], 1);
+    let (r, pki) = receipt_with_proofs(9, &[2, 5, 8], 1);
     let canonical = encode(&r);
 
     // The accepting twin, and it is not a formality: it establishes that the fixture is a
@@ -260,7 +278,7 @@ fn a_repeated_proof_record_is_refused_because_the_order_is_strict() {
     // to `>` still rejects a descending stream, so the swap test above would stay green while
     // a receipt could carry the same conviction record twice -- two encodings of one logical
     // proof set again, by repetition instead of by permutation.
-    let (r, pki) = receipt_with_proofs(9, &[2, 5, 7], 1);
+    let (r, pki) = receipt_with_proofs(9, &[2, 5, 8], 1);
     let canonical = encode(&r);
     assert!(
         decode(&canonical).is_ok_and(|d| d == r),
@@ -304,7 +322,7 @@ fn encode_normalises_an_unsorted_proof_vector() {
     // then a receipt that is canonical in memory would encode to a stream this crate's own
     // decoder refuses. The encoder's job is that order is a function of CONTENT and never of
     // the vector's history.
-    let (canonical_receipt, pki) = receipt_with_proofs(9, &[2, 5, 7], 1);
+    let (canonical_receipt, pki) = receipt_with_proofs(9, &[2, 5, 8], 1);
     assert!(canonical_receipt.proofs.len() >= 2);
 
     let mut scrambled = canonical_receipt.clone();
@@ -361,7 +379,7 @@ fn the_proof_order_the_encoder_chooses_is_leaf_order_specifically() {
     // `rnd`, would make both tests above pass while disagreeing with the decoder's predicate
     // for any receipt where the two orders differ -- and the leaves are hashes, so they
     // differ routinely. The decoder checks leaves; the encoder must sort by leaves.
-    let (r, _) = receipt_with_proofs(9, &[2, 5, 7], 1);
+    let (r, _) = receipt_with_proofs(9, &[2, 5, 8], 1);
     let bytes = encode(&r);
     let (first, n_p) = proof_block(&bytes, &r);
     assert_eq!(n_p, 3);
@@ -384,6 +402,11 @@ fn the_proof_order_the_encoder_chooses_is_leaf_order_specifically() {
 
     // And leaf order is not accidentally the same as node_id order for this fixture, so the
     // assertion above genuinely discriminates between the two.
+    //
+    // THE SET MOVED FROM [2, 5, 7] TO [2, 5, 8] IN v0.4.0. Adding ctx to the leaf preimage
+    // reshuffles the leaf hashes, and [2, 5, 7] happened to land back in node_id order -- at
+    // which point this test would have passed while proving nothing about WHICH sort the
+    // encoder uses. The guard below is what caught that; it is not decoration.
     let by_node: Vec<u32> = expected.iter().map(|p| p.node_id).collect();
     let mut ascending = by_node.clone();
     ascending.sort_unstable();

@@ -44,10 +44,17 @@ fn room(n: u32) -> (Vec<Identity>, Pki) {
 fn contrib(a: &Identity, rnd: u64, t: &[i64]) -> Contribution {
     let th = h(&enc_tensor(t));
     Contribution {
+        ctx: acfa_receipt::identity::NO_CONTEXT,
+        sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
         rnd,
         node_id: a.node_id,
         tensor: t.to_vec(),
-        sig: a.sign(&contrib_msg(rnd, &th)),
+        sig: a.sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            rnd,
+            a.node_id,
+            &th,
+        )),
     }
 }
 
@@ -62,7 +69,17 @@ fn krum_receipt_at_five() -> (Receipt, Pki) {
     for (i, id) in ids.iter().enumerate() {
         s.deliver(contrib(id, 1, &[i as i64, 0]), &pki);
     }
-    (Receipt::issue(&s, 1, &pki, 1, Rule::Krum), pki)
+    (
+        Receipt::issue(
+            &s,
+            acfa_receipt::identity::NO_CONTEXT,
+            1,
+            &pki,
+            1,
+            Rule::Krum,
+        ),
+        pki,
+    )
 }
 
 #[test]

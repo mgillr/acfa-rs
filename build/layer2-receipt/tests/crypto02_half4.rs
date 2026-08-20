@@ -35,7 +35,14 @@ fn unhex32(s: &str) -> PubKey {
 
 fn receipt_with(pki: Pki) -> Vec<u8> {
     let st = State::new();
-    let r = Receipt::issue(&st, 1, &pki, 1, Rule::Krum);
+    let r = Receipt::issue(
+        &st,
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        1,
+        Rule::Krum,
+    );
     acfa_receipt::wire::encode(&r)
 }
 

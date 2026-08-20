@@ -22,7 +22,14 @@ use acfa_receipt::{Receipt, Rule};
 fn receipt(f: usize) -> Receipt {
     let id = Identity::from_secret(1, &[1u8; 32]);
     let pki: Pki = [(id.node_id, id.public())].into_iter().collect();
-    let mut r = Receipt::issue(&acfa_receipt::State::new(), 1, &pki, 0, Rule::Krum);
+    let mut r = Receipt::issue(
+        &acfa_receipt::State::new(),
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        0,
+        Rule::Krum,
+    );
     r.f = f;
     r
 }

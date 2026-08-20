@@ -51,9 +51,16 @@ fn main() {
         let mut st = State::new();
         for (i, id) in ids[..ncon].iter().enumerate() {
             let t = vec![(i as i64) * 3, (i as i64) + 1];
-            let sig = id.sign(&contrib_msg(rnd, &h(&enc_tensor(&t))));
+            let sig = id.sign(&contrib_msg(
+                &acfa_receipt::identity::NO_CONTEXT,
+                rnd,
+                id.node_id,
+                &h(&enc_tensor(&t)),
+            ));
             st.deliver(
                 Contribution {
+                    ctx: acfa_receipt::identity::NO_CONTEXT,
+                    sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
                     rnd,
                     node_id: id.node_id,
                     tensor: t,
@@ -62,7 +69,7 @@ fn main() {
                 &pki,
             );
         }
-        let r = Receipt::issue(&st, rnd, &pki, f, rule);
+        let r = Receipt::issue(&st, acfa_receipt::identity::NO_CONTEXT, rnd, &pki, f, rule);
         let w = encode(&r);
         let agg = match &r.claimed_aggregate {
             Some(v) => format!("{v:?}"),

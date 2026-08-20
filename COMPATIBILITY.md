@@ -12,12 +12,23 @@ that speaks the same wire magic and version.** Concretely:
 
 | Format | Magic | Version | Meaning |
 |---|---|---|---|
-| Receipt | `ACFA-R1\0` | 1 | full receipt, carries contributions |
-| Redacted receipt | `ACFA-X1\0` | 1 | no plaintext vectors; see the redaction section of the README |
+| Receipt | `ACFA-R2\0` | 1 | full receipt, carries contributions and an explicit context |
+| Receipt (legacy) | `ACFA-R1\0` | 1 | written by v0.1.0–v0.3.0; still decoded and still verified |
+| Redacted receipt | `ACFA-X2\0` | 1 | no plaintext vectors; see the redaction section of the README |
+| Redacted receipt (legacy) | `ACFA-X1\0` | 1 | written by v0.1.0–v0.3.0; still decoded |
 
-Neither has changed since the format was introduced, and the cross-architecture fingerprint
-`bd13ba3209a940b2025368a63c546ffd59e2580a1b8aa7128cc9b423d1957e40` has been byte-identical across
-every release to date, on every supported architecture including big-endian s390x.
+**The fingerprint changed exactly once, at v0.4.0.** v0.1.0 through v0.3.0 all printed
+`bd13ba3209a940b2025368a63c546ffd59e2580a1b8aa7128cc9b423d1957e40`. v0.4.0 prints
+`701a05a332a539697b5415c6d35ca70ca327992a09a80e5c628081b3f890c287` because the signed preimage
+now binds the context and the node id, which is a deliberate wire-version bump (`ACFA-R1` →
+`ACFA-R2`) and the only circumstance under which this value is permitted to move. Within each
+of those two eras the value is byte-identical on every supported architecture, big-endian
+s390x included.
+
+Reading v1 is not deprecated and has no sunset. `tests/compat_v1_receipts.rs` pins that promise
+against real v0.3.0 receipts — it decodes them, verifies their v1 signatures, and reproduces
+their state roots byte for byte. Before that test existed the promise was unfalsifiable: removing
+the v1 decode arm entirely left the whole suite green.
 
 **The fingerprint is the compatibility test, not the version number.** It is a hash of a receipt
 built from a fixed input, so it moves if and only if the encoding, the kernel arithmetic, or the

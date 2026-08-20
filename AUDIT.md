@@ -38,7 +38,7 @@ running hands an attacker a recipe. That set is deliberately not enumerated here
 existence is stated rather than hidden, which is the honest half of that decision.
 
 Nothing in this file changed the cross-architecture receipt fingerprint
-(`bd13ba3209a940b2025368a63c546ffd59e2580a1b8aa7128cc9b423d1957e40`) or any golden vector.
+(`701a05a332a539697b5415c6d35ca70ca327992a09a80e5c628081b3f890c287`) or any golden vector.
 A guard that moves the product is not a fix.
 
 ---

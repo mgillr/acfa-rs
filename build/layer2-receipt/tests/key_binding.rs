@@ -16,10 +16,17 @@ use std::collections::BTreeMap;
 fn contrib(a: &Identity, rnd: u64, t: &[i64]) -> Contribution {
     let th = h(&enc_tensor(t));
     Contribution {
+        ctx: acfa_receipt::identity::NO_CONTEXT,
+        sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
         rnd,
         node_id: a.node_id,
         tensor: t.to_vec(),
-        sig: a.sign(&contrib_msg(rnd, &th)),
+        sig: a.sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            rnd,
+            a.node_id,
+            &th,
+        )),
     }
 }
 
@@ -36,7 +43,14 @@ fn a_pki_that_reuses_one_key_for_two_identities_is_refused_at_decode() {
 
     let mut s = State::new();
     s.deliver(contrib(&honest, 7, &[10, 20]), &pki);
-    let bytes = encode(&Receipt::issue(&s, 7, &pki, 0, Rule::Krum));
+    let bytes = encode(&Receipt::issue(
+        &s,
+        acfa_receipt::identity::NO_CONTEXT,
+        7,
+        &pki,
+        0,
+        Rule::Krum,
+    ));
 
     assert_eq!(
         decode(&bytes).err(),
@@ -58,7 +72,14 @@ fn an_injective_pki_still_decodes() {
     let mut s = State::new();
     s.deliver(contrib(&a, 7, &[10, 20]), &pki);
     s.deliver(contrib(&b, 7, &[11, 21]), &pki);
-    let bytes = encode(&Receipt::issue(&s, 7, &pki, 0, Rule::Krum));
+    let bytes = encode(&Receipt::issue(
+        &s,
+        acfa_receipt::identity::NO_CONTEXT,
+        7,
+        &pki,
+        0,
+        Rule::Krum,
+    ));
 
     assert!(
         decode(&bytes).is_ok(),
@@ -126,10 +147,21 @@ fn an_entry_paired_with_itself_still_cannot_convict_its_author() {
     pki.insert(1, honest.public());
 
     let th = h(&enc_tensor(&[10, 20]));
-    let sig = honest.sign(&contrib_msg(7, &th));
+    let sig = honest.sign(&contrib_msg(
+        &acfa_receipt::identity::NO_CONTEXT,
+        7,
+        honest.node_id,
+        &th,
+    ));
 
     // The forgery the guard exists to stop: one real entry, presented as both halves.
-    let self_paired = EquivProof::canonical(7, 1, (th, sig), (th, sig));
+    let self_paired = EquivProof::canonical(
+        acfa_receipt::identity::NO_CONTEXT,
+        7,
+        1,
+        (th, sig),
+        (th, sig),
+    );
     assert!(
         !self_paired.valid(&pki),
         "an entry paired with itself convicted its own author"

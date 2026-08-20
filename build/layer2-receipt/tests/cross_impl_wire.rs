@@ -73,8 +73,12 @@ fn wire_of(name: &str) -> Vec<u8> {
     unhex(hit["wire"].as_str().expect("wire is hex"))
 }
 
-/// Offset of the rule discriminant: MAGIC(8) + VERSION(2) + round(8) + f(4).
-const RULE_OFFSET: usize = 22;
+/// Offset of the rule discriminant: MAGIC(8) + VERSION(2) + ctx(32) + round(8) + f(4).
+///
+/// This moved by 32 in v0.4.0 when the context commitment entered the header. The assertion at
+/// the top of the test that reads it is what CAUGHT the move: it failed loudly instead of
+/// quietly mutating `f` and refusing for an unrelated reason.
+const RULE_OFFSET: usize = 54;
 
 #[test]
 fn every_vector_decodes_to_its_declared_fields_and_re_encodes_identically() {

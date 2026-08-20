@@ -12,15 +12,84 @@ not track the tag; see the note under v0.2.0.
 fingerprint, printed by `cargo run --release --example digest` in `build/layer2-receipt`:
 
 ```
-bd13ba3209a940b2025368a63c546ffd59e2580a1b8aa7128cc9b423d1957e40
+701a05a332a539697b5415c6d35ca70ca327992a09a80e5c628081b3f890c287
 ```
 
-This value is byte-identical on every supported architecture including big-endian s390x, and it
-has not changed across any release to date. A change to it is a wire-format change and may only
-happen with a deliberate, documented wire-version bump — never as a side effect. If your build
-prints something else, you are not running a released tree.
+This value is byte-identical on every supported architecture including big-endian s390x. A change
+to it is a wire-format change and may only happen with a deliberate, documented wire-version bump
+— never as a side effect. That has happened once: v0.1.0–v0.3.0 printed
+`bd13ba3209a940b2025368a63c546ffd59e2580a1b8aa7128cc9b423d1957e40`, and v0.4.0 moved it for the
+`ACFA-R1` → `ACFA-R2` context bump. If your build prints neither value, you are not running a
+released tree.
 
 ---
+
+## v0.4.0 — 2026-08-20
+
+The context release. It closes #79 — a cross-context forgery that let two *honest*
+contributions be assembled into a valid-looking equivocation proof against their author — and it
+is the first release in which the cross-architecture fingerprint moves.
+
+### The defect (#79)
+
+A signature covered `contrib_msg(round, tensor_hash)` and nothing else. It did not say **what the
+contribution was about**. An honest node participating in two concurrent contexts — two studies,
+two cohorts, two tenants of the same deployment — signs one vector in each, in the same round.
+Those are two valid signatures by one key over different content in one round, which is precisely
+the definition `EquivProof` uses. Anyone holding both receipts could pair them and produce a
+proof that verified against the honest node's own key.
+
+The consequence was the exact inversion of the system's proposition: conviction is permanent and
+offline-verifiable, so a node could be permanently and unappealably convicted **for behaving
+correctly**, by evidence that authenticated perfectly.
+
+### Fixed
+
+- **The signed preimage now binds the context and the node id.**
+  `ACFA-CONTRIB2|ctx|round|node_id|tensor_hash` (90 bytes), replacing
+  `ACFA-CONTRIB|round|tensor_hash` (54). `ctx` is an opaque, caller-defined 32-byte commitment
+  the protocol never parses — a study id, a tenant id, a cohort hash, whatever the deployment
+  means by "about". Equivocation detection is scoped to a single context, so two contributions
+  made under different `ctx` values can no longer be paired.
+- **A new wire magic rather than a version bump.** `ACFA-R1` → `ACFA-R2` (and `ACFA-X1` →
+  `ACFA-X2` for redacted receipts). v1 and v2 differ in what their signatures *mean*, not merely
+  in layout, so the decoder must never be one branch away from applying v2 rules to v1 bytes.
+  Distinct magics make that a decode dispatch instead of a conditional a maintainer can collapse.
+- **The leaf derivation is versioned too.** The leaf is what `admit` sorts by and what the state
+  root commits to, so folding `ctx` into a v1 contribution's leaf would both reorder a v0.3.0
+  receipt and change the state root it already published. A v1 entry hashes the v1 way forever.
+
+### The fingerprint moved, deliberately and for the first time
+
+```
+v0.1.0 - v0.3.0   bd13ba3209a940b2025368a63c546ffd59e2580a1b8aa7128cc9b423d1957e40
+v0.4.0            701a05a332a539697b5415c6d35ca70ca327992a09a80e5c628081b3f890c287
+```
+
+This is the only circumstance in which that value is permitted to move: a deliberate, documented
+wire-version bump. Within each era it remains byte-identical on all eight supported
+architectures, big-endian s390x included.
+
+### Compatibility
+
+Receipts written by v0.1.0–v0.3.0 still decode, still verify, and still reproduce their state
+roots byte for byte. Reading v1 is not deprecated and has no sunset.
+
+That promise was previously **unfalsifiable**: deleting the v1 decode arm outright left the entire
+suite green. `tests/compat_v1_receipts.rs` now pins it against real v0.3.0 receipts — the fixtures
+are the `wire_vectors` output of the v0.3.0 tag itself, produced by code that never knew v2 would
+exist — and asserts decode, v1 signature verification, state-root reproduction, and a negative
+control that a v1 receipt relabelled `ACFA-R2` never verifies. Building that test is what revealed
+the leaf-versioning defect above; without it, v0.4.0 would have shipped silently breaking every
+receipt v0.3.0 ever wrote.
+
+### Known open
+
+- **#77** — `FRAC_BITS` is not part of the wire format, so a build compiled with a different
+  fixed-point scale reads another's receipts without complaint. Scheduled for the next preimage
+  change, together with the rule and `f` binding.
+- **#78** — every conviction shrinks the admitted set, which enlarges Lemma 12's `beta` and so
+  makes certification harder. Honest-majority rounds with a convicted node may decline to certify.
 
 ## v0.3.0 — 2026-08-20
 
@@ -158,7 +227,7 @@ closes the verifier-bound and composition defects found in round-3 review.
   bounding is work.
 
 ### Unchanged
-Cross-architecture fingerprint `bd13ba32…`. No wire-format change in this release.
+Cross-architecture fingerprint `701a05a3…`. No wire-format change in this release.
 
 ---
 

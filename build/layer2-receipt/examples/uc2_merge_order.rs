@@ -56,8 +56,15 @@ fn main() {
         .enumerate()
         .map(|(i, id)| {
             let t = vec![i as i64 * 3, i as i64 + 1, 7 - i as i64];
-            let sig = id.sign(&contrib_msg(1, &h(&enc_tensor(&t))));
+            let sig = id.sign(&contrib_msg(
+                &acfa_receipt::identity::NO_CONTEXT,
+                1,
+                id.node_id,
+                &h(&enc_tensor(&t)),
+            ));
             Contribution {
+                ctx: acfa_receipt::identity::NO_CONTEXT,
+                sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
                 rnd: 1,
                 node_id: id.node_id,
                 tensor: t,

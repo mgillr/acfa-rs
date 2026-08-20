@@ -39,15 +39,32 @@ fn raw_state(m: usize) -> (Receipt, Pki) {
     let mut s = State::new();
     for j in 0..m {
         let t = vec![j as i64, (j as i64) * 7 - 3, 1234];
-        let sig = id.sign(&contrib_msg(1, &h(&enc_tensor(&t))));
+        let sig = id.sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            1,
+            id.node_id,
+            &h(&enc_tensor(&t)),
+        ));
         s.add_contribution(Contribution {
+            ctx: acfa_receipt::identity::NO_CONTEXT,
+            sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
             rnd: 1,
             node_id: id.node_id,
             tensor: t,
             sig,
         });
     }
-    (Receipt::issue(&s, 1, &pki, 1, Rule::Krum), pki)
+    (
+        Receipt::issue(
+            &s,
+            acfa_receipt::identity::NO_CONTEXT,
+            1,
+            &pki,
+            1,
+            Rule::Krum,
+        ),
+        pki,
+    )
 }
 
 /// THE GUARD. Work is refused BEFORE any of it is done.
@@ -85,9 +102,16 @@ fn an_ordinary_receipt_still_verifies() {
     let mut s = State::new();
     for (k, id) in ids.iter().enumerate() {
         let t = vec![10 + k as i64, 20];
-        let sig = id.sign(&contrib_msg(1, &h(&enc_tensor(&t))));
+        let sig = id.sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            1,
+            id.node_id,
+            &h(&enc_tensor(&t)),
+        ));
         s.deliver(
             Contribution {
+                ctx: acfa_receipt::identity::NO_CONTEXT,
+                sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
                 rnd: 1,
                 node_id: id.node_id,
                 tensor: t,
@@ -96,7 +120,14 @@ fn an_ordinary_receipt_still_verifies() {
             &pki,
         );
     }
-    let r = Receipt::issue(&s, 1, &pki, 1, Rule::Krum);
+    let r = Receipt::issue(
+        &s,
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        1,
+        Rule::Krum,
+    );
     assert!(
         r.verify(&Policy::new(pki, 1)).is_ok(),
         "an honest five-node receipt must still verify"

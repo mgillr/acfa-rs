@@ -71,15 +71,32 @@ fn attacker_receipt(n: u32, d: usize) -> (Receipt, Pki) {
         let t: Vec<i64> = (0..d)
             .map(|k| ((id.node_id as i64 * 7 + k as i64 * 13) % 2048) - 1024)
             .collect();
-        let sig = id.sign(&contrib_msg(1, &h(&enc_tensor(&t))));
+        let sig = id.sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            1,
+            id.node_id,
+            &h(&enc_tensor(&t)),
+        ));
         state.add_contribution(Contribution {
+            ctx: acfa_receipt::identity::NO_CONTEXT,
+            sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
             rnd: 1,
             node_id: id.node_id,
             tensor: t,
             sig,
         });
     }
-    (Receipt::issue(&state, 1, &pki, 1, Rule::Krum), pki)
+    (
+        Receipt::issue(
+            &state,
+            acfa_receipt::identity::NO_CONTEXT,
+            1,
+            &pki,
+            1,
+            Rule::Krum,
+        ),
+        pki,
+    )
 }
 
 /// 64 contributions of 8192 values: 524 288 coordinates, twice the default budget, and a

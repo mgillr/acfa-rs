@@ -17,6 +17,7 @@
 //! receipt whose root matches the one everyone else converged on.
 
 use crate::entry::{Contribution, EquivProof};
+use crate::identity::Context;
 use crate::identity::Pki;
 use crate::resolve::{resolve, Resolution, Rule};
 use crate::state::State;
@@ -25,6 +26,11 @@ use acfa_aggregate::MarginCertificate;
 /// A self-contained, offline-checkable record of one resolved round.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Receipt {
+    /// **What this receipt is ABOUT** -- an opaque, caller-defined commitment the protocol never
+    /// parses. Every contribution and proof in the receipt shares it, and it is inside each
+    /// signature, so a receipt cannot be replayed into another context and an honest node in two
+    /// contexts cannot be framed by its own signatures (#79).
+    pub ctx: Context,
     pub round: u64,
     pub f: usize,
     pub rule: Rule,
@@ -418,7 +424,14 @@ pub struct Verified {
 
 impl Receipt {
     /// Build a receipt for a round from a state the issuer holds.
-    pub fn issue(state: &State, round: u64, pki: &Pki, f: usize, rule: Rule) -> Receipt {
+    pub fn issue(
+        state: &State,
+        ctx: Context,
+        round: u64,
+        pki: &Pki,
+        f: usize,
+        rule: Rule,
+    ) -> Receipt {
         let r: Resolution = resolve(state, round, pki, f, rule);
 
         // SCOPE THE CARRIED SET TO THIS ROUND AND TO VALID SIGNATURES, and commit to the
@@ -454,7 +467,7 @@ impl Receipt {
         for c in state
             .c
             .values()
-            .filter(|c| c.rnd == round && c.signature_valid(pki))
+            .filter(|c| c.ctx == ctx && c.rnd == round && c.signature_valid(pki))
         {
             carried.add_contribution(c.clone());
         }
@@ -463,6 +476,7 @@ impl Receipt {
         }
 
         Receipt {
+            ctx,
             round,
             f,
             rule,
@@ -739,10 +753,17 @@ mod tests {
     fn contrib(a: &Identity, rnd: u64, t: &[i64]) -> Contribution {
         let th = h(&enc_tensor(t));
         Contribution {
+            ctx: crate::identity::NO_CONTEXT,
+            sig_preimage: crate::identity::PreimageVersion::V2,
             rnd,
             node_id: a.node_id,
             tensor: t.to_vec(),
-            sig: a.sign(&contrib_msg(rnd, &th)),
+            sig: a.sign(&contrib_msg(
+                &crate::identity::NO_CONTEXT,
+                rnd,
+                a.node_id,
+                &th,
+            )),
         }
     }
 
@@ -764,7 +785,7 @@ mod tests {
     fn an_honestly_issued_receipt_verifies() {
         let (ids, pki) = room(5);
         let s = honest_state(&ids, &pki);
-        let v = Receipt::issue(&s, 1, &pki, 1, Rule::Krum)
+        let v = Receipt::issue(&s, crate::identity::NO_CONTEXT, 1, &pki, 1, Rule::Krum)
             .verify(&Policy::new(pki.clone(), 1))
             .unwrap();
         assert_eq!(v.admitted.len(), 5);
@@ -776,7 +797,7 @@ mod tests {
     fn a_tampered_aggregate_is_caught_by_re_execution() {
         let (ids, pki) = room(5);
         let s = honest_state(&ids, &pki);
-        let mut r = Receipt::issue(&s, 1, &pki, 1, Rule::Krum);
+        let mut r = Receipt::issue(&s, crate::identity::NO_CONTEXT, 1, &pki, 1, Rule::Krum);
         r.claimed_aggregate.as_mut().unwrap()[0] += 1;
         assert!(matches!(
             r.verify(&Policy::new(pki.clone(), 1)),
@@ -790,7 +811,7 @@ mod tests {
         // can no longer reproduce the root anyone else converged on.
         let (ids, pki) = room(5);
         let s = honest_state(&ids, &pki);
-        let mut r = Receipt::issue(&s, 1, &pki, 1, Rule::Krum);
+        let mut r = Receipt::issue(&s, crate::identity::NO_CONTEXT, 1, &pki, 1, Rule::Krum);
         r.contributions.pop();
         assert!(matches!(
             r.verify(&Policy::new(pki.clone(), 1)),
@@ -802,7 +823,7 @@ mod tests {
     fn a_forged_contribution_is_rejected_as_forged() {
         let (ids, pki) = room(5);
         let s = honest_state(&ids, &pki);
-        let mut r = Receipt::issue(&s, 1, &pki, 1, Rule::Krum);
+        let mut r = Receipt::issue(&s, crate::identity::NO_CONTEXT, 1, &pki, 1, Rule::Krum);
         r.contributions[0].tensor[0] = 4242;
         assert!(matches!(
             r.verify(&Policy::new(pki.clone(), 1)),
@@ -816,8 +837,10 @@ mod tests {
         // censorship tool. It must fail closed.
         let (ids, pki) = room(5);
         let s = honest_state(&ids, &pki);
-        let mut r = Receipt::issue(&s, 1, &pki, 1, Rule::Krum);
+        let mut r = Receipt::issue(&s, crate::identity::NO_CONTEXT, 1, &pki, 1, Rule::Krum);
         r.proofs.push(EquivProof {
+            ctx: crate::identity::NO_CONTEXT,
+            sig_preimage: crate::identity::PreimageVersion::V2,
             rnd: 1,
             node_id: 2,
             h1: [7u8; 32],
@@ -836,7 +859,7 @@ mod tests {
         let (ids, pki) = room(5);
         let mut s = honest_state(&ids, &pki);
         s.deliver(contrib(&ids[0], 1, &[9999, 9999]), &pki);
-        let v = Receipt::issue(&s, 1, &pki, 1, Rule::Krum)
+        let v = Receipt::issue(&s, crate::identity::NO_CONTEXT, 1, &pki, 1, Rule::Krum)
             .verify(&Policy::new(pki.clone(), 1))
             .unwrap();
         assert_eq!(v.convicted, vec![1]);
@@ -848,7 +871,7 @@ mod tests {
         let (ids, pki) = room(3);
         let s = honest_state(&ids, &pki);
         // n = 3 < 2f + 3 = 5 at f = 1.
-        let v = Receipt::issue(&s, 1, &pki, 1, Rule::Krum)
+        let v = Receipt::issue(&s, crate::identity::NO_CONTEXT, 1, &pki, 1, Rule::Krum)
             .verify(&Policy::new(pki.clone(), 1))
             .unwrap();
         assert!(
@@ -873,8 +896,8 @@ mod tests {
         for c in cs.iter().rev() {
             b.deliver(c.clone(), &pki);
         }
-        let ra = Receipt::issue(&a, 1, &pki, 1, Rule::Krum);
-        let rb = Receipt::issue(&b, 1, &pki, 1, Rule::Krum);
+        let ra = Receipt::issue(&a, crate::identity::NO_CONTEXT, 1, &pki, 1, Rule::Krum);
+        let rb = Receipt::issue(&b, crate::identity::NO_CONTEXT, 1, &pki, 1, Rule::Krum);
         assert_eq!(ra.claimed_state_root, rb.claimed_state_root);
         assert_eq!(ra.claimed_output_root, rb.claimed_output_root);
         assert_eq!(crate::wire::encode(&ra), crate::wire::encode(&rb));
@@ -896,7 +919,7 @@ mod tests {
         for (i, id) in ids.iter().enumerate() {
             st.deliver(contrib(id, 1, &[(i as i64 + 1) << 16, 0]), &pki);
         }
-        let r1 = Receipt::issue(&st, 1, &pki, 1, Rule::Krum);
+        let r1 = Receipt::issue(&st, crate::identity::NO_CONTEXT, 1, &pki, 1, Rule::Krum);
         assert!(
             r1.verify(&Policy::new(pki.clone(), 1)).is_ok(),
             "single-round receipt must verify"
@@ -907,12 +930,12 @@ mod tests {
             st.deliver(contrib(id, 2, &[(i as i64 + 7) << 16, 0]), &pki);
         }
 
-        let r1_again = Receipt::issue(&st, 1, &pki, 1, Rule::Krum);
+        let r1_again = Receipt::issue(&st, crate::identity::NO_CONTEXT, 1, &pki, 1, Rule::Krum);
         assert!(
             r1_again.verify(&Policy::new(pki.clone(), 1)).is_ok(),
             "a round-1 receipt issued from a two-round state must still verify"
         );
-        let r2 = Receipt::issue(&st, 2, &pki, 1, Rule::Krum);
+        let r2 = Receipt::issue(&st, crate::identity::NO_CONTEXT, 2, &pki, 1, Rule::Krum);
         assert!(
             r2.verify(&Policy::new(pki.clone(), 1)).is_ok(),
             "a round-2 receipt from the same state must verify"

@@ -30,18 +30,18 @@ way round. Measured directly, x86_64 little-endian against s390x big-endian, ove
 five-scenario fingerprint:
 
 ```
-x86_64   sha256 bd13ba3209a940b2025368a63c546ffd59e2580a1b8aa7128cc9b423d1957e40
-s390x    sha256 bd13ba3209a940b2025368a63c546ffd59e2580a1b8aa7128cc9b423d1957e40
+x86_64   sha256 701a05a332a539697b5415c6d35ca70ca327992a09a80e5c628081b3f890c287
+s390x    sha256 701a05a332a539697b5415c6d35ca70ca327992a09a80e5c628081b3f890c287
 ```
 
 Identical. Per-scenario wire digests, the same on both:
 
 ```
-krum-5-honest         998c012373ddf04902d1fece6a349bc607361592758a6661fd2bfaf172fdb036
-krum-5-equivocation   4fe300ab1627adff82b242f161a69301664422e8d7dd734270663d64bc4153c6
-bulyan-7-honest       26a42aa72dd9b9084df14bf863effefa20221e0731735e3d8bd00107a5ee417e
-krum-7-equivocation   94a87d05842ad525f80438af4b8ce387a856b557734b4fe5fdf7e0dd80624cd9
-krum-3-undefended     13a5477417b85e2487a116bfcf3a7d57ad5dfcf47f7dea4732eba1981aa23954
+krum-5-honest         fc9d36d26cfb3203a7aee4e92b1a8bf0649351116c8a610475084f308e44504f
+krum-5-equivocation   08fc61d1d781a6e5e63478510e9c028b0ba817c34c1e13f397fd94082afc45ce
+bulyan-7-honest       5179712bd7baa601ada5fa3faccfbef47fb48f2605d8c8b758e308b1434726d7
+krum-7-equivocation   6a092b7263eebcfe72005ff24aa8b2d956e6f215d6811261f9f0db069e3cec95
+krum-3-undefended     c3d59e63be0fbc36ca92b5882c6387ea1ed271ef213a4540190b70cd9ed996ce
 ```
 
 Both were measured directly, not inferred: `linux/amd64` and `linux/s390x` under QEMU,

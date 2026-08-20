@@ -34,7 +34,14 @@ fn a_real_receipt(dir: &std::path::Path) -> std::path::PathBuf {
     let id = Identity::from_secret(1, &[7u8; 32]);
     let mut pki: Pki = Pki::new();
     pki.insert(id.node_id, id.public());
-    let r = Receipt::issue(&State::new(), 1, &pki, 1, Rule::Krum);
+    let r = Receipt::issue(
+        &State::new(),
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        1,
+        Rule::Krum,
+    );
     let path = dir.join("receipt.bin");
     std::fs::write(&path, acfa_receipt::wire::encode(&r)).expect("write receipt");
     path

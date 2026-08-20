@@ -316,8 +316,13 @@ impl State {
         // Witnesses first: a pruned round must still convict. This loop is the reason pruning
         // is safe at all -- delete it and an equivocator simply waits for the prune horizon.
         for wc in self.w.values() {
-            if wc.rnd == new.rnd && wc.node_id == new.node_id && wc.leaf() != nl {
+            if wc.ctx == new.ctx
+                && wc.rnd == new.rnd
+                && wc.node_id == new.node_id
+                && wc.leaf() != nl
+            {
                 let p = EquivProof::canonical(
+                    new.ctx,
                     new.rnd,
                     new.node_id,
                     (wc.tensor_hash, wc.sig),
@@ -334,8 +339,12 @@ impl State {
             // keys on the leaf left a gap exactly the width of the difference: two
             // distinct valid signatures over the SAME content are two leaves, so the
             // identity was excluded, and were one content, so no proof was formed.
-            if c.rnd == new.rnd && c.node_id == new.node_id && c.leaf() != nl {
+            // THE CONTEXT MUST MATCH. Two contributions by one node at one round number in
+            // DIFFERENT contexts are not equivocation -- that is a node doing its job in two
+            // places, and convicting it for that was #79.
+            if c.ctx == new.ctx && c.rnd == new.rnd && c.node_id == new.node_id && c.leaf() != nl {
                 let p = EquivProof::canonical(
+                    new.ctx,
                     new.rnd,
                     new.node_id,
                     (c.tensor_hash(), c.sig),
@@ -625,10 +634,17 @@ mod tests {
     fn contrib(a: &Identity, rnd: u64, t: &[i64]) -> Contribution {
         let th = h(&enc_tensor(t));
         Contribution {
+            ctx: crate::identity::NO_CONTEXT,
+            sig_preimage: crate::identity::PreimageVersion::V2,
             rnd,
             node_id: a.node_id,
             tensor: t.to_vec(),
-            sig: a.sign(&contrib_msg(rnd, &th)),
+            sig: a.sign(&contrib_msg(
+                &crate::identity::NO_CONTEXT,
+                rnd,
+                a.node_id,
+                &th,
+            )),
         }
     }
 
@@ -730,6 +746,8 @@ mod tests {
         let pki = pki_of(&[&a, &b]);
         let mut s = State::new();
         s.add_proof(EquivProof {
+            ctx: crate::identity::NO_CONTEXT,
+            sig_preimage: crate::identity::PreimageVersion::V2,
             rnd: 1,
             node_id: 1,
             h1: [1u8; 32],

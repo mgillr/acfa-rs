@@ -18,10 +18,17 @@ use acfa_receipt::{Contribution, Policy, Receipt, Rule, State};
 fn signed(id: &Identity, rnd: u64, t: &[i64]) -> Contribution {
     let th = h(&enc_tensor(t));
     Contribution {
+        ctx: acfa_receipt::identity::NO_CONTEXT,
+        sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
         rnd,
         node_id: id.node_id,
         tensor: t.to_vec(),
-        sig: id.sign(&contrib_msg(rnd, &th)),
+        sig: id.sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            rnd,
+            id.node_id,
+            &th,
+        )),
     }
 }
 
@@ -44,15 +51,24 @@ fn receipt_issued_over_junk_verifies_and_matches_the_clean_aggregate() {
     for id in &ids {
         clean.deliver(signed(id, 1, &[10, 20]), &pki);
     }
-    let clean_agg = Receipt::issue(&clean, 1, &pki, 1, Rule::Krum)
-        .verify(&Policy::new(pki.clone(), 1))
-        .expect("clean receipt verifies")
-        .aggregate;
+    let clean_agg = Receipt::issue(
+        &clean,
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        1,
+        Rule::Krum,
+    )
+    .verify(&Policy::new(pki.clone(), 1))
+    .expect("clean receipt verifies")
+    .aggregate;
 
     // Polluted state: the same five, plus ONE contribution with a known node id but a
     // signature that does not verify -- a junk gossip message an unauthenticated merge let in.
     let mut dirty = clean.clone();
     dirty.add_contribution(Contribution {
+        ctx: acfa_receipt::identity::NO_CONTEXT,
+        sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
         rnd: 1,
         node_id: ids[0].node_id,
         tensor: vec![999_000, 999_000],
@@ -60,9 +76,16 @@ fn receipt_issued_over_junk_verifies_and_matches_the_clean_aggregate() {
     });
     assert_eq!(dirty.c.len(), 6, "the junk really is in the state");
 
-    let verified = Receipt::issue(&dirty, 1, &pki, 1, Rule::Krum)
-        .verify(&Policy::new(pki, 1))
-        .expect("a receipt issued over a junk-polluted state must still verify");
+    let verified = Receipt::issue(
+        &dirty,
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        1,
+        Rule::Krum,
+    )
+    .verify(&Policy::new(pki, 1))
+    .expect("a receipt issued over a junk-polluted state must still verify");
     assert_eq!(
         verified.aggregate, clean_agg,
         "junk must not change the committed aggregate -- admit already ignores it"

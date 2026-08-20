@@ -72,9 +72,16 @@ fn built() -> (Receipt, Pki) {
     let mut s = State::new();
     for (k, id) in ids.iter().enumerate() {
         let t = vec![10 + k as i64, 20];
-        let sig = id.sign(&contrib_msg(1, &h(&enc_tensor(&t))));
+        let sig = id.sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            1,
+            id.node_id,
+            &h(&enc_tensor(&t)),
+        ));
         s.deliver(
             Contribution {
+                ctx: acfa_receipt::identity::NO_CONTEXT,
+                sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
                 rnd: 1,
                 node_id: id.node_id,
                 tensor: t,
@@ -83,7 +90,14 @@ fn built() -> (Receipt, Pki) {
             &pki,
         );
     }
-    let r = Receipt::issue(&s, 1, &pki, 1, Rule::Krum);
+    let r = Receipt::issue(
+        &s,
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        1,
+        Rule::Krum,
+    );
     (r, pki)
 }
 

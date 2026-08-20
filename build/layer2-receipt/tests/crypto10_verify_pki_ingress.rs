@@ -56,7 +56,14 @@ fn run_with_pki(tag: &str, contents: &str) -> std::process::Output {
     let id = Identity::from_secret(1, &[7u8; 32]);
     let mut pki: Pki = Pki::new();
     pki.insert(id.node_id, id.public());
-    let r = Receipt::issue(&State::new(), 1, &pki, 1, Rule::Krum);
+    let r = Receipt::issue(
+        &State::new(),
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        1,
+        Rule::Krum,
+    );
     let receipt = dir.join("receipt.bin");
     std::fs::write(&receipt, acfa_receipt::wire::encode(&r)).expect("write receipt");
 

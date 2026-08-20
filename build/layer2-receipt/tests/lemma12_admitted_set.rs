@@ -21,10 +21,17 @@ use acfa_receipt::{Contribution, Policy, Receipt, Rule, State};
 fn signed(id: &Identity, rnd: u64, t: &[i64]) -> Contribution {
     let th = h(&enc_tensor(t));
     Contribution {
+        ctx: acfa_receipt::identity::NO_CONTEXT,
+        sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
         rnd,
         node_id: id.node_id,
         tensor: t.to_vec(),
-        sig: id.sign(&contrib_msg(rnd, &th)),
+        sig: id.sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            rnd,
+            id.node_id,
+            &th,
+        )),
     }
 }
 
@@ -51,7 +58,14 @@ fn certificate_is_computed_over_the_admitted_set_not_the_carried_set() {
     s.deliver(signed(&ids[6], 1, &[9_000, 9_000]), &pki);
     s.deliver(signed(&ids[6], 1, &[-9_000, -9_000]), &pki);
 
-    let receipt = Receipt::issue(&s, 1, &pki, 1, Rule::Krum);
+    let receipt = Receipt::issue(
+        &s,
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        1,
+        Rule::Krum,
+    );
     assert_eq!(receipt.contributions.len(), 8, "all eight are carried");
 
     let v = receipt
@@ -116,7 +130,14 @@ fn bulyan_yields_no_certificate_rather_than_a_borrowed_one() {
     for (k, id) in ids.iter().enumerate() {
         s.deliver(signed(id, 1, &[10 + k as i64, 20]), &pki);
     }
-    let receipt = Receipt::issue(&s, 1, &pki, 1, Rule::Bulyan);
+    let receipt = Receipt::issue(
+        &s,
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        1,
+        Rule::Bulyan,
+    );
     let v = receipt.verify(&Policy::new(pki, 1)).expect("verifies");
     assert!(
         v.margin.is_none(),
@@ -136,7 +157,14 @@ fn certificate_is_reproducible_from_the_receipt_bytes_alone() {
     for (k, id) in ids.iter().enumerate() {
         s.deliver(signed(id, 1, &[5 + k as i64, 7]), &pki);
     }
-    let receipt = Receipt::issue(&s, 1, &pki, 1, Rule::Krum);
+    let receipt = Receipt::issue(
+        &s,
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        1,
+        Rule::Krum,
+    );
     let bytes = acfa_receipt::wire::encode(&receipt);
     let decoded = acfa_receipt::decode(&bytes).expect("round-trips");
 

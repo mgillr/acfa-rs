@@ -54,7 +54,7 @@
 //! ```
 //! use acfa_receipt::{Identity, Pki, Policy, Receipt, Rule, State, Contribution};
 //! use acfa_receipt::hash::{h, enc_tensor};
-//! use acfa_receipt::identity::contrib_msg;
+//! use acfa_receipt::identity::{contrib_msg, PreimageVersion, NO_CONTEXT};
 //!
 //! let ids: Vec<Identity> = (1..=5).map(|n| Identity::from_secret(n, &[n as u8; 32])).collect();
 //! let pki: Pki = ids.iter().map(|i| (i.node_id, i.public())).collect();
@@ -62,11 +62,19 @@
 //! let mut state = State::new();
 //! for (i, id) in ids.iter().enumerate() {
 //!     let t = vec![i as i64 * 3, i as i64 + 1];
-//!     let sig = id.sign(&contrib_msg(1, &h(&enc_tensor(&t))));
-//!     state.deliver(Contribution { rnd: 1, node_id: id.node_id, tensor: t, sig }, &pki);
+//!     let sig = id.sign(&contrib_msg(&NO_CONTEXT, 1, id.node_id, &h(&enc_tensor(&t))));
+//!     let c = Contribution {
+//!         ctx: NO_CONTEXT,
+//!         sig_preimage: PreimageVersion::V2,
+//!         rnd: 1,
+//!         node_id: id.node_id,
+//!         tensor: t,
+//!         sig,
+//!     };
+//!     state.deliver(c, &pki);
 //! }
 //!
-//! let receipt = Receipt::issue(&state, 1, &pki, 1, Rule::Krum);
+//! let receipt = Receipt::issue(&state, NO_CONTEXT, 1, &pki, 1, Rule::Krum);
 //!
 //! // The checker supplies the identities it independently trusts.
 //! let policy = Policy::new(pki.clone(), 1);

@@ -57,7 +57,14 @@ fn room(n: u32) -> (Vec<Identity>, Pki) {
 fn issued(pki: &Pki) -> Receipt {
     // A genuinely issued receipt, so the only thing this test varies is the POLICY's PKI.
     let state = State::new();
-    Receipt::issue(&state, 1, pki, 0, Rule::Krum)
+    Receipt::issue(
+        &state,
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        pki,
+        0,
+        Rule::Krum,
+    )
 }
 
 #[test]

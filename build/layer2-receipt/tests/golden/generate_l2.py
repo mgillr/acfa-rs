@@ -54,15 +54,24 @@ def node(i: int) -> A.Node:
     return A.Node(node_id=i, sk=Ed25519PrivateKey.from_private_bytes(bytes([i]) * 32))
 
 
+# Every golden is generated under a FIXED, NON-ZERO context so the vectors actually exercise
+# the ctx bytes. A zero context would let a Rust side that dropped ctx entirely still match.
+GOLDEN_CTX = bytes(range(32))
+
+
 def contrib(n: A.Node, rnd: int, tensor):
     t = tuple(tensor)
     th = A.H(A.enc_tensor(t))
-    return A.Contribution(rnd=rnd, node_id=n.node_id, tensor=t,
-                          sig=n.sign(A.contrib_msg(rnd, th)))
+    return A.Contribution(ctx=GOLDEN_CTX, rnd=rnd, node_id=n.node_id, tensor=t,
+                          sig=n.sign(A.contrib_msg(GOLDEN_CTX, rnd, n.node_id, th)))
 
 
 def main() -> int:
     out = {"note": "generated from the published ACFA reference; do not hand-edit"}
+    # SELF-DESCRIBING: the vectors state the context they were generated under, so a consumer
+    # reconstructs the exact input rather than hardcoding a constant that could silently drift
+    # out of step with this generator.
+    out["ctx"] = hx(GOLDEN_CTX)
 
     # ---- primitives -------------------------------------------------------
     out["enc_tensor"] = [
@@ -73,10 +82,18 @@ def main() -> int:
          "hex": hx(A.enc_tensor((-9223372036854775808, 9223372036854775807)))},
     ]
     out["contrib_msg"] = [
-        {"rnd": 0, "th": hx(b"\x00" * 32), "hex": hx(A.contrib_msg(0, b"\x00" * 32))},
-        {"rnd": 7, "th": hx(A.H(b"x")), "hex": hx(A.contrib_msg(7, A.H(b"x")))},
-        {"rnd": 2**63 - 1, "th": hx(A.H(b"y")),
-         "hex": hx(A.contrib_msg(2**63 - 1, A.H(b"y")))},
+        {"ctx": hx(GOLDEN_CTX), "rnd": 0, "node_id": 0, "th": hx(b"\x00" * 32),
+         "hex": hx(A.contrib_msg(GOLDEN_CTX, 0, 0, b"\x00" * 32))},
+        {"ctx": hx(GOLDEN_CTX), "rnd": 7, "node_id": 3, "th": hx(A.H(b"x")),
+         "hex": hx(A.contrib_msg(GOLDEN_CTX, 7, 3, A.H(b"x")))},
+        {"ctx": hx(GOLDEN_CTX), "rnd": 2**63 - 1, "node_id": 4294967295, "th": hx(A.H(b"y")),
+         "hex": hx(A.contrib_msg(GOLDEN_CTX, 2**63 - 1, 4294967295, A.H(b"y")))},
+    ]
+    # v1 retained: the preimage old receipts were signed over, pinned so the retained path
+    # cannot drift. If this vector ever changes, every receipt in the world stops verifying.
+    out["contrib_msg_v1"] = [
+        {"rnd": 0, "th": hx(b"\x00" * 32), "hex": hx(A.contrib_msg_v1(0, b"\x00" * 32))},
+        {"rnd": 7, "th": hx(A.H(b"x")), "hex": hx(A.contrib_msg_v1(7, A.H(b"x")))},
     ]
 
     # Merkle: empty sentinel, single, even, odd (the duplication path), and an
@@ -122,7 +139,7 @@ def main() -> int:
     alt = contrib(nodes[0], 1, [999, 999, 999])
     (h1, s1), (h2, s2) = sorted([(cs[0].tensor_hash(), cs[0].sig),
                                  (alt.tensor_hash(), alt.sig)])
-    proof = A.EquivProof(1, 1, h1, h2, s1, s2)
+    proof = A.EquivProof(GOLDEN_CTX, 1, 1, h1, h2, s1, s2)
     out["equivocation"] = {
         "alt": {"rnd": alt.rnd, "node_id": alt.node_id, "tensor": list(alt.tensor),
                 "sig": hx(alt.sig), "leaf": hx(alt.leaf())},

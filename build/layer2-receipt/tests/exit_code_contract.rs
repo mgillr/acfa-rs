@@ -72,15 +72,29 @@ fn fixture(d: &Path) -> (PathBuf, PathBuf) {
         let th = acfa_receipt::hash::h(&acfa_receipt::hash::enc_tensor(&t));
         s.deliver(
             Contribution {
+                ctx: acfa_receipt::identity::NO_CONTEXT,
+                sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
                 rnd: 1,
                 node_id: id.node_id,
                 tensor: t,
-                sig: id.sign(&contrib_msg(1, &th)),
+                sig: id.sign(&contrib_msg(
+                    &acfa_receipt::identity::NO_CONTEXT,
+                    1,
+                    id.node_id,
+                    &th,
+                )),
             },
             &pki,
         );
     }
-    let r = Receipt::issue(&s, 1, &pki, 1, Rule::Krum);
+    let r = Receipt::issue(
+        &s,
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        1,
+        Rule::Krum,
+    );
 
     let rp = d.join("receipt.acfa");
     fs::write(&rp, encode(&r)).expect("write receipt");

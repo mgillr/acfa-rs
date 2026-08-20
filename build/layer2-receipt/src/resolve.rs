@@ -182,10 +182,17 @@ mod tests {
     fn contrib(a: &Identity, rnd: u64, t: &[i64]) -> Contribution {
         let th = h(&enc_tensor(t));
         Contribution {
+            ctx: crate::identity::NO_CONTEXT,
+            sig_preimage: crate::identity::PreimageVersion::V2,
             rnd,
             node_id: a.node_id,
             tensor: t.to_vec(),
-            sig: a.sign(&contrib_msg(rnd, &th)),
+            sig: a.sign(&contrib_msg(
+                &crate::identity::NO_CONTEXT,
+                rnd,
+                a.node_id,
+                &th,
+            )),
         }
     }
 

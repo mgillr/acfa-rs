@@ -38,6 +38,13 @@ fn hx(s: &Value) -> Vec<u8> {
     hex::decode(s.as_str().expect("hex string")).expect("valid hex")
 }
 
+/// The context the golden vectors were generated under, read FROM the vectors rather than
+/// hardcoded -- a constant here could drift out of step with the generator and the tests would
+/// still pass against themselves.
+fn golden_ctx() -> [u8; 32] {
+    h32(&vectors()["ctx"])
+}
+
 fn h32(s: &Value) -> [u8; 32] {
     hx(s).try_into().expect("32 bytes")
 }
@@ -72,7 +79,12 @@ fn the_signed_message_matches_the_reference() {
         let rnd = c["rnd"].as_u64().unwrap();
         let th = h32(&c["th"]);
         assert_eq!(
-            contrib_msg(rnd, &th),
+            contrib_msg(
+                &h32(&c["ctx"]),
+                rnd,
+                c["node_id"].as_u64().unwrap() as u32,
+                &th
+            ),
             hx(&c["hex"]),
             "contrib_msg disagrees at round {rnd}"
         );
@@ -144,10 +156,12 @@ fn signatures_and_contribution_leaves_match_the_reference() {
             "tensor hash, node {node_id}"
         );
 
-        let sig = id.sign(&contrib_msg(rnd, &th));
+        let sig = id.sign(&contrib_msg(&golden_ctx(), rnd, id.node_id, &th));
         assert_eq!(sig.to_vec(), hx(&c["sig"]), "signature, node {node_id}");
 
         let ours = Contribution {
+            ctx: golden_ctx(),
+            sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
             rnd,
             node_id,
             tensor,
@@ -163,6 +177,8 @@ fn the_equivocation_proof_matches_the_reference_byte_for_byte() {
     let e = &v["equivocation"];
     let p = &e["proof"];
     let ours = EquivProof {
+        ctx: golden_ctx(),
+        sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
         rnd: p["rnd"].as_u64().unwrap(),
         node_id: p["node_id"].as_u64().unwrap() as u32,
         h1: h32(&p["h1"]),
@@ -181,11 +197,11 @@ fn the_equivocation_proof_matches_the_reference_byte_for_byte() {
     let a = (ours.h1, ours.sig1);
     let b = (ours.h2, ours.sig2);
     assert_eq!(
-        EquivProof::canonical(ours.rnd, ours.node_id, a, b).leaf(),
+        EquivProof::canonical(ours.ctx, ours.rnd, ours.node_id, a, b).leaf(),
         ours.leaf()
     );
     assert_eq!(
-        EquivProof::canonical(ours.rnd, ours.node_id, b, a).leaf(),
+        EquivProof::canonical(ours.ctx, ours.rnd, ours.node_id, b, a).leaf(),
         ours.leaf()
     );
 }
@@ -206,6 +222,8 @@ fn every_scenario_reproduces_the_reference_state_root_admitted_set_and_aggregate
         .collect();
 
     let mk = |c: &Value| Contribution {
+        ctx: golden_ctx(),
+        sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
         rnd: c["rnd"].as_u64().unwrap(),
         node_id: c["node_id"].as_u64().unwrap() as u32,
         tensor: i64s(&c["tensor"]),
@@ -221,6 +239,8 @@ fn every_scenario_reproduces_the_reference_state_root_admitted_set_and_aggregate
     let alt = mk(&v["equivocation"]["alt"]);
     let pj = &v["equivocation"]["proof"];
     let proof = EquivProof {
+        ctx: golden_ctx(),
+        sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
         rnd: pj["rnd"].as_u64().unwrap(),
         node_id: pj["node_id"].as_u64().unwrap() as u32,
         h1: h32(&pj["h1"]),

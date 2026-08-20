@@ -35,9 +35,16 @@ fn scenario(n: u32, equivocate: bool, rule: Rule, f: usize) -> (Receipt, Pki) {
             i as i64 * 65_536 + 1,
             -32_768,
         ];
-        let sig = id.sign(&contrib_msg(1, &h(&enc_tensor(&t))));
+        let sig = id.sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            1,
+            id.node_id,
+            &h(&enc_tensor(&t)),
+        ));
         s.deliver(
             Contribution {
+                ctx: acfa_receipt::identity::NO_CONTEXT,
+                sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
                 rnd: 1,
                 node_id: id.node_id,
                 tensor: t,
@@ -48,9 +55,16 @@ fn scenario(n: u32, equivocate: bool, rule: Rule, f: usize) -> (Receipt, Pki) {
     }
     if equivocate {
         let t = vec![9_999, -9_999, 1, -1];
-        let sig = ids[0].sign(&contrib_msg(1, &h(&enc_tensor(&t))));
+        let sig = ids[0].sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            1,
+            ids[0].node_id,
+            &h(&enc_tensor(&t)),
+        ));
         s.deliver(
             Contribution {
+                ctx: acfa_receipt::identity::NO_CONTEXT,
+                sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
                 rnd: 1,
                 node_id: 1,
                 tensor: t,
@@ -59,7 +73,10 @@ fn scenario(n: u32, equivocate: bool, rule: Rule, f: usize) -> (Receipt, Pki) {
             &pki,
         );
     }
-    (Receipt::issue(&s, 1, &pki, f, rule), pki)
+    (
+        Receipt::issue(&s, acfa_receipt::identity::NO_CONTEXT, 1, &pki, f, rule),
+        pki,
+    )
 }
 
 fn main() {

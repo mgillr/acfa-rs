@@ -166,15 +166,24 @@ fn ident(n: u32) -> Identity {
 fn contrib(a: &Identity, rnd: u64, t: &[i64]) -> Contribution {
     let th = h(&enc_tensor(t));
     Contribution {
+        ctx: acfa_receipt::identity::NO_CONTEXT,
+        sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
         rnd,
         node_id: a.node_id,
         tensor: t.to_vec(),
-        sig: a.sign(&contrib_msg(rnd, &th)),
+        sig: a.sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            rnd,
+            a.node_id,
+            &th,
+        )),
     }
 }
 
 fn proof(node_id: u32, tag: u8) -> EquivProof {
     EquivProof {
+        ctx: acfa_receipt::identity::NO_CONTEXT,
+        sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
         rnd: 1,
         node_id,
         h1: [tag; 32],
@@ -212,6 +221,7 @@ fn fixture() -> Receipt {
     proofs.sort_by_key(|p| p.leaf());
 
     Receipt {
+        ctx: acfa_receipt::identity::NO_CONTEXT,
         round: 7,
         f: 1,
         rule: Rule::Krum,
@@ -236,7 +246,7 @@ struct Offsets {
 }
 
 fn offsets(r: &Receipt) -> Offsets {
-    const HEAD: usize = 8 + 2 + 8 + 4 + 1; // magic, version, round, f, rule
+    const HEAD: usize = 8 + 2 + 32 + 8 + 4 + 1; // magic, version, ctx, round, f, rule
     const PKI_ELEM: usize = 4 + 32;
     const PROOF_ELEM: usize = 8 + 4 + 32 + 32 + 64 + 64;
 
@@ -368,6 +378,7 @@ fn a_large_but_honest_receipt_is_still_accepted() {
         .collect();
     contributions.sort_by_key(|c| c.leaf());
     let r = Receipt {
+        ctx: acfa_receipt::identity::NO_CONTEXT,
         round: 4,
         f: 3,
         rule: Rule::Bulyan,

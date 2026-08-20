@@ -18,10 +18,17 @@ use acfa_receipt::{Contribution, Invalid, Policy, Receipt, Rule, State};
 fn signed(id: &Identity, rnd: u64, t: &[i64]) -> Contribution {
     let th = h(&enc_tensor(t));
     Contribution {
+        ctx: acfa_receipt::identity::NO_CONTEXT,
+        sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
         rnd,
         node_id: id.node_id,
         tensor: t.to_vec(),
-        sig: id.sign(&contrib_msg(rnd, &th)),
+        sig: id.sign(&contrib_msg(
+            &acfa_receipt::identity::NO_CONTEXT,
+            rnd,
+            id.node_id,
+            &th,
+        )),
     }
 }
 
@@ -53,7 +60,14 @@ fn verify_refuses_a_receipt_that_would_derive_too_much() {
     for i in 0..130i64 {
         s.add_contribution(signed(&id, 1, &[i, 0]));
     }
-    let receipt = Receipt::issue(&s, 1, &pki, 0, Rule::Krum);
+    let receipt = Receipt::issue(
+        &s,
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        0,
+        Rule::Krum,
+    );
     assert!(
         receipt.contributions.len() >= 130,
         "the raw set is carried unthinned"
@@ -82,7 +96,14 @@ fn verify_still_accepts_an_honest_receipt() {
     for id in &ids {
         s.deliver(signed(id, 1, &[1, 2]), &pki);
     }
-    let receipt = Receipt::issue(&s, 1, &pki, 1, Rule::Krum);
+    let receipt = Receipt::issue(
+        &s,
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        1,
+        Rule::Krum,
+    );
     assert!(
         receipt.verify(&Policy::new(pki, 1)).is_ok(),
         "an honest receipt must still verify"
@@ -114,7 +135,12 @@ fn verify_refuses_more_contributions_than_it_will_scan() {
     let pk = base.public();
     let t = [1i64, 2];
     let th = h(&enc_tensor(&t));
-    let sig = base.sign(&contrib_msg(1, &th));
+    let sig = base.sign(&contrib_msg(
+        &acfa_receipt::identity::NO_CONTEXT,
+        1,
+        base.node_id,
+        &th,
+    ));
 
     let n = MAX_MERGE_CONTRIBUTIONS + 1;
     let pki: Pki = (0..n as u32).map(|id| (id, pk)).collect();
@@ -124,6 +150,8 @@ fn verify_refuses_more_contributions_than_it_will_scan() {
     // also keeps the test off issue()/resolve's O(n^2) krum path at n = 4097.
     let contributions: Vec<Contribution> = (0..n as u32)
         .map(|id| Contribution {
+            ctx: acfa_receipt::identity::NO_CONTEXT,
+            sig_preimage: acfa_receipt::identity::PreimageVersion::V2,
             rnd: 1,
             node_id: id,
             tensor: t.to_vec(),
@@ -136,6 +164,7 @@ fn verify_refuses_more_contributions_than_it_will_scan() {
         "premise: all node ids distinct -> only the COUNT guard can fire, not the proof guard"
     );
     let receipt = Receipt {
+        ctx: acfa_receipt::identity::NO_CONTEXT,
         round: 1,
         f: 0,
         rule: Rule::Krum,
@@ -178,7 +207,14 @@ fn verify_admits_a_bounded_distinct_set() {
     for id in &ids {
         s.deliver(signed(id, 1, &[1, 2]), &pki);
     }
-    let receipt = Receipt::issue(&s, 1, &pki, 1, Rule::Krum);
+    let receipt = Receipt::issue(
+        &s,
+        acfa_receipt::identity::NO_CONTEXT,
+        1,
+        &pki,
+        1,
+        Rule::Krum,
+    );
     assert!(
         receipt.contributions.len() <= MAX_MERGE_CONTRIBUTIONS,
         "premise: this distinct set (100) is well within the cap"
