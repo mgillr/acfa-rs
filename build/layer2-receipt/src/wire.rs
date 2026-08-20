@@ -215,7 +215,7 @@ pub fn encode(r: &Receipt) -> Vec<u8> {
     // BTreeMap iteration in `State` is already leaf-ordered; sort defensively so the
     // encoder cannot emit a non-canonical stream even if handed an unordered vector.
     let mut cs = r.contributions.clone();
-    cs.sort_by_key(|c| c.leaf());
+    cs.sort_by_cached_key(|c| c.leaf());
     w.u32(cs.len() as u32);
     for c in &cs {
         w.u64(c.rnd);
@@ -228,7 +228,7 @@ pub fn encode(r: &Receipt) -> Vec<u8> {
     }
 
     let mut ps = r.proofs.clone();
-    ps.sort_by_key(|p| p.leaf());
+    ps.sort_by_cached_key(|p| p.leaf());
     w.u32(ps.len() as u32);
     for p in &ps {
         w.u64(p.rnd);
@@ -479,7 +479,7 @@ pub fn encode_redacted(r: &RedactedReceipt) -> Vec<u8> {
     }
 
     let mut cs = r.contributions.clone();
-    cs.sort_by_key(|c| c.leaf());
+    cs.sort_by_cached_key(|c| c.leaf());
     w.u32(cs.len() as u32);
     for c in &cs {
         w.u64(c.rnd);
@@ -489,7 +489,7 @@ pub fn encode_redacted(r: &RedactedReceipt) -> Vec<u8> {
     }
 
     let mut ps = r.proofs.clone();
-    ps.sort_by_key(|p| p.leaf());
+    ps.sort_by_cached_key(|p| p.leaf());
     w.u32(ps.len() as u32);
     for p in &ps {
         w.u64(p.rnd);
