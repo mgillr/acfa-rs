@@ -32,6 +32,70 @@ def fail(msg, code=1):
     sys.exit(code)
 
 
+def _git(*args):
+    return subprocess.run(
+        ["git", *args], cwd=ROOT, capture_output=True, text=True, timeout=30
+    )
+
+
+def is_release_tag(name: str, tags: set) -> tuple:
+    """Is `name` a release tag AS THIS REPOSITORY DEFINES ONE, or merely a tag with that name?
+
+    README.md:121 promises three properties, and this function exists because the first version of
+    this check tested none of them. It asked `name in tags` -- whether a NAME EXISTS -- which is a
+    strictly weaker property than the process it was written to defend.
+
+    Seat C broke it in the way the gap invites: `git tag v0.4.0 <ROOT COMMIT>` creates a
+    LIGHTWEIGHT, UNSIGNED tag pointing at the repository's first commit, and the check printed
+    "consistent" over a tree that declared v0.4.0 in three manifests, dated its CHANGELOG as
+    shipped, and had no release anywhere. No amount of careful coding fixes "has a tag" when the
+    promise is "has THIS tag, annotated, signed, and on main".
+
+    So all three are checked:
+      ANNOTATED -- `git cat-file -t` must return `tag`, not `commit`. A lightweight tag is a
+                   bare ref with no object, so it carries no author, no date and no message.
+      SIGNED    -- the tag object must contain a signature block. The KEY is not verified here;
+                   that needs the signer's public key and belongs in a release workflow, not in a
+                   check every contributor runs. Absence of any signature is what this catches.
+      NAMES THIS VERSION -- the COMMIT THE TAG POINTS AT must itself declare this version in its
+                   manifests. This replaced a reachability test, which was wrong and which my own
+                   mutation sweep caught: EVERY commit in history is reachable from main,
+                   including the root commit, so `merge-base --is-ancestor` passed on exactly the
+                   construction it was added to block. Asking whether the tagged tree declares the
+                   version is the property that actually matters -- it is what makes the tag NAME
+                   this release rather than merely coexist with it.
+    """
+    if name not in tags:
+        return False, "no tag with that name"
+
+    kind = _git("cat-file", "-t", name).stdout.strip()
+    if kind != "tag":
+        return False, f"tag is {kind or 'unreadable'}, not annotated (lightweight tags carry no message or date)"
+
+    body = _git("cat-file", "tag", name).stdout
+    if "BEGIN PGP SIGNATURE" not in body and "BEGIN SSH SIGNATURE" not in body:
+        return False, "tag object carries no signature block"
+
+    # The tagged tree must declare the version the tag names.
+    want = name.lstrip("v")
+    seen = []
+    for m in sorted(ROOT.glob("build/*/Cargo.toml")):
+        rel = m.relative_to(ROOT)
+        blob = _git("show", f"{name}:{rel}")
+        if blob.returncode != 0:
+            return False, f"tag does not contain {rel} -- it does not name a tree of this project"
+        hit = re.search(r'^version = "([^"]+)"', blob.stdout, re.M)
+        if not hit:
+            return False, f"{rel} at {name} has no version line"
+        seen.append(hit.group(1))
+    if any(v != want for v in seen):
+        return False, (
+            f"the tagged commit declares {sorted(set(seen))}, not {want} -- the tag does not name "
+            f"this release, it merely shares its name"
+        )
+    return True, f"annotated, signed, and the tagged tree declares {want}"
+
+
 def main() -> int:
     manifests = sorted(ROOT.glob("build/*/Cargo.toml"))
     if not manifests:
@@ -71,8 +135,10 @@ def main() -> int:
         fail(f"CHANGELOG.md has no section for the declared version v{version}")
     marker = heading.group(1).strip()
 
-    tagged = f"v{version}" in tags
+    tagged, why = is_release_tag(f"v{version}", tags)
     unreleased = "UNRELEASED" in marker.upper()
+    if not tagged:
+        print(f"  v{version} is not a release tag: {why}")
 
     if tagged and unreleased:
         fail(f"v{version} IS tagged but the CHANGELOG still says UNRELEASED: {marker!r}")
