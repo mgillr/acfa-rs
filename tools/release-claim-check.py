@@ -32,6 +32,11 @@ def fail(msg, code=1):
     sys.exit(code)
 
 
+#: The three things this check can conclude about a tag. UNDECIDABLE is not a soft DENIED -- it is
+#: the answer "I cannot tell", and it exits 2 so nobody reads it as either a pass or a rejection.
+VERIFIED, DENIED, UNDECIDABLE = "verified", "denied", "undecidable"
+
+
 def _git(*args):
     return subprocess.run(
         ["git", *args], cwd=ROOT, capture_output=True, text=True, timeout=30
@@ -66,11 +71,11 @@ def is_release_tag(name: str, tags: set) -> tuple:
                    this release rather than merely coexist with it.
     """
     if name not in tags:
-        return False, "no tag with that name"
+        return DENIED, "no tag with that name"
 
     kind = _git("cat-file", "-t", name).stdout.strip()
     if kind != "tag":
-        return False, f"tag is {kind or 'unreadable'}, not annotated (lightweight tags carry no message or date)"
+        return DENIED, f"tag is {kind or 'unreadable'}, not annotated (lightweight tags carry no message or date)"
 
     # SIGNED -- AND THIS PROPERTY CANNOT BE CHECKED WITHOUT A KEY, SO IT REFUSES RATHER THAN
     # PRETENDS.
@@ -95,18 +100,30 @@ def is_release_tag(name: str, tags: set) -> tuple:
     # REFUSES with exit 2 and says why, rather than passing on an unverifiable claim.
     ver = _git("verify-tag", "--raw", name)
     blob = ((ver.stderr or "") + (ver.stdout or "")).lower()
+    # THREE OUTCOMES, NOT TWO, and collapsing them was the third defect on this file.
+    #
+    # The previous version routed two substring cases to a refusal and let EVERYTHING ELSE fall
+    # through to "not a release tag". "Key not imported" is not "no tag" -- and it is precisely
+    # what CI will hit the day the release is cut, because ci.yml fetches tags and never imports a
+    # public key. A genuinely signed, correct tag would have been reported as absent, and the
+    # message would have told the maintainer to create a tag that already existed. C's summary:
+    # objection 1 certified a tag it had not verified, objection 2 accepted a forged marker, and
+    # this one DENIES a real tag it could not verify. All three are the check reporting a property
+    # it cannot decide.
+    #
+    # So the DEFAULT for anything not positively decided is UNDECIDABLE, never DENIED. Only
+    # structural facts a local repository can settle on its own -- the name is absent, the tag is
+    # lightweight, git itself reports no signature present, the tagged tree declares a different
+    # version -- are denials.
     if "no signature found" in blob:
-        return False, "tag is annotated but UNSIGNED (git verify-tag: no signature found)"
-    if "cannot run gpg" in blob or "not found" in blob:
-        fail(
-            f"{name} exists but its signature CANNOT BE VERIFIED here -- gpg is unavailable, and "
-            f"git's own message/signature split is defeated by putting the marker in the tag "
-            f"message (measured). Refusing rather than reporting an unverifiable property as "
-            f"satisfied. Run this where gpg and the signer's public key are present.",
-            2,
+        return DENIED, "tag is annotated but UNSIGNED (git verify-tag: no signature found)"
+    if "goodsig" not in blob and "validsig" not in blob:
+        return UNDECIDABLE, (
+            f"the signature on {name} could not be verified here -- git reported "
+            f"{(blob.strip().splitlines() or ['nothing'])[0]!r}. This is NOT evidence the tag is "
+            f"bad: gpg may be absent, or the signer's public key not imported, which is the "
+            f"normal state on a CI runner. Import the key, or run where it is present."
         )
-    if "goodsig" not in blob and "validsig" not in blob and ver.returncode != 0:
-        return False, f"tag signature did not verify: {blob.strip().splitlines()[:1]}"
 
     # README:121 -- "the same version appears in all three Rust crate manifests AND IN THE PYTHON
     # ADAPTER". The adapter was not read, so a tree could ship it at a version that never existed
@@ -118,17 +135,17 @@ def is_release_tag(name: str, tags: set) -> tuple:
         rel = m.relative_to(ROOT)
         blob = _git("show", f"{name}:{rel}")
         if blob.returncode != 0:
-            return False, f"tag does not contain {rel} -- it does not name a tree of this project"
+            return DENIED, f"tag does not contain {rel} -- it does not name a tree of this project"
         hit = re.search(r'^version = "([^"]+)"', blob.stdout, re.M)
         if not hit:
-            return False, f"{rel} at {name} has no version line"
+            return DENIED, f"{rel} at {name} has no version line"
         seen.append(hit.group(1))
     if any(v != want for v in seen):
-        return False, (
+        return DENIED, (
             f"the tagged commit declares {sorted(set(seen))}, not {want} -- the tag does not name "
             f"this release, it merely shares its name"
         )
-    return True, f"annotated, signed, and the tagged tree declares {want}"
+    return VERIFIED, f"annotated, signature verified, and the tagged tree declares {want}"
 
 
 def main() -> int:
@@ -179,8 +196,11 @@ def main() -> int:
         fail(f"CHANGELOG.md has no section for the declared version v{version}")
     marker = heading.group(1).strip()
 
-    tagged, why = is_release_tag(f"v{version}", tags)
+    state, why = is_release_tag(f"v{version}", tags)
     unreleased = "UNRELEASED" in marker.upper()
+    if state is UNDECIDABLE:
+        fail(f"v{version}: {why}", 2)
+    tagged = state is VERIFIED
     if not tagged:
         print(f"  v{version} is not a release tag: {why}")
 
