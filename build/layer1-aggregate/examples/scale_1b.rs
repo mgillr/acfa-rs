@@ -65,8 +65,11 @@ fn stream_matrix(n: usize, d: usize, chunk: usize) -> Option<Vec<i128>> {
         for i in 0..n {
             for j in (i + 1)..n {
                 let mut part: i128 = 0;
-                for k in 0..(end - start) {
-                    let delta = (buf[i][k] as i128) - (buf[j][k] as i128);
+                // Zipped rather than indexed: the two buffers are walked in lockstep, so an
+                // index cannot drift between them and clippy's needless_range_loop is satisfied
+                // without weakening anything. Same arithmetic, same order, same result.
+                for (x, y) in buf[i].iter().zip(buf[j].iter()) {
+                    let delta = (*x as i128) - (*y as i128);
                     part = part.checked_add(delta.checked_mul(delta)?)?;
                 }
                 acc[i * n + j] = acc[i * n + j].checked_add(part)?;
@@ -154,7 +157,11 @@ fn main() -> std::process::ExitCode {
             h = h.wrapping_mul(1099511628211);
         }
     }
-    println!("  matrix build {:.2}s   total {:.2}s", build.as_secs_f64(), total.as_secs_f64());
+    println!(
+        "  matrix build {:.2}s   total {:.2}s",
+        build.as_secs_f64(),
+        total.as_secs_f64()
+    );
     println!("  selected {sel:?}");
     println!("  matrix-digest {h:016x}");
     std::process::ExitCode::SUCCESS

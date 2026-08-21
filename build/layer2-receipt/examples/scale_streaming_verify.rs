@@ -50,14 +50,31 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::from(2);
     }
     let p = |s: &String, w: &str| -> Option<usize> {
-        s.parse().ok().or_else(|| { eprintln!("scale_streaming_verify: {w} must be a positive integer, got {s:?}"); None })
+        s.parse().ok().or_else(|| {
+            eprintln!("scale_streaming_verify: {w} must be a positive integer, got {s:?}");
+            None
+        })
     };
-    let (Some(n), Some(d)) = (p(&a[1], "n"), p(&a[2], "d")) else { return std::process::ExitCode::from(2) };
-    let chunk = match a.get(3) { None => 1_000_000, Some(s) => match p(s, "chunk") { Some(c) => c, None => return std::process::ExitCode::from(2) } };
+    let (Some(n), Some(d)) = (p(&a[1], "n"), p(&a[2], "d")) else {
+        return std::process::ExitCode::from(2);
+    };
+    let chunk = match a.get(3) {
+        None => 1_000_000,
+        Some(s) => match p(s, "chunk") {
+            Some(c) => c,
+            None => return std::process::ExitCode::from(2),
+        },
+    };
 
-    let ids: Vec<Identity> = (1..=n as u32).map(|i| Identity::from_secret(i, &[i as u8; 32])).collect();
+    let ids: Vec<Identity> = (1..=n as u32)
+        .map(|i| Identity::from_secret(i, &[i as u8; 32]))
+        .collect();
     let pki: Pki = ids.iter().map(|i| (i.node_id, i.public())).collect();
-    let params = RoundParams { rule: Rule::Krum, f: (n / 8) as u32, frac_bits: acfa_receipt::FRAC_BITS };
+    let params = RoundParams {
+        rule: Rule::Krum,
+        f: (n / 8) as u32,
+        frac_bits: acfa_receipt::FRAC_BITS,
+    };
     let ctx = acfa_receipt::identity::NO_CONTEXT;
     let path = std::env::temp_dir().join(format!("acfa_wire_{}_{}.bin", std::process::id(), d));
 
@@ -76,10 +93,13 @@ fn main() -> std::process::ExitCode {
         let mut s = 0usize;
         while s < d {
             let e = (s + chunk).min(d);
-            buf.clear(); raw.clear();
+            buf.clear();
+            raw.clear();
             for i in s..e {
                 let v = coord(k as u64, i as u64);
-                if i > 0 { buf.push(b'|'); }
+                if i > 0 {
+                    buf.push(b'|');
+                }
                 buf.extend_from_slice(v.to_string().as_bytes());
                 raw.extend_from_slice(&v.to_be_bytes());
             }
@@ -100,7 +120,11 @@ fn main() -> std::process::ExitCode {
     // demo rather than being run once and described.
     if std::env::args().any(|x| x == "--corrupt") {
         use std::io::{Read as _, Seek as _, Write as _};
-        let mut g = std::fs::OpenOptions::new().read(true).write(true).open(&path).expect("reopen");
+        let mut g = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .expect("reopen");
         let mid = pos / 2;
         g.seek(SeekFrom::Start(mid)).expect("seek");
         let mut one = [0u8; 1];
@@ -138,18 +162,21 @@ fn main() -> std::process::ExitCode {
     {
         let mut rb = vec![0u8; chunk * 8];
         let mut tb: Vec<u8> = Vec::with_capacity(chunk * 12);
-        for k in 0..n {
+        for off in offsets.iter().take(n) {
             let mut hasher = Sha256::new();
             let mut s0 = 0usize;
             while s0 < d {
                 let e0 = (s0 + chunk).min(d);
                 let want = (e0 - s0) * 8;
-                f.seek(SeekFrom::Start(offsets[k] + (s0 as u64) * 8)).expect("seek");
+                f.seek(SeekFrom::Start(*off + (s0 as u64) * 8))
+                    .expect("seek");
                 f.read_exact(&mut rb[..want]).expect("read");
                 tb.clear();
                 for (t, c) in rb[..want].chunks_exact(8).enumerate() {
                     let v = i64::from_be_bytes(c.try_into().unwrap());
-                    if s0 + t > 0 { tb.push(b'|'); }
+                    if s0 + t > 0 {
+                        tb.push(b'|');
+                    }
                     tb.extend_from_slice(v.to_string().as_bytes());
                 }
                 hasher.update(&tb);
@@ -160,23 +187,31 @@ fn main() -> std::process::ExitCode {
     }
     let hash_matches = rederived == hashes;
     for (k, id) in ids.iter().enumerate() {
-        if verify(pki.get(&id.node_id).expect("key"), &contrib_msg(&ctx, &params, 1, id.node_id, &rederived[k]), &sigs[k]) {
+        if verify(
+            pki.get(&id.node_id).expect("key"),
+            &contrib_msg(&ctx, &params, 1, id.node_id, &rederived[k]),
+            &sigs[k],
+        ) {
             sigs_ok += 1;
         }
     }
 
     // (2) state root -- leaves only, 32 bytes each, no coordinates.
-    let leaves: Vec<[u8; 32]> = (0..n).map(|k| {
-        let mut b = Vec::with_capacity(2 + 32 + 9 + 8 + 4 + 32 + 64);
-        b.extend_from_slice(b"C|"); b.extend_from_slice(&ctx);
-        b.push(params.rule.as_wire());
-        b.extend_from_slice(&params.f.to_be_bytes());
-        b.extend_from_slice(&params.frac_bits.to_be_bytes());
-        b.extend_from_slice(&1u64.to_be_bytes());
-        b.extend_from_slice(&ids[k].node_id.to_be_bytes());
-        b.extend_from_slice(&rederived[k]); b.extend_from_slice(&sigs[k]);
-        h(&b)
-    }).collect();
+    let leaves: Vec<[u8; 32]> = (0..n)
+        .map(|k| {
+            let mut b = Vec::with_capacity(2 + 32 + 9 + 8 + 4 + 32 + 64);
+            b.extend_from_slice(b"C|");
+            b.extend_from_slice(&ctx);
+            b.push(params.rule.as_wire());
+            b.extend_from_slice(&params.f.to_be_bytes());
+            b.extend_from_slice(&params.frac_bits.to_be_bytes());
+            b.extend_from_slice(&1u64.to_be_bytes());
+            b.extend_from_slice(&ids[k].node_id.to_be_bytes());
+            b.extend_from_slice(&rederived[k]);
+            b.extend_from_slice(&sigs[k]);
+            h(&b)
+        })
+        .collect();
     let root = merkle_root(&leaves);
 
     // (3) THE AGGREGATE -- re-executed from the wire, chunk-parallel across all n by SEEKING.
@@ -189,16 +224,23 @@ fn main() -> std::process::ExitCode {
         let e = (s + chunk).min(d);
         let want = (e - s) * 8;
         for k in 0..n {
-            f.seek(SeekFrom::Start(offsets[k] + (s as u64) * 8)).expect("seek");
+            f.seek(SeekFrom::Start(offsets[k] + (s as u64) * 8))
+                .expect("seek");
             f.read_exact(&mut rawbuf[..want]).expect("read");
             bufs[k].clear();
-            bufs[k].extend(rawbuf[..want].chunks_exact(8).map(|c| i64::from_be_bytes(c.try_into().unwrap())));
+            bufs[k].extend(
+                rawbuf[..want]
+                    .chunks_exact(8)
+                    .map(|c| i64::from_be_bytes(c.try_into().unwrap())),
+            );
         }
         for i in 0..n {
             for j in (i + 1)..n {
                 let mut part: i128 = 0;
-                for t in 0..(e - s) {
-                    let delta = (bufs[i][t] as i128) - (bufs[j][t] as i128);
+                // Zipped for the same reason as scale_1b: lockstep over two buffers, so no index
+                // can drift between them.
+                for (x, y) in bufs[i].iter().zip(bufs[j].iter()) {
+                    let delta = (*x as i128) - (*y as i128);
                     part += delta * delta;
                 }
                 acc[i * n + j] += part;
@@ -206,22 +248,46 @@ fn main() -> std::process::ExitCode {
         }
         s = e;
     }
-    for i in 0..n { for j in 0..i { acc[i * n + j] = acc[j * n + i]; } }
+    for i in 0..n {
+        for j in 0..i {
+            acc[i * n + j] = acc[j * n + i];
+        }
+    }
     let verify_t = t1.elapsed();
 
     let mut dh: u64 = 1469598103934665603;
-    for v in &acc { for b in v.to_be_bytes() { dh ^= b as u64; dh = dh.wrapping_mul(1099511628211); } }
+    for v in &acc {
+        for b in v.to_be_bytes() {
+            dh ^= b as u64;
+            dh = dh.wrapping_mul(1099511628211);
+        }
+    }
 
     println!("# ACFA STREAMING VERIFICATION -- full re-execution, bounded memory");
     println!("  n {n}   d {d}   chunk {chunk}");
-    println!("  WIRE ON DISK          {:.2} GB   <- O(n*d), inherent: re-execution needs the data", wire_bytes as f64 / 1e9);
-    println!("  verifier working set  {:.3} GB   <- O(n*chunk), independent of d", (n * chunk * 8) as f64 / 1e9);
+    println!(
+        "  WIRE ON DISK          {:.2} GB   <- O(n*d), inherent: re-execution needs the data",
+        wire_bytes as f64 / 1e9
+    );
+    println!(
+        "  verifier working set  {:.3} GB   <- O(n*chunk), independent of d",
+        (n * chunk * 8) as f64 / 1e9
+    );
     println!("  tensor hashes RE-DERIVED from disk, match write-time: {hash_matches}");
     println!("  signatures verified   {sigs_ok}/{n}");
-    println!("  state root            {}", root.iter().map(|x| format!("{x:02x}")).collect::<String>());
+    println!(
+        "  state root            {}",
+        root.iter().map(|x| format!("{x:02x}")).collect::<String>()
+    );
     println!("  distance-digest       {dh:016x}");
-    println!("  write {:.2}s   verify {:.2}s", write_t.as_secs_f64(), verify_t.as_secs_f64());
+    println!(
+        "  write {:.2}s   verify {:.2}s",
+        write_t.as_secs_f64(),
+        verify_t.as_secs_f64()
+    );
     let _ = std::fs::remove_file(&path);
-    if sigs_ok != n { return std::process::ExitCode::from(1); }
+    if sigs_ok != n {
+        return std::process::ExitCode::from(1);
+    }
     std::process::ExitCode::SUCCESS
 }

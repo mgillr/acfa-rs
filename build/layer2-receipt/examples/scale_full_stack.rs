@@ -98,7 +98,10 @@ fn main() -> std::process::ExitCode {
 
     println!("# ACFA FULL-STACK scale demonstration -- every layer, streaming");
     println!("  n {n}   d {d}   chunk {chunk}");
-    println!("  full receipt would carry  {:.1} GB of tensor", (n as f64) * (d as f64) * 8.0 / 1e9);
+    println!(
+        "  full receipt would carry  {:.1} GB of tensor",
+        (n as f64) * (d as f64) * 8.0 / 1e9
+    );
 
     // -------- EQUIVALENCE, at a size where the materialised path still fits --------
     if d <= 5_000_000 {
@@ -112,13 +115,19 @@ fn main() -> std::process::ExitCode {
         }
         println!(
             "  streamed tensor-hash == materialised, across 6 chunk sizes : {}",
-            if all_match { "IDENTICAL" } else { "*** DIFFERS ***" }
+            if all_match {
+                "IDENTICAL"
+            } else {
+                "*** DIFFERS ***"
+            }
         );
         if !all_match {
             return std::process::ExitCode::from(1);
         }
     } else {
-        println!("  (equivalence check skipped -- d too large to materialise here; run it at d<=5e6)");
+        println!(
+            "  (equivalence check skipped -- d too large to materialise here; run it at d<=5e6)"
+        );
     }
 
     // -------- THE ACCOUNTABILITY LAYER AT SIZE --------
@@ -155,8 +164,13 @@ fn main() -> std::process::ExitCode {
 
     println!("  signed + verified {n} contributions, built {n} leaves and the state root");
     println!("  accountability time {:.2}s", el.as_secs_f64());
-    println!("  state root {}", root.iter().map(|x| format!("{x:02x}")).collect::<String>());
-    println!("  redacted receipt size {} bytes  (tensor replaced by its 32-byte hash)",
-             n * (32 + 9 + 8 + 4 + 32 + 64));
+    println!(
+        "  state root {}",
+        root.iter().map(|x| format!("{x:02x}")).collect::<String>()
+    );
+    println!(
+        "  redacted receipt size {} bytes  (tensor replaced by its 32-byte hash)",
+        n * (32 + 9 + 8 + 4 + 32 + 64)
+    );
     std::process::ExitCode::SUCCESS
 }
