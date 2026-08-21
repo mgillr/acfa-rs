@@ -93,6 +93,24 @@ fn main() -> std::process::ExitCode {
         hashes.push(th);
     }
     f.flush().expect("flush");
+    // NEGATIVE CONTROL. `--corrupt` flips one bit in the tensor region, which is exactly C's
+    // probe. Before the re-derivation above, this changed NOTHING a verifier checks: signatures
+    // 4/4 and state root both unchanged, with only the distance digest noticing. A guard that
+    // cannot fail on a corrupted wire is not a verifier, so the corruption path ships with the
+    // demo rather than being run once and described.
+    if std::env::args().any(|x| x == "--corrupt") {
+        use std::io::{Read as _, Seek as _, Write as _};
+        let mut g = std::fs::OpenOptions::new().read(true).write(true).open(&path).expect("reopen");
+        let mid = pos / 2;
+        g.seek(SeekFrom::Start(mid)).expect("seek");
+        let mut one = [0u8; 1];
+        g.read_exact(&mut one).expect("read");
+        one[0] ^= 0x01;
+        g.seek(SeekFrom::Start(mid)).expect("seek");
+        g.write_all(&one).expect("write");
+        g.flush().expect("flush");
+        eprintln!("  [--corrupt] flipped one bit at byte {mid} of {pos}");
+    }
     let wire_bytes = pos;
     let write_t = t0.elapsed();
 
@@ -100,10 +118,49 @@ fn main() -> std::process::ExitCode {
     let t1 = std::time::Instant::now();
     let mut f = std::fs::File::open(&path).expect("open wire");
 
-    // (1) signatures -- over the 32-byte hash, so O(n).
+    // (1) signatures -- over the 32-byte hash, RE-DERIVED FROM THE BYTES ON DISK.
+    //
+    // THIS RE-DERIVATION IS THE WHOLE POINT AND THE FIRST VERSION SKIPPED IT. Seat C flipped one
+    // bit in the tensor region of a 6.4 MB wire and measured: signatures 4/4 UNCHANGED -- which I
+    // had predicted -- and STATE ROOT UNCHANGED, which I had not. The state root is the commitment
+    // a third party actually checks, and it is built from leaves derived from these hashes, so it
+    // inherited the defect: a verifier would confirm the root of a receipt whose tensor bytes had
+    // been altered. Only the distance digest noticed.
+    //
+    // C's structural reading is sharper than "not re-derived": the hash covers `enc_tensor`, the
+    // DECIMAL TEXT joined by '|', while the wire holds BIG-ENDIAN BINARY. The hash covered an
+    // encoding that never reached the disk, so re-deriving it was not merely skipped -- it was
+    // impossible without re-encoding. That is what this loop does: read the binary back in chunks,
+    // re-encode to the canonical decimal form, and hash THAT. Bounded memory, and the hash now
+    // commits to bytes a verifier can actually see.
     let mut sigs_ok = 0usize;
+    let mut rederived: Vec<[u8; 32]> = Vec::with_capacity(n);
+    {
+        let mut rb = vec![0u8; chunk * 8];
+        let mut tb: Vec<u8> = Vec::with_capacity(chunk * 12);
+        for k in 0..n {
+            let mut hasher = Sha256::new();
+            let mut s0 = 0usize;
+            while s0 < d {
+                let e0 = (s0 + chunk).min(d);
+                let want = (e0 - s0) * 8;
+                f.seek(SeekFrom::Start(offsets[k] + (s0 as u64) * 8)).expect("seek");
+                f.read_exact(&mut rb[..want]).expect("read");
+                tb.clear();
+                for (t, c) in rb[..want].chunks_exact(8).enumerate() {
+                    let v = i64::from_be_bytes(c.try_into().unwrap());
+                    if s0 + t > 0 { tb.push(b'|'); }
+                    tb.extend_from_slice(v.to_string().as_bytes());
+                }
+                hasher.update(&tb);
+                s0 = e0;
+            }
+            rederived.push(hasher.finalize().into());
+        }
+    }
+    let hash_matches = rederived == hashes;
     for (k, id) in ids.iter().enumerate() {
-        if verify(pki.get(&id.node_id).expect("key"), &contrib_msg(&ctx, &params, 1, id.node_id, &hashes[k]), &sigs[k]) {
+        if verify(pki.get(&id.node_id).expect("key"), &contrib_msg(&ctx, &params, 1, id.node_id, &rederived[k]), &sigs[k]) {
             sigs_ok += 1;
         }
     }
@@ -117,7 +174,7 @@ fn main() -> std::process::ExitCode {
         b.extend_from_slice(&params.frac_bits.to_be_bytes());
         b.extend_from_slice(&1u64.to_be_bytes());
         b.extend_from_slice(&ids[k].node_id.to_be_bytes());
-        b.extend_from_slice(&hashes[k]); b.extend_from_slice(&sigs[k]);
+        b.extend_from_slice(&rederived[k]); b.extend_from_slice(&sigs[k]);
         h(&b)
     }).collect();
     let root = merkle_root(&leaves);
@@ -159,6 +216,7 @@ fn main() -> std::process::ExitCode {
     println!("  n {n}   d {d}   chunk {chunk}");
     println!("  WIRE ON DISK          {:.2} GB   <- O(n*d), inherent: re-execution needs the data", wire_bytes as f64 / 1e9);
     println!("  verifier working set  {:.3} GB   <- O(n*chunk), independent of d", (n * chunk * 8) as f64 / 1e9);
+    println!("  tensor hashes RE-DERIVED from disk, match write-time: {hash_matches}");
     println!("  signatures verified   {sigs_ok}/{n}");
     println!("  state root            {}", root.iter().map(|x| format!("{x:02x}")).collect::<String>());
     println!("  distance-digest       {dh:016x}");
