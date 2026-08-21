@@ -77,8 +77,42 @@ def is_release_tag(name: str, tags: set) -> tuple:
     if kind != "tag":
         return DENIED, f"tag is {kind or 'unreadable'}, not annotated (lightweight tags carry no message or date)"
 
-    # SIGNED -- AND THIS PROPERTY CANNOT BE CHECKED WITHOUT A KEY, SO IT REFUSES RATHER THAN
-    # PRETENDS.
+    # README:121 -- "the same version appears in all three Rust crate manifests AND IN THE PYTHON
+    # ADAPTER". The adapter was not read, so a tree could ship it at a version that never existed
+    # and the guard called that consistent. C set it to 9.9.9 against three crates at 0.4.0 and the
+    # check passed. Everything the README names as carrying the version is now checked.
+    want = name.lstrip("v")
+    seen = []
+    for m in sorted(ROOT.glob("build/*/Cargo.toml")):
+        rel = m.relative_to(ROOT)
+        blob = _git("show", f"{name}:{rel}")
+        if blob.returncode != 0:
+            return DENIED, f"tag does not contain {rel} -- it does not name a tree of this project"
+        hit = re.search(r'^version = "([^"]+)"', blob.stdout, re.M)
+        if not hit:
+            return DENIED, f"{rel} at {name} has no version line"
+        seen.append(hit.group(1))
+    if any(v != want for v in seen):
+        return DENIED, (
+            f"the tagged commit declares {sorted(set(seen))}, not {want} -- the tag does not name "
+            f"this release, it merely shares its name"
+        )
+
+    # SIGNED -- LAST, AND THIS PROPERTY CANNOT BE CHECKED WITHOUT A KEY, SO IT REFUSES RATHER
+    # THAN PRETENDS.
+    #
+    # IT IS LAST BECAUSE ASKING IT FIRST THREW AWAY EVERYTHING THIS CHECK CAN SETTLE ALONE. C
+    # measured the consequence: with the signature tested first, the SAME defective tag -- one
+    # pointing at a tree declaring 0.3.0 -- came back DENIED on a host holding the key and
+    # UNDECIDABLE on one without it, and a CORRECT tag also came back UNDECIDABLE there. On a
+    # keyless host a correct tag and a wrong-tree tag were INDISTINGUISHABLE. Every contributor
+    # laptop and CI as configured is a keyless host, so that is exactly where the check ran and
+    # said nothing.
+    #
+    # In C's words: exit 2 is not too strict, it is too early. The policy was right and the order
+    # was wrong. Settle the locally decidable properties first -- name, annotated, and whether the
+    # tagged tree declares this version -- so a tree that is wrong for a reason a laptop CAN see is
+    # DENIED everywhere, and only the genuinely undecidable question is deferred.
     #
     # Two attempts failed here and the second failure is the instructive one. First a substring
     # test for the signature marker: C defeated it by typing the marker into `git tag -a -m`,
@@ -125,26 +159,6 @@ def is_release_tag(name: str, tags: set) -> tuple:
             f"normal state on a CI runner. Import the key, or run where it is present."
         )
 
-    # README:121 -- "the same version appears in all three Rust crate manifests AND IN THE PYTHON
-    # ADAPTER". The adapter was not read, so a tree could ship it at a version that never existed
-    # and the guard called that consistent. C set it to 9.9.9 against three crates at 0.4.0 and the
-    # check passed. Everything the README names as carrying the version is now checked.
-    want = name.lstrip("v")
-    seen = []
-    for m in sorted(ROOT.glob("build/*/Cargo.toml")):
-        rel = m.relative_to(ROOT)
-        blob = _git("show", f"{name}:{rel}")
-        if blob.returncode != 0:
-            return DENIED, f"tag does not contain {rel} -- it does not name a tree of this project"
-        hit = re.search(r'^version = "([^"]+)"', blob.stdout, re.M)
-        if not hit:
-            return DENIED, f"{rel} at {name} has no version line"
-        seen.append(hit.group(1))
-    if any(v != want for v in seen):
-        return DENIED, (
-            f"the tagged commit declares {sorted(set(seen))}, not {want} -- the tag does not name "
-            f"this release, it merely shares its name"
-        )
     return VERIFIED, f"annotated, signature verified, and the tagged tree declares {want}"
 
 
