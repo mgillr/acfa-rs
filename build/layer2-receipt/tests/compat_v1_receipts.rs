@@ -19,6 +19,7 @@
 
 use acfa_receipt::identity::{PreimageVersion, NO_CONTEXT};
 use acfa_receipt::wire::{decode, MAGIC_V1, MAGIC_V2};
+use acfa_receipt::State;
 
 use serde_json::Value;
 
@@ -77,10 +78,35 @@ fn v0_3_0_receipts_still_decode_and_report_v1_signature_semantics() {
             v["contribs"].as_u64().expect("contribs"),
             "{n}"
         );
+        // RECOMPUTED FROM THE ENTRIES, NOT READ BACK OFF THE WIRE.
+        //
+        // This compared `r.claimed_state_root` -- a field `wire::decode` PARSED OFF THE BYTE
+        // STREAM -- against the fixture's recorded hex. That proves the parse offset is right
+        // and NOTHING about reproduction: `State::root` and every v1 leaf derivation could be
+        // broken outright and this still passed, because both sides of the comparison came from
+        // the same bytes. I cited it as proof that v0.3.0 state roots "reproduce byte for byte",
+        // which is a stronger claim than the assertion supported.
+        //
+        // Rebuilding the state from the decoded entries and rooting it exercises the v1 leaf
+        // path, so it fails if `Contribution::leaf` or `EquivProof::leaf` stops hashing a v1
+        // entry the v1 way.
+        let mut rebuilt = State::new();
+        for c in &r.contributions {
+            rebuilt.add_contribution(c.clone());
+        }
+        for p in &r.proofs {
+            rebuilt.add_proof(p.clone());
+        }
+        assert_eq!(
+            hexs(&rebuilt.root()),
+            v["state_root"].as_str().unwrap(),
+            "{n}: the state root RECOMPUTED from the decoded entries does not match the one \
+             this receipt published -- the v1 leaf derivation has moved"
+        );
         assert_eq!(
             hexs(&r.claimed_state_root),
-            v["state_root"].as_str().unwrap(),
-            "{n} state root moved"
+            hexs(&rebuilt.root()),
+            "{n}: the carried root and the recomputed root disagree"
         );
         assert_eq!(
             hexs(&r.claimed_output_root),
@@ -160,3 +186,62 @@ fn hexs(b: &[u8; 32]) -> String {
 // redacted_v1: `MAGIC_REDACTED_V1` has its own decode arm and no v0.3.0 fixture here, because
 // the v0.3.0 `wire_vectors` example emits full receipts only. That arm remains uncovered and is
 // recorded as such rather than assumed safe.
+
+/// GUARD-DELETION: point the CLI's file fast-path back at `wire::MAGIC` and this goes RED.
+///
+/// The library kept the v1 promise and the BINARY broke it, which is the worse of the two: an
+/// operator handed "UNPARSEABLE -- truncated" on a complete, valid archive concludes the archive
+/// is corrupt. Measured on a genuine v0.3.0 receipt before the fix: the file path reported
+/// truncated while THE SAME BYTES ON STDIN reported state root 529a1232....
+///
+/// The test drives BOTH paths and requires them to agree, because agreement is the actual
+/// invariant -- a sniff that rejects everything would pass a file-path-only assertion.
+#[test]
+fn a_v1_receipt_reads_identically_from_a_file_and_from_stdin() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let v = vectors()
+        .into_iter()
+        .find(|x| name(x) == "three-contribs")
+        .expect("vector");
+    let bytes = wire(&v);
+    assert_eq!(&bytes[..8], &MAGIC_V1[..], "this fixture must be a v1 receipt");
+
+    let dir = std::env::temp_dir().join(format!("acfa-v1-cli-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("v1.receipt");
+    std::fs::write(&path, &bytes).unwrap();
+
+    let from_file = Command::new(env!("CARGO_BIN_EXE_acfa-verify"))
+        .arg(&path)
+        .output()
+        .unwrap();
+    let mut ch = Command::new(env!("CARGO_BIN_EXE_acfa-verify"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    ch.stdin.as_mut().unwrap().write_all(&bytes).unwrap();
+    let from_stdin = ch.wait_with_output().unwrap();
+
+    let f_out = String::from_utf8_lossy(&from_file.stdout).to_string();
+    let f_err = String::from_utf8_lossy(&from_file.stderr).to_string();
+    let s_out = String::from_utf8_lossy(&from_stdin.stdout).to_string();
+
+    assert!(
+        !f_err.contains("UNPARSEABLE"),
+        "a complete v0.3.0 receipt read FROM A FILE was reported unparseable: {f_err}"
+    );
+    assert!(
+        f_out.contains("529a12326ab7ed66544f7b2eed1a4c2cfa3f4ef913a062395db6d08aa56a39ac"),
+        "the file path must report the receipt's own state root: {f_out}{f_err}"
+    );
+    assert_eq!(
+        f_out, s_out,
+        "the same bytes must read identically from a file and from stdin"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

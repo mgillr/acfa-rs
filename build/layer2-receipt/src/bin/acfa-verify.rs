@@ -107,6 +107,16 @@ fn flag_value(args: &[String], name: &str) -> Option<String> {
     None
 }
 
+/// Every magic `wire::decode`/`decode_redacted` will accept. The file fast-path must gate on
+/// THIS, never on the emit-side `wire::MAGIC`, or the CLI silently stops reading formats the
+/// library still supports.
+const READABLE_MAGICS: [&[u8; 8]; 4] = [
+    acfa_receipt::wire::MAGIC_V2,
+    acfa_receipt::wire::MAGIC_V1,
+    acfa_receipt::wire::MAGIC_REDACTED_V2,
+    acfa_receipt::wire::MAGIC_REDACTED_V1,
+];
+
 const USAGE: &str = "\
 acfa-verify [FILE] --pki <FILE> [--f <N>] [--rule krum|bulyan] [--ctx <HEX64>] [--require-bound]
 
@@ -358,7 +368,19 @@ fn main() -> ExitCode {
             let mut f = std::fs::File::open(p)?;
             let mut head = [0u8; 8];
             match f.read_exact(&mut head) {
-                Ok(()) if &head == acfa_receipt::wire::MAGIC => {}
+                // ACCEPT EVERY MAGIC THE DECODER ACCEPTS, not the one this build EMITS.
+                //
+                // This gate used to test `wire::MAGIC`, which is the emit-side alias for
+                // `MAGIC_V2`. So a v0.1.0-v0.3.0 receipt PASSED FROM A FILE failed the 8-byte
+                // sniff, the reader kept only those 8 bytes, and the tool reported
+                // "UNPARSEABLE -- truncated" on a complete, valid file -- while THE SAME BYTES
+                // ON STDIN bypassed the sniff and parsed. Measured on a genuine v0.3.0 receipt:
+                // file path said truncated, stdin reported state root 529a1232....
+                //
+                // The library kept the compatibility promise and the binary broke it, which is
+                // the worse of the two: an operator reads UNPARSEABLE and concludes the archive
+                // is corrupt. The constant's own doc comment says reading accepts V1 forever.
+                Ok(()) if READABLE_MAGICS.iter().any(|m| &head == *m) => {}
                 // Too short to carry a magic, or the magic is wrong. Either way this is not
                 // a receipt and there is nothing to gain by reading the remainder.
                 _ => {
