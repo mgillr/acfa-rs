@@ -89,6 +89,20 @@ pub enum WireError {
     ParamsDisagreeWithHeader {
         node_id: u32,
     },
+    /// An entry claims a signature preimage version that the magic this build emits does not
+    /// mean: a v1-marked entry inside a receipt that will be written as `ACFA-R2`.
+    ///
+    /// The same round-trip argument as [`WireError::ParamsDisagreeWithHeader`], one field over.
+    /// The preimage version is carried ONCE, by the magic, and `decode` stamps every entry from
+    /// it -- so a v1-marked entry comes back v2, with a different leaf and a different signed
+    /// message. #105.
+    ///
+    /// ENCODE-SIDE ONLY, like both of its neighbours. `decode` sets the version FROM the magic it
+    /// read, so no byte stream can produce this; the enum is shared by both directions, so every
+    /// `WireError` match must still cover it.
+    PreimageDisagreesWithMagic {
+        node_id: u32,
+    },
 }
 
 impl core::fmt::Display for WireError {
@@ -120,6 +134,13 @@ impl core::fmt::Display for WireError {
                 "fault bound f = {bound} does not fit the wire's u32 field; refusing rather \
                  than truncating, because a truncated bound changes the verdict"
             ),
+            WireError::PreimageDisagreesWithMagic { node_id } => write!(
+                f,
+                "node {node_id}'s entry is marked as signed over the v1 preimage, but this \
+                 build writes the ACFA-R2 magic and decode stamps v2 onto every entry; the \
+                 receipt would not decode back to itself, and the entry's signature would \
+                 afterwards be checked against a message it was never made over"
+            ),
         }
     }
 }
@@ -150,6 +171,32 @@ impl W {
         self.0.extend_from_slice(v);
     }
 }
+
+/// The preimage version the magic this build EMITS means.
+///
+/// `encode` always writes [`MAGIC`], and `decode` maps `MAGIC_V2 -> V2` and `MAGIC_V1 -> V1`, so
+/// this constant is what every entry of an encodable receipt must be marked with. See the
+/// `PreimageDisagreesWithMagic` check in [`encode_checked`].
+const EMITTED_PREIMAGE: PreimageVersion = PreimageVersion::V2;
+
+/// The tie between the constant above and the magic it describes, as a COMPILE ERROR rather than
+/// a comment, because a comment cannot fail.
+///
+/// A build that emitted `MAGIC_V1` while this constant still said `V2` would invert the guard
+/// exactly: it would refuse the v1 entries that magic is for and accept the v2 entries it cannot
+/// carry. Nothing else in the crate would notice, because the guard would still be there and
+/// still be running. Changing `MAGIC` therefore stops the crate building until `EMITTED_PREIMAGE`
+/// is changed with it.
+const _: () = {
+    let mut i = 0;
+    while i < 8 {
+        assert!(
+            MAGIC[i] == MAGIC_V2[i],
+            "MAGIC no longer means EMITTED_PREIMAGE -- update both together"
+        );
+        i += 1;
+    }
+};
 
 /// KNOWN DEFECT, crypto-09-2, MEASURED AND UNFIXED PENDING AN API RULING. DO NOT "TIDY"
 /// THE `as u32` CASTS BELOW WITHOUT READING THIS.
@@ -246,14 +293,42 @@ pub fn encode_checked(r: &Receipt) -> Result<Vec<u8>, WireError> {
         f: r.f as u32,
         frac_bits: r.frac_bits,
     };
+
+    // AND EVERY ENTRY MUST AGREE WITH THE PREIMAGE VERSION THE MAGIC MEANS (#105). Same
+    // argument, one field over, and it was missing. `sig_preimage` is carried by the MAGIC and
+    // by nothing else, so `decode` of an `ACFA-R2` receipt stamps v2 onto every entry. A
+    // v1-marked entry therefore comes back v2, with a DIFFERENT LEAF (`Contribution::leaf` folds
+    // `ctx` and `params` in for v2 only) and a DIFFERENT SIGNED MESSAGE (`contrib_msg` rather
+    // than `contrib_msg_v1`) -- so the receipt does not decode to itself, and afterwards the
+    // entry's signature is checked against a message its author never signed.
+    //
+    // MEASURED ON THIS TREE, six contributions and one proof, 1116 bytes, one entry re-marked
+    // `PreimageVersion::V1` and the bytes decoded again:
+    //
+    //   contribution marked v1 -> Err(NotCanonical("contributions not strictly ascending by leaf"))
+    //   proof        marked v1 -> Ok(receipt), with the marking silently replaced by v2
+    //
+    // THE PROOF HALF IS THE ONE THIS GUARD IS FOR. The contribution is caught downstream only
+    // because its v1 leaf sorts it where its v2 leaf does not, which is luck, not a check; a
+    // single proof cannot be out of order, so it decodes cleanly into a receipt that is not the
+    // one written. Both halves are refused here, at the point the bytes are made.
+    //
+    // Until #105 neither was: `Contribution::sig_preimage` documented this exact refusal, and no
+    // encoder performed it.
     for c in &r.contributions {
         if c.params != header {
             return Err(WireError::ParamsDisagreeWithHeader { node_id: c.node_id });
+        }
+        if c.sig_preimage != EMITTED_PREIMAGE {
+            return Err(WireError::PreimageDisagreesWithMagic { node_id: c.node_id });
         }
     }
     for p in &r.proofs {
         if p.params != header {
             return Err(WireError::ParamsDisagreeWithHeader { node_id: p.node_id });
+        }
+        if p.sig_preimage != EMITTED_PREIMAGE {
+            return Err(WireError::PreimageDisagreesWithMagic { node_id: p.node_id });
         }
     }
     Ok(encode(r))

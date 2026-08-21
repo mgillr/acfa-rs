@@ -37,9 +37,24 @@ pub struct Contribution {
     /// silent downgrade surface, accepting v1 signatures wherever a caller legitimately chose no
     /// context -- the version is explicit and the decoder sets it from the wire magic it read.
     ///
-    /// Anything constructed in memory is v2. Only `wire::decode` of an `ACFA-R1` receipt produces
-    /// v1, and such a contribution can never be mixed into a v2 receipt because the encoder
-    /// refuses it.
+    /// Anything constructed in memory is v2 -- it is `PreimageVersion::default()` -- and only
+    /// `wire::decode` of an `ACFA-R1` receipt produces v1. Such a contribution cannot be mixed
+    /// into a v2 receipt: [`crate::wire::encode_checked`] refuses it BY NAME, as
+    /// `WireError::PreimageDisagreesWithMagic`.
+    ///
+    /// THAT LAST SENTENCE WAS FALSE UNTIL #105, AND IS THE REASON THE REFUSAL EXISTS. It read
+    /// "the encoder refuses it" while `encode_checked` refused only `FaultBoundTooLarge` and
+    /// `ParamsDisagreeWithHeader` and had no preimage check of any kind, so a v1-marked
+    /// contribution dropped into a v2 receipt encoded without complaint. The claim was made true
+    /// rather than softened, because the versioning of `leaf()` and of `signature_valid` below
+    /// both rest on it: a v2 receipt carrying a v1 entry decodes back with that entry stamped v2,
+    /// which recomputes its leaf the v2 way and checks its signature against `contrib_msg` when
+    /// it was made over `contrib_msg_v1`.
+    ///
+    /// THE PROMISE IS ON THE CHECKED PATH ONLY, which is rust-12 rather than an omission here:
+    /// `wire::encode` is infallible by signature, so it refuses nothing at all -- not this, not
+    /// an out-of-range fault bound. Bytes that mean what the receipt means come from
+    /// `encode_checked`.
     pub sig_preimage: PreimageVersion,
     pub rnd: u64,
     pub node_id: u32,

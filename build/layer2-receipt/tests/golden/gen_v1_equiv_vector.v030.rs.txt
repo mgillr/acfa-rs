@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Ryan Gillespie
+//
+// GENERATOR FOR THE SIXTH LINE OF `vectors_v1_compat.json`. Kept as `.rs.txt` because it does
+// not compile against THIS tree -- it is written against the `v0.3.0` TAG, whose `contrib_msg`
+// takes `(rnd, tensor_hash)` and whose `EquivProof` has no `ctx`/`params`/`sig_preimage`
+// fields. Compiling it here would defeat its whole purpose.
+//
+// WHY A SEPARATE GENERATOR AT ALL. The first five vectors are the stdout of v0.3.0's own
+// `examples/wire_vectors.rs`, and every one of them has `proofs = 0` -- that example never
+// makes a node equivocate. So the v1 branch of `EquivProof::leaf` was reachable by no fixture
+// in the repo, which is the identical hole as #81. This scenario delivers a SECOND, differently
+// valued contribution from node 1 in the same round, so v0.3.0's `State::deliver` forms the
+// proof itself; the bytes are that build's `encode` output, not a hand-rolled guess at the old
+// format.
+//
+// REPRODUCE (verified in this session, byte for byte):
+//   git archive v0.3.0 | tar -x -C /tmp/v030
+//   cp <this file> /tmp/v030/build/layer2-receipt/examples/v1_equiv_vector.rs   # drop .txt
+//   cd /tmp/v030/build/layer2-receipt && cargo run -q --release --example v1_equiv_vector
+// The same command with `--example wire_vectors` reproduces the other five lines; its output
+// was diffed against this file's first five and is byte-identical, which is what establishes
+// that the toolchain used for the sixth is the same one that produced the other five.
+use acfa_receipt::entry::Contribution;
+use acfa_receipt::hash::{enc_tensor, h};
+use acfa_receipt::identity::{contrib_msg, Identity, Pki};
+use acfa_receipt::{encode, Receipt, Rule, State};
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+fn main() {
+    let ids: Vec<Identity> = (1..=5)
+        .map(|n| Identity::from_secret(n, &[n as u8; 32]))
+        .collect();
+
+    let rnd: u64 = 1;
+    let f = 1usize;
+    let rule = Rule::Krum;
+    let pki: Pki = ids.iter().map(|i| (i.node_id, i.public())).collect();
+
+    let mut st = State::new();
+    for (i, id) in ids.iter().enumerate() {
+        let t = vec![(i as i64) * 3, (i as i64) + 1, 7 - (i as i64)];
+        let sig = id.sign(&contrib_msg(rnd, &h(&enc_tensor(&t))));
+        st.deliver(
+            Contribution {
+                rnd,
+                node_id: id.node_id,
+                tensor: t,
+                sig,
+            },
+            &pki,
+        );
+    }
+    // Node 1 equivocates: a SECOND, differently-valued contribution in the SAME round.
+    let t2 = vec![9999i64, 9999, 9999];
+    let sig2 = ids[0].sign(&contrib_msg(rnd, &h(&enc_tensor(&t2))));
+    st.deliver(
+        Contribution {
+            rnd,
+            node_id: ids[0].node_id,
+            tensor: t2,
+            sig: sig2,
+        },
+        &pki,
+    );
+
+    let r = Receipt::issue(&st, rnd, &pki, f, rule);
+    let w = encode(&r);
+    let agg = match &r.claimed_aggregate {
+        Some(v) => format!("{v:?}"),
+        None => "null".into(),
+    };
+    println!(
+        "  {{\"name\":\"{}\",\"round\":{},\"f\":{},\"rule\":\"{:?}\",\"pki_n\":{},\
+         \"contribs\":{},\"proofs\":{},\"state_root\":\"{}\",\"output_root\":\"{}\",\
+         \"agg\":{},\"bytes\":{},\"wire\":\"{}\"}}",
+        "equivocation-proof-v1",
+        r.round,
+        r.f,
+        r.rule,
+        r.pki.len(),
+        r.contributions.len(),
+        r.proofs.len(),
+        hex(&r.claimed_state_root),
+        hex(&r.claimed_output_root),
+        agg,
+        w.len(),
+        hex(&w)
+    );
+}
