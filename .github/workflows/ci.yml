@@ -401,6 +401,18 @@ jobs:
         run: python3 tools/claim-caveat-check.py --self-test
       - name: Every guarded claim must carry its caveat
         run: python3 tools/claim-caveat-check.py
+      # A tree that CLAIMS a release it does not have. The manifests declared 0.4.0, the
+      # CHANGELOG carried a dated v0.4.0 section and the README listed it in the release table,
+      # while `git ls-remote --tags` returned only v0.1.0, v0.2.0 and v0.3.0. The README states
+      # that releases ARE signed annotated tags, so the tree asserted a release that could not be
+      # obtained or verified by the process the tree itself documents. Nothing noticed because
+      # nothing compared the declared version against the tags that exist. `fetch-depth: 0` and
+      # `fetch-tags` are required -- with a shallow clone the check REFUSES (exit 2) rather than
+      # passing over an empty tag set, which is the behaviour we want but not the one we want here.
+      - name: The tree must not claim a release it does not have
+        run: |
+          git fetch --tags --quiet || true
+          python3 tools/release-claim-check.py
       # adv-08. Needs the release binaries, and needs a real pty -- `cargo test` gives a
       # child a pipe, so `stdin().is_terminal()` is false and the branch is unreachable
       # from the Rust suites. Measured: deleting the guard in any of the three binaries
