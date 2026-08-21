@@ -177,7 +177,9 @@ impl RoundParams {
     }
 }
 
-/// Which signed preimage a signature was made over. See [`Contribution::sig_preimage`].
+/// Which signed preimage a signature was made over. See
+/// [`crate::entry::Contribution::sig_preimage`] -- fully qualified because `Contribution`
+/// lives in `entry` and is not in scope in this module, so the short path does not resolve.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum PreimageVersion {
     /// v0.3.0 and earlier: `"ACFA-CONTRIB|" || rnd || '|' || tensor_hash`. No context, no node id.

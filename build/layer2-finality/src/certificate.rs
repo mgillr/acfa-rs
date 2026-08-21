@@ -337,7 +337,7 @@ impl CertFork {
     ///
     /// PART TWO OF THE crdt-07 FIX, AND IT IS NOT OPTIONAL. Once `check` counts valid
     /// signatures instead of requiring all of them, junk entries survive into the carried
-    /// map -- and [`CertFork::attributable`] reads `sigs.keys()`, which is membership and
+    /// map -- and `CertFork::attributable` reads `sigs.keys()`, which is membership and
     /// not proof. Counting alone would therefore have closed a denial of service and opened
     /// a FRAMING vector: an attacker appends entries naming honest nodes to both halves of
     /// a real fork, and those nodes are reported as having double-signed. Attribution is an
@@ -351,6 +351,11 @@ impl CertFork {
     /// because from `tests/` a call to a `pub(crate)` method is a build break, not a test
     /// failure. Verified both ways: this passes with `pub(crate)` and FAILS ("compiled
     /// successfully, but marked `compile_fail`") the instant the method is made `pub`.
+    ///
+    /// That is also why the twin is named in plain backticks here rather than as a doc link.
+    /// A public page cannot link to a private item; rustdoc's own suggested remedy is
+    /// `--document-private-items`, which would resolve the link by PUBLISHING exactly the
+    /// surface this method exists to keep closed. The name is the useful part, not the anchor.
     ///
     /// ```compile_fail
     /// use acfa_finality::{CertFork, CertTuple, Certificate};
@@ -379,7 +384,8 @@ impl CertFork {
     }
 
     /// True when the fork proves a violation but names nobody, judged on verified
-    /// signatures. Prefer this to [`CertFork::is_unattributable`].
+    /// signatures. Prefer this to `CertFork::is_unattributable`, which is `pub(crate)` and
+    /// so does not appear in these docs at all.
     pub fn is_unattributable_verified(&self, pki: &Pki) -> bool {
         self.attributable_verified(pki).is_empty()
     }

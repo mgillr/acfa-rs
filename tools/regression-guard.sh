@@ -67,7 +67,7 @@ done
 echo "== named guard functions present (a revert cannot gut a file and keep its name) =="
 check_fn () { local fn="$1" f="$2"; if [ -f "$f" ] && grep -q "fn $fn" "$f"; then :; else echo "  FAIL guard fn missing: $fn in $f"; fail=1; fi; }
 check_fn "krum_at_the_select_all_band_is_reported_under_a_distinct_token_not_ok_or_refused" build/layer1-aggregate/tests/cli.rs
-check_fn "the_encoder_agrees_with_the_reference_at_every_midpoint"              build/layer1-aggregate/tests/reference_rounding.rs
+check_fn "the_reference_and_the_encoder_agree_at_every_midpoint"              build/layer1-aggregate/tests/reference_rounding.rs
 check_fn "the_merge_path_and_the_deliver_path_convict_and_root_identically"     build/layer2-receipt/tests/equivocation_closure.rs
 check_fn "every_accepted_spelling_of_require_bound_enforces_the_bound"          build/layer2-receipt/tests/require_bound_spellings.rs
 check_fn "verify_refuses_a_receipt_that_would_derive_too_much"                  build/layer2-receipt/tests/receipt_verify_dos.rs

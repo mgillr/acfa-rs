@@ -26,7 +26,7 @@ Verify the copy is unmodified:
 cd reference && shasum -a 256 -c SHA256SUMS
 ```
 
-`4910df11...` is the pinned hash of this file (`SHA256SUMS`, checked in CI). If you change it, the goldens change, the
+`e5ee662c...` is the pinned hash of this file (`SHA256SUMS`, checked in CI). If you change it, the goldens change, the
 cross-implementation tests fail, and that is the intended behaviour: the whole point of
 this file is to be a second, independently written implementation that the Rust must
 agree with byte for byte. Do not edit it to make a test pass.
@@ -50,11 +50,27 @@ unexamined agreement.
 `fp_encode` originally used `int(round(...))`, and Python's `round` is ties-to-even, while the
 Rust `fixed::encode` specifies and implements half-away-from-zero -- so they disagreed at
 exactly half the half-integers (those whose floor is even): `0.5 -> 0` here versus `1` in Rust,
-`2.5 -> 2` versus `3`, and so on. `fp_encode` now rounds **half away from zero explicitly**
-(`floor(s+0.5)` for `s >= 0`, `ceil(s-0.5)` for `s < 0`), so it agrees with the Rust encoder at
-every tie. Re-run it: `0.5/65536` encodes to `1`, matching Rust. The correction is guarded by
-`build/layer1-aggregate/tests/reference_rounding.rs`, which cross-checks the encoders at the
-midpoints directly.
+`2.5 -> 2` versus `3`, and so on.
+
+**It then took TWO corrections, and this file recorded the first one as if it were the last.**
+The first replaced ties-to-even with `floor(s+0.5)` for `s >= 0` and `ceil(s-0.5)` for `s < 0`,
+which this section described as "half away from zero explicitly". It is not. The addition is
+itself a rounded operation: at the largest double strictly below `0.5` the true sum `1 - 2^-54`
+is a binary64 midpoint, ties-to-even carries it to exactly `1.0`, and the floor then returns `1`
+where half-away requires `0`. `build/layer1-aggregate/src/fixed.rs` names that exact idiom as one
+of the three known-wrong ports, including the one this crate itself once shipped.
+
+`fp_encode` now computes half-away on the **exact** value: `Fraction(s)` is the precise rational
+value of the float, and the result is `(2n + d) // (2d)` for `s >= 0`, mirrored for `s < 0`, with
+no intermediate to misround. Measured at the discriminating input `f64::from_bits(0x3EDF_FFFF_FFFF_FFFF)`:
+`fp_encode` returns `0` and `-0`, where the composed form returned `1` and `-1`. It also now
+refuses a non-finite or out-of-range input by name rather than returning a silently wrong integer.
+
+The correction is guarded by `build/layer1-aggregate/tests/reference_rounding.rs`, which was
+ITSELF part of the defect: it re-implemented `(s + 0.5).floor()` as its own expected value, so it
+agreed with the code under test by construction and stayed green through both wrong rules. It now
+invokes this file's `fp_encode` in a subprocess and compares against `fixed::encode` directly, and
+it fails when the reference is absent rather than passing vacuously.
 
 WHICH RULE IS NORMATIVE: HALF-AWAY-FROM-ZERO (num-01). The paper and the crate's docstring
 both specify it, the cross-architecture fingerprint is built on it, and the annihilation
