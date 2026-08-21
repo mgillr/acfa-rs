@@ -72,11 +72,46 @@ def is_release_tag(name: str, tags: set) -> tuple:
     if kind != "tag":
         return False, f"tag is {kind or 'unreadable'}, not annotated (lightweight tags carry no message or date)"
 
-    body = _git("cat-file", "tag", name).stdout
-    if "BEGIN PGP SIGNATURE" not in body and "BEGIN SSH SIGNATURE" not in body:
-        return False, "tag object carries no signature block"
+    # SIGNED -- AND THIS PROPERTY CANNOT BE CHECKED WITHOUT A KEY, SO IT REFUSES RATHER THAN
+    # PRETENDS.
+    #
+    # Two attempts failed here and the second failure is the instructive one. First a substring
+    # test for the signature marker: C defeated it by typing the marker into `git tag -a -m`,
+    # because `git cat-file tag` emits headers, a blank line, then the MESSAGE, and a real
+    # signature lands in that same region. In C's words, the forger does not need a key, they
+    # need a keyboard.
+    #
+    # Then `git verify-tag`, on the assumption that git parses structurally where a substring
+    # cannot. MEASURED, and it does not: on the same forged tag,
+    #     git for-each-ref --format='%(contents:signature)'
+    # returns the fake block, and with no gpg on the box `git verify-tag --raw` reports
+    # "cannot run gpg" and EXITS 0. Git's own parser splits message from signature by looking for
+    # the marker, so it is fooled by exactly the same input.
+    #
+    # The honest conclusion: "is this tag signed" is decidable only by verifying the signature,
+    # which needs gpg and the signer's public key. A check that cannot decide a property must not
+    # report it as satisfied -- that is the gate-that-cannot-fail shape this repository treats as
+    # worse than having no gate. So when a tag exists and the signature cannot be verified, this
+    # REFUSES with exit 2 and says why, rather than passing on an unverifiable claim.
+    ver = _git("verify-tag", "--raw", name)
+    blob = ((ver.stderr or "") + (ver.stdout or "")).lower()
+    if "no signature found" in blob:
+        return False, "tag is annotated but UNSIGNED (git verify-tag: no signature found)"
+    if "cannot run gpg" in blob or "not found" in blob:
+        fail(
+            f"{name} exists but its signature CANNOT BE VERIFIED here -- gpg is unavailable, and "
+            f"git's own message/signature split is defeated by putting the marker in the tag "
+            f"message (measured). Refusing rather than reporting an unverifiable property as "
+            f"satisfied. Run this where gpg and the signer's public key are present.",
+            2,
+        )
+    if "goodsig" not in blob and "validsig" not in blob and ver.returncode != 0:
+        return False, f"tag signature did not verify: {blob.strip().splitlines()[:1]}"
 
-    # The tagged tree must declare the version the tag names.
+    # README:121 -- "the same version appears in all three Rust crate manifests AND IN THE PYTHON
+    # ADAPTER". The adapter was not read, so a tree could ship it at a version that never existed
+    # and the guard called that consistent. C set it to 9.9.9 against three crates at 0.4.0 and the
+    # check passed. Everything the README names as carrying the version is now checked.
     want = name.lstrip("v")
     seen = []
     for m in sorted(ROOT.glob("build/*/Cargo.toml")):
@@ -108,11 +143,20 @@ def main() -> int:
             fail(f"{m.relative_to(ROOT)} has no version line", 2)
         versions[str(m.relative_to(ROOT))] = hit.group(1)
 
+    adapter = ROOT / "adapters/flower/pyproject.toml"
+    if not adapter.exists():
+        fail("adapters/flower/pyproject.toml is missing -- the README names it as carrying the "
+             "version, so its absence is a refusal, not a pass", 2)
+    hit = re.search(r'^version = "([^"]+)"', adapter.read_text(), re.M)
+    if not hit:
+        fail("adapters/flower/pyproject.toml has no version line", 2)
+    versions["adapters/flower/pyproject.toml"] = hit.group(1)
+
     distinct = set(versions.values())
     if len(distinct) != 1:
         fail(f"crate manifests disagree about the version: {versions}")
     version = distinct.pop()
-    print(f"  manifests agree: {version}  ({len(versions)} crates)")
+    print(f"  manifests agree: {version}  ({len(versions)} files incl. the adapter)")
 
     try:
         out = subprocess.run(
