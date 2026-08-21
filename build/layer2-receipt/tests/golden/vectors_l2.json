@@ -121,6 +121,79 @@
   }
  ],
  "ctx": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+ "delivery_orders": {
+  "admitted_ids": [
+   5,
+   2,
+   4,
+   3
+  ],
+  "aggregate": [
+   11,
+   12,
+   13
+  ],
+  "convicted": [
+   1
+  ],
+  "equivocator": [
+   {
+    "leaf": "ffc098f5f5408cb6ad279d36759d54e93489e1d28bb300313cbc094904393219",
+    "node_id": 1,
+    "rnd": 1,
+    "sig": "f59121f2668755029707a68cb2b6210eb83adb5ee2edd80aea9918e392edf2e34d419ecb348add4abdcd47188c8684e2815c95f01c02066e4b55afb22190640b",
+    "tensor": [
+     1,
+     1,
+     1
+    ]
+   },
+   {
+    "leaf": "c04d9611d84d3efc6ad5f8bee08970e7afc8c751f94c9a614b701c56b20cf25f",
+    "node_id": 1,
+    "rnd": 1,
+    "sig": "3ad8147e08bbae2a41ae4f745cf149fd7656a0704560c132078409f07122156b6b9dee580e3213c411444b3162f634b7967f0bb2336070a9bf837c5030d15108",
+    "tensor": [
+     2,
+     2,
+     2
+    ]
+   },
+   {
+    "leaf": "ea706d9dc4c43280e5d8a089af626a3b93933428c27870816812b697efb2200e",
+    "node_id": 1,
+    "rnd": 1,
+    "sig": "db9498aff37f928b3de6788c96b5702271f0682f3bfc87b7534d599a4e7df557cfbbb63a4f66adf73aa89cc9a7568ad14a8530f0a4603621f72f2b00ca53f500",
+    "tensor": [
+     3,
+     3,
+     3
+    ]
+   }
+  ],
+  "f": 1,
+  "forward_state_root": "04cf330343134014ad51e47ab0db6b37fad951524de9665b8b096970b33f577e",
+  "honest_node_ids": [
+   2,
+   3,
+   4,
+   5
+  ],
+  "output_root": "8853ef949b317eaf1c8415ffe4d9bc9adbbfd0d995e4b0848ca4d27037884a93",
+  "proof_leaves": [
+   "4a939cc67e7c89209f3b9bc301c6ac7501a2ca669e46d5baeb0874e5faa19978",
+   "cea06cdbbe1d95960c71ba7396ab4194b0d1110c4f4c646ec04dc8380fd0cede",
+   "d755b8811325884ab2cd4bb881923e116e9b3f675b14a9b6631cb979fd93c489"
+  ],
+  "reverse_proof_leaves": [
+   "4a939cc67e7c89209f3b9bc301c6ac7501a2ca669e46d5baeb0874e5faa19978",
+   "cea06cdbbe1d95960c71ba7396ab4194b0d1110c4f4c646ec04dc8380fd0cede",
+   "d755b8811325884ab2cd4bb881923e116e9b3f675b14a9b6631cb979fd93c489"
+  ],
+  "reverse_state_root": "04cf330343134014ad51e47ab0db6b37fad951524de9665b8b096970b33f577e",
+  "rnd": 1,
+  "rule": "krum"
+ },
  "enc_tensor": [
   {
    "hex": "",
@@ -216,6 +289,54 @@
    "theta_demands": 5
   }
  ],
+ "merge_vs_deliver": {
+  "admitted_ids": [
+   5,
+   2,
+   4,
+   3
+  ],
+  "aggregate": [
+   11,
+   12,
+   13
+  ],
+  "convicted": [
+   1
+  ],
+  "delivered_state_root": "04cf330343134014ad51e47ab0db6b37fad951524de9665b8b096970b33f577e",
+  "f": 1,
+  "merged_state_root": "04cf330343134014ad51e47ab0db6b37fad951524de9665b8b096970b33f577e",
+  "output_root": "8853ef949b317eaf1c8415ffe4d9bc9adbbfd0d995e4b0848ca4d27037884a93",
+  "partition_proof_counts": [
+   0,
+   0,
+   0
+  ],
+  "partitions": [
+   [
+    "ffc098f5f5408cb6ad279d36759d54e93489e1d28bb300313cbc094904393219",
+    "9ade08dd73f2e42ae2d1f0054428f56fd293ef3423f6d83682b9d9d711e1e575",
+    "d00e09f48649fafe372b862cf9ce05a0ed390e66db9a585cb2444362cbc8c803"
+   ],
+   [
+    "c04d9611d84d3efc6ad5f8bee08970e7afc8c751f94c9a614b701c56b20cf25f",
+    "a3394476c61e14934520441b3a4ef898b0e3e3177c9bf56a088c9ccf121c2656"
+   ],
+   [
+    "ea706d9dc4c43280e5d8a089af626a3b93933428c27870816812b697efb2200e",
+    "1036c0034d2dbbe3fab5cb86d158697aa3f3c7e835ca40cd659ca671d245fb00"
+   ]
+  ],
+  "proof_leaves": [
+   "4a939cc67e7c89209f3b9bc301c6ac7501a2ca669e46d5baeb0874e5faa19978",
+   "cea06cdbbe1d95960c71ba7396ab4194b0d1110c4f4c646ec04dc8380fd0cede",
+   "d755b8811325884ab2cd4bb881923e116e9b3f675b14a9b6631cb979fd93c489"
+  ],
+  "reverse_merged_state_root": "04cf330343134014ad51e47ab0db6b37fad951524de9665b8b096970b33f577e",
+  "rnd": 1,
+  "rule": "krum"
+ },
  "merkle": [
   {
    "leaves": [],
@@ -263,6 +384,97 @@
    "root": "e507224e29cfb49d8bea7fc8f4c5b296317c0b50ac805c0e95a4249179da16be"
   }
  ],
+ "merkle_refusal_control": {
+  "leaves": [
+   "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb",
+   "3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d",
+   "2e7d2c03a9507ae265ecf5b5356885a53393a2029d241394997265a1a25aefc6"
+  ],
+  "root": "124e03dbc696708ce6dc17e6102591d4077207559502327ec5d3c30e6f086db2"
+ },
+ "merkle_refusals": [
+  {
+   "leaves": [
+    "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb",
+    "3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d",
+    "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
+   ],
+   "name": "repeated-leaf",
+   "reference": {
+    "error": "ValueError",
+    "refused": true,
+    "root": null
+   }
+  },
+  {
+   "leaves": [
+    "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb",
+    "3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d",
+    "2e7d2c03a9507ae265ecf5b5356885a53393a2029d241394997265a1a25aefc6",
+    "2e7d2c03a9507ae265ecf5b5356885a53393a2029d241394997265a1a25aefc6"
+   ],
+   "name": "adjacent-duplicate-pair",
+   "reference": {
+    "error": "ValueError",
+    "refused": true,
+    "root": null
+   }
+  },
+  {
+   "leaves": [
+    "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb",
+    "3e23e8160039594a33894f6564e1b1348bbd7a0088d42c4acb73eeaed59c009d",
+    "2e7d2c03a9507ae265ecf5b5356885a53393a2029d241394997265a1a25aefc6",
+    "ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb"
+   ],
+   "name": "cve-2012-2459-padding-collision",
+   "reference": {
+    "error": "ValueError",
+    "refused": true,
+    "root": null
+   }
+  }
+ ],
+ "nonce_equivocation": {
+  "admitted_ids": [],
+  "aggregate": null,
+  "convicted": [
+   1
+  ],
+  "ctx": "0000000000000000000000000000000000000000000000000000000000000000",
+  "f": 1,
+  "leaf_a": "5d03a7b4750518bbb2c3c7defc55c15d0236c6f443288427786191a707eb9a90",
+  "leaf_b": "ce01bc8e0f1d5e8e04968b8714400203db4c9fe4c939df9b93e46d8413f18cb0",
+  "node_id": 1,
+  "output_root": "9dbc26e20ecfb0e39c5cd39371e2f2094dca643ff963fe943cd5f9bab5b10a5d",
+  "proof_leaves": [
+   "7c1a20a60e879dfe53be38eb655b92e1315af174d3c6e6ad9327bc9c90fc88cb"
+  ],
+  "redelivery_control": {
+   "admitted_ids": [
+    1
+   ],
+   "aggregate": [
+    1,
+    2
+   ],
+   "convicted": [],
+   "output_root": "dc81a1c9b77c0e35f4547b7790390a9fe35f0bc1579869ac799ceffae4920c8e",
+   "proof_leaves": [],
+   "state_root": "553623ac44a4042c75c08d3e7b9db53d904a4a797bd92aa8b27efb567b478b31"
+  },
+  "reverse_state_root": "b42d6d6a1d7a9e75f90e6fb0b94afda2c219e7662051c53dc85ca67b3a408418",
+  "rnd": 1,
+  "rule": "krum",
+  "sig_a": "abcfd403e8bc338fd93d6bc7dbd3326100a6cf2a15a4bae018065b35bc164e6bc569300033e9c6bbf58080865315ea9a891a32f11a0a533a71fee76e0d44120a",
+  "sig_b": "d483c814057859662fbb04dec0cd61c289407a2af2bf887d9f907639dc5eabd6677999217f02874950a523a7af81597a641c73b33961e97fb0571b5b95f65a03",
+  "state_root": "b42d6d6a1d7a9e75f90e6fb0b94afda2c219e7662051c53dc85ca67b3a408418",
+  "tensor": [
+   1,
+   2
+  ],
+  "tensor_hash": "22074227d8462b39403011e0bc4c5e7a3f1ee1bae54ae2deb0943dece537f93f"
+ },
  "note": "generated from the published ACFA reference; do not hand-edit",
  "prf_ints": [
   {
@@ -304,6 +516,233 @@
    ],
    "purpose": "6f74686572",
    "seed": "19b25856e1c150ca834cffc8b59b23adbd0ec0389e58eb22b3b64768098d002b"
+  }
+ ],
+ "refusal_scenarios": [
+  {
+   "admitted_ids": [
+    1,
+    3,
+    2
+   ],
+   "entries": [
+    {
+     "leaf": "641fb99916bdbed1a8db41af3dca20364586756ef9f4bd6e93d77611971c58a1",
+     "node_id": 1,
+     "rnd": 1,
+     "sig": "6e6498d494fae7b1059a920cf6adaa7f65eb6cca0893a253c71561f10795521c79d4e8aab467b6e23725c5257579a22a418baf7ede26cbe134392ded6e36d408",
+     "tensor": [
+      1,
+      2
+     ]
+    },
+    {
+     "leaf": "d22361ed2f612c67879d7ddad04280b9276e088e0490bd463cfdfad2a2dfdf30",
+     "node_id": 2,
+     "rnd": 1,
+     "sig": "dd68151752c1c811bc0b814e18da9e983a9ce38976f3af664e3ee51ea44c336d56fbbea4050d7239e39353da55016530702e57a4a9c2d248e5d4887c51c52307",
+     "tensor": [
+      1
+     ]
+    },
+    {
+     "leaf": "b99727008eb1b6a0c3172684b86226beaf8594f76c2c8676cc79b9ffacb60304",
+     "node_id": 3,
+     "rnd": 1,
+     "sig": "6d4465ed0e58cbe8b28b826ab8ec764ee156bb1cf9b64974ce3f7a1798ba8a1539d2d5fbd5a6b505dd52d6f1c00ddb51ea2f719d7d4409000f6b72ccbe197204",
+     "tensor": [
+      3,
+      4
+     ]
+    }
+   ],
+   "f": 1,
+   "issue": 91,
+   "name": "ragged-dimensions",
+   "reference": {
+    "aggregate": null,
+    "error": null,
+    "output_root": "e81c02b9e5fd762f3e515c9d70553f6763d7ac615c4bc2f602a7c5238db7b829",
+    "refused": true
+   },
+   "rnd": 1,
+   "rule": "krum",
+   "rust_refusal_root": "e81c02b9e5fd762f3e515c9d70553f6763d7ac615c4bc2f602a7c5238db7b829",
+   "state_root": "a0e08bd293d69f42c92ec2316448fc175233688d73a298c48862e202a7a0c22f"
+  },
+  {
+   "admitted_ids": [
+    1,
+    2,
+    3
+   ],
+   "entries": [
+    {
+     "leaf": "8e98ec4105494818d7ee1a598c0428cf70062166b8d393ac87674a966637f4a3",
+     "node_id": 1,
+     "rnd": 1,
+     "sig": "a81150c72000b0c66ec05e6036a814d2db47b8cd50d0e8898d442ba2b47682f9e0e20188049800f7f908034aae73528295009dc63998de357fd5d80b4f6fe305",
+     "tensor": [
+      2147483648,
+      0
+     ]
+    },
+    {
+     "leaf": "a800327cc263327adeec69a17a2d76046cb30c390c38a2820d9a85927bc56121",
+     "node_id": 2,
+     "rnd": 1,
+     "sig": "cfc5afc408c94b4f875d197c6beed6dc0a24b03719608779102c9b15598b690141efe0a8444f1e918214eeeb8ab1ca5e0de66f8119b69c5a0a7724d56c328a0f",
+     "tensor": [
+      1,
+      1
+     ]
+    },
+    {
+     "leaf": "aad225025f729e09e11d847675e554cada549efb7bbee71886951f33737f8946",
+     "node_id": 3,
+     "rnd": 1,
+     "sig": "cc5ac2c58ba3d131638125a278345154e068e3a01bc17660c13d926102ee869ffa111f6877164bf3a592cb5cdf0e0f20fe49055ee55acf210ab141e9d374a308",
+     "tensor": [
+      2,
+      2
+     ]
+    }
+   ],
+   "f": 1,
+   "issue": 91,
+   "name": "value-out-of-q16-16-range",
+   "reference": {
+    "aggregate": null,
+    "error": null,
+    "output_root": "e81c02b9e5fd762f3e515c9d70553f6763d7ac615c4bc2f602a7c5238db7b829",
+    "refused": true
+   },
+   "rnd": 1,
+   "rule": "krum",
+   "rust_refusal_root": "e81c02b9e5fd762f3e515c9d70553f6763d7ac615c4bc2f602a7c5238db7b829",
+   "state_root": "ff4b47cf35497ff1e7641404455409b43ece1337373def85a61aa78cd145ad07"
+  },
+  {
+   "admitted_ids": [
+    2,
+    1,
+    3
+   ],
+   "entries": [
+    {
+     "leaf": "2f4da213e438128c1640f2f78396b557d4f5178f3b586ff4c029079d6d11125d",
+     "node_id": 1,
+     "rnd": 1,
+     "sig": "63378ca4fcbf1c18e15f396f70ba15a1ce3019f233efab09e004268cd1cb6e4f0d7ca72dfc13e22b7fdf591ebd976a9b2988524b4d01273748a93987cc27d205",
+     "tensor": []
+    },
+    {
+     "leaf": "0c8937918fb82bbf00fd1a226bcaac44278965db3800b83d39e5220d9db762bc",
+     "node_id": 2,
+     "rnd": 1,
+     "sig": "620d939125f3c685e51519eba376648000b015b75695a40b1b658ede7be46c8995ddf18edec8a0cf2977a770a002d00b62e82ccdc6e599b3456899c3c62afb0c",
+     "tensor": []
+    },
+    {
+     "leaf": "d6048efceea801b01aac2f3664b69572a7bd4799b7c8c2369e31c04bd112782c",
+     "node_id": 3,
+     "rnd": 1,
+     "sig": "8caadd152fec21c00549a3147f2cf23f5b077f4981928e40e2fb839e3a2a7135bacb4a05a47d3c336bf501db44f8a8da80c70330a8cbe9ea143268c1b0a35c03",
+     "tensor": []
+    }
+   ],
+   "f": 1,
+   "issue": 91,
+   "name": "all-empty-tensors",
+   "reference": {
+    "aggregate": null,
+    "error": null,
+    "output_root": "e81c02b9e5fd762f3e515c9d70553f6763d7ac615c4bc2f602a7c5238db7b829",
+    "refused": true
+   },
+   "rnd": 1,
+   "rule": "krum",
+   "rust_refusal_root": "e81c02b9e5fd762f3e515c9d70553f6763d7ac615c4bc2f602a7c5238db7b829",
+   "state_root": "0e05fa9c8bf47c391603d1aa82b983f65a9b089a1bb5bbece1b5b7080da0b73c"
+  },
+  {
+   "admitted_ids": [
+    1,
+    2,
+    5,
+    3,
+    4
+   ],
+   "entries": [
+    {
+     "leaf": "1518878174104639fe2171618238a86177e2aefb0b78d1940513861bb0be6fca",
+     "node_id": 1,
+     "rnd": 1,
+     "sig": "e9140de6ee258c0ca7ba2ae451fcd4e4c2fcefaa74f771aca16a6f51f3c2f858019691fea48a772efbc965488d38f6addefc9f03d9b971df1012af07dd066202",
+     "tensor": [
+      0,
+      1,
+      2
+     ]
+    },
+    {
+     "leaf": "6a772476e1a950d7d7bb68cdc186587393555cf78f18abe9de4f981d27dfa6ad",
+     "node_id": 2,
+     "rnd": 1,
+     "sig": "13109d470239efc60edf1b3f2dc6a3529f2821b775f654aa4b811d35d27d5eb9beced5135490797e197f06653aa87db0e439e9dae5408686c4e1efc2d429d50a",
+     "tensor": [
+      1,
+      2,
+      3
+     ]
+    },
+    {
+     "leaf": "91f57c47ef15c743a2e9c04b9be2e4ffc6823ee9d45a849e820701eca48bd946",
+     "node_id": 3,
+     "rnd": 1,
+     "sig": "490a518f7746a3555a5d950209e831a9b38f2771f50acd930213a8378745612ed537dbba9599539d6c6162c0792eea9a3096b98544e1287a76a3a20bbce3e90c",
+     "tensor": [
+      2,
+      3,
+      4
+     ]
+    },
+    {
+     "leaf": "b783e484593e0a1a5d05d28749eb7f41c36597c2f3d943e8a7c0fcc64a174d64",
+     "node_id": 4,
+     "rnd": 1,
+     "sig": "95ba35f427b035a6578f8a609af9461da5eb25af7c4a2aac2953cb4092c93cded7df7df7b5a1dd74f68c030a48da303ebbaf880da01d363f191480ca3b35dd06",
+     "tensor": [
+      3,
+      4,
+      5
+     ]
+    },
+    {
+     "leaf": "7f8a58dea299a39e516b3de7c1297fe97fbafbb5a8e28abb3aa1916c2111de7a",
+     "node_id": 5,
+     "rnd": 1,
+     "sig": "2894a918f9b8cb7c22f6eed6e38560bbe27cde1296bea1d5b4d7a01e744f6f568c3e6464a66019b20f07a7b9b25fb8603ba5c5154f947d957fbb76462007df00",
+     "tensor": [
+      4,
+      5,
+      6
+     ]
+    }
+   ],
+   "f": 1,
+   "issue": 91,
+   "name": "bulyan-below-4f-plus-3",
+   "reference": {
+    "aggregate": null,
+    "error": null,
+    "output_root": "e81c02b9e5fd762f3e515c9d70553f6763d7ac615c4bc2f602a7c5238db7b829",
+    "refused": true
+   },
+   "rnd": 1,
+   "rule": "bulyan",
+   "rust_refusal_root": "e81c02b9e5fd762f3e515c9d70553f6763d7ac615c4bc2f602a7c5238db7b829",
+   "state_root": "fbdea622ae5098c5a4acb9ce02e42763ee11a238a849ce8c7b4fdf6883f9a074"
   }
  ],
  "scenarios": [

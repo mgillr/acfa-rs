@@ -102,15 +102,29 @@ impl core::error::Error for FixedError {}
 ///   - **Ties-to-even** (Python's `round`, IEEE roundTiesToEven, Rust's
 ///     `format!("{:.0}")`). Agrees everywhere except at exact halves whose floor is even --
 ///     `0.5 -> 0` and `2.5 -> 2` where the contract requires 1 and 3. Half the ties, and it
-///     fails 4 of the 12 rows. This is what the vendored reference's `fp_encode` does; see
-///     `reference/README.md`, where it is recorded as a deliberate, asserted divergence.
+///     fails 4 of the 12 rows. The vendored reference reached the contract THROUGH this
+///     rule -- `fp_encode` was `int(round(...))` (num-01) -- and no longer uses it. Do not
+///     read a divergence here: nothing in this tree rounds ties to even today.
 ///   - **`(s + 0.5).floor()`**, the usual hand-rolled "half away" idiom, which this crate
-///     itself shipped. The addition is a rounded operation, so at the largest double below
-///     0.5 it carries to exactly 1.0 and returns 1 where 0 is required. One double per
-///     sign in the whole range -- see the note on the implementation below.
+///     itself shipped, and which the vendored reference then shipped in turn as the
+///     "fix" for the rule above. The addition is a rounded operation, so at the largest
+///     double below 0.5 it carries to exactly 1.0 and returns 1 where 0 is required. One
+///     double per sign in the whole range -- see the note on the implementation below.
+///
+/// WHAT THE VENDORED REFERENCE DOES TODAY. `reference/acfa.py::fp_encode` rounds half away
+/// from zero, and it COMPUTES that rather than composing it: it takes `Fraction(s)`, the exact
+/// rational value the double `s` denotes, and returns `(2n + d) // (2d)` for `s >= 0` mirrored
+/// for negatives, so no intermediate float operation is left to misround. It arrived there by
+/// shipping the first two rules above in turn, which is why they are listed as live hazards
+/// rather than history. Measured against the double that discriminates,
+/// `x = 0x1.fffffffffffffp-18`, whose scaled product is the largest double strictly below 0.5:
+/// `fp_encode(x)` returns 0 and `fp_encode(-x)` returns 0, where the composed form returns 1
+/// and -1. `tests/reference_rounding.rs` runs that comparison against the actual Python in a
+/// subprocess, so it cannot agree with a Rust restatement of the rule by construction.
 ///
 /// `f64::round` is the contract; prefer your language's correctly-rounded half-away
-/// primitive over composing one.
+/// primitive over composing one, and where there is none -- Python has none -- compute it on
+/// the exact value the way the reference does.
 pub fn encode(x: f64) -> Result<i64, FixedError> {
     if !x.is_finite() {
         return Err(FixedError::NotFinite);

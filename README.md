@@ -200,14 +200,51 @@ cargo run -q --release --bin acfa-verify -- receipt.acfa --pki trusted.pki --f 1
 
 ```
 VERIFIED
+  rule         Krum
+               NOT PINNED -- verified against the receipt's OWN claimed rule; pass --rule to require the rule you expect
+  context      0000000000000000000000000000000000000000000000000000000000000000
+               NOT PINNED -- verified against the receipt's OWN claimed context; pass --ctx to require the event you expect
+  frac bits    16
   round        1
-  state root   f55014da78efb1a78c659d4b62056efac8a26b1eae674279510b383151fe5a43
-  output root  d7ac08f2deb1a4ab2ecf185854ab23710cb712f0c4d48abbee1af0f107d17edd
-  aggregate    3 values, first [7, 3, 4]
+  state root   31a584d8788f4b52cf47b4db208a96098e71ff5152306d34ff2ae42929562071
+  output root  8d43057fcae20ef0a765604b6a212225236b6d25cc51452b8a15a2a24ffc9a14
+  aggregate    3 values, first [4, 2, 5]
   admitted     [1, 2, 3, 4, 5]
   convicted    []
   bound n>=req met (5 admitted, 5 required) -- POPULATION only, not a safety verdict
+  no-flip      NOT CERTIFIED -- the selection boundary is too close
+               margin 0 <= threshold 392 (4 x beta 98)
+               The boundary is an EXACT TIE. No amount of extra
+               resolution closes it -- the irreducible residual.
+               This is NOT evidence of a flip. It means quantisation
+               COULD have changed who was selected, and the margin
+               condition cannot rule it out. An exact tie (margin 0)
+               is the residual no condition can ever cover.
+
+Checked against the identities in trusted.pki and f = 1.
+This establishes that the issuer computed honestly over the set shown.
+It does NOT establish that the issuer showed every entry it held --
+compare the state root against an independently obtained one for that --
+pass it as --expect-state-root <64-hex> and a mismatch exits 1.
+
+Meeting the population bound is NOT a safety guarantee. A colluding
+within-norm adversary can be selected while the bound holds and move
+the aggregate; that is a property of the imported rule. See the
+within-norm characterisation in the aggregation crate's test suite.
 ```
+
+That block is the tool's real stdout, pasted from a run of the three commands above, not a
+summary of it. Three things in it are easy to misread as errors and are not. `rule` and
+`context` say NOT PINNED because you passed neither `--rule` nor `--ctx`: the verifier checked
+the receipt against the rule and event the receipt ITSELF claims, which is self-consistency,
+and pinning them is how you turn that into a check against what you expected. `no-flip` says
+NOT CERTIFIED because this example's five contributions put the Krum selection boundary at an
+exact tie (margin 0), and no margin condition can clear a tie -- it is not evidence that a
+flip happened. The exit code is still 0.
+
+The roots are fixed, not per-run: the `issue` example mints its keys from a seed, so
+regenerating `trusted.pki` and `receipt.acfa` reproduces the same receipt and the same two
+roots. Measured over three regenerations here.
 
 `--pki` is required. A receipt carries its own identity set, so checking it against itself
 proves nothing: mint five keys and every signature in the resulting receipt is valid.

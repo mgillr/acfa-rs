@@ -54,7 +54,9 @@ fn die(code: u8, msg: &str) -> ExitCode {
 /// `it.next()` and never asked whether the iterator was exhausted. So `rule mean krum` read
 /// `mean`, silently discarded `krum`, and ran.
 ///
-/// MEASURED on honest [1,2,3] plus one adversary at 1000, every value inside Q16.16 range:
+/// MEASURED on honest `[1,2,3]` plus one adversary at 1000, every value inside Q16.16 range:
+/// (backticked, not bare: to rustdoc a bare bracket is an intra-doc link, and `1,2,3` is not
+/// an item, so it warns -- and the `lint` job now runs `cargo doc` with `-D warnings`.)
 ///     rule krum       -> ok 65536      (1.0, the robust answer)
 ///     rule mean       -> ok 16482304   (251.5, poisoned)
 ///     rule mean krum  -> ok 16482304   <-- the poisoned mean, exit 0, EMPTY stderr

@@ -14,6 +14,23 @@
 //! components, of which 1397 are negative -- so the floor-versus-truncate divergence
 //! is genuinely exercised rather than merely asserted in a unit test.
 //!
+//! **AND THE CORPUS ONLY EVER ASKS FOR AN ANSWER.** Every one of those 9 cases is a
+//! uniform, in-range, non-empty, distinctly-keyed rectangle with a beta that trims, so
+//! the whole refusal surface -- which is this crate's actual product -- was outside the
+//! cross-implementation claim. Two divergences lived there under a green suite (#91,
+//! #92): inputs where this crate returns a typed `AggError` and the reference computed
+//! on them or crashed. `the_kernel_refuses_exactly_what_the_reference_refuses` is the
+//! test that asks the refusal question, and it asserts the refusal CLASS, not merely
+//! that something failed -- a rule that refuses for the wrong reason names an innocent
+//! contribution, which is strictly worse than not naming one.
+//!
+//! WHAT KEEPS THE REFUSAL RECORDS HONEST. `reference` in each record is what the
+//! reference ACTUALLY did at generation time, not what it ought to do, and the
+//! `golden-is-reproducible` CI job regenerates this file and requires byte-identity. So
+//! a reference that stops refusing cannot pass silently: either CI's regeneration
+//! diverges from the committed file, or the file is regenerated and the assertion here
+//! fires with both measured values.
+//!
 //! A minimal hand-rolled JSON reader is used rather than a dependency: this crate
 //! has zero dependencies by design, and a test-only parser is cheaper than making
 //! the determinism story rest on someone else's release cadence.
@@ -28,13 +45,31 @@ enum J {
     Str(String),
     Arr(Vec<J>),
     Obj(Vec<(String, J)>),
+    /// `true` / `false`. Added with the refusal records: a reader that cannot represent a
+    /// boolean cannot read `"refused": false`, which is the one value in the file whose
+    /// appearance means the two implementations have diverged.
+    Bool(bool),
+    /// `null`. A refused record carries no value, and encoding that absence as `0` or `[]`
+    /// would make "refused" indistinguishable from "computed an empty answer".
+    Null,
 }
 
 impl J {
     fn get(&self, k: &str) -> &J {
+        self.try_get(k).expect("missing key")
+    }
+    /// Optional lookup: refusal records carry only the parameters their rule takes, so
+    /// `f` and `beta_*` are present on some and absent on others.
+    fn try_get(&self, k: &str) -> Option<&J> {
         match self {
-            J::Obj(kv) => &kv.iter().find(|(kk, _)| kk == k).expect("missing key").1,
+            J::Obj(kv) => kv.iter().find(|(kk, _)| kk == k).map(|(_, v)| v),
             _ => panic!("not an object"),
+        }
+    }
+    fn boolean(&self) -> bool {
+        match self {
+            J::Bool(b) => *b,
+            _ => panic!("not a boolean"),
         }
     }
     fn arr(&self) -> &[J] {
@@ -121,6 +156,22 @@ impl<'a> P<'a> {
                 let out = String::from_utf8(self.b[s..self.i].to_vec()).unwrap();
                 self.i += 1;
                 J::Str(out)
+            }
+            b't' | b'f' | b'n' => {
+                // The three JSON literals. They arrived with the refusal records; before
+                // that the number branch below would have consumed ZERO bytes here and
+                // then panicked in `parse`, so a malformed file was at least loud.
+                for (lit, val) in [
+                    (&b"true"[..], J::Bool(true)),
+                    (&b"false"[..], J::Bool(false)),
+                    (&b"null"[..], J::Null),
+                ] {
+                    if self.b[self.i..].starts_with(lit) {
+                        self.i += lit.len();
+                        return val;
+                    }
+                }
+                panic!("not a JSON literal at byte {}", self.i);
             }
             _ => {
                 let s = self.i;
@@ -230,5 +281,158 @@ fn rust_matches_the_python_reference_on_every_rule() {
     assert!(
         checked_negative > 100,
         "golden corpus does not exercise the negative/floor path ({checked_negative} negatives)"
+    );
+}
+
+// ---------- the refusal half of the same claim ----------
+
+/// The `AggError` variant name, so the golden pins WHICH refusal and not merely THAT one
+/// happened.
+///
+/// Exhaustive on purpose. A new variant will not compile until it is named here, which is
+/// the only mechanism that stops a refusal class being added and left outside the
+/// cross-implementation claim -- exactly how `#91` and `#92` came to exist.
+fn variant_name(e: &AggError) -> &'static str {
+    match e {
+        AggError::Empty => "Empty",
+        AggError::DimensionMismatch { .. } => "DimensionMismatch",
+        AggError::DimensionMismatchUnattributable { .. } => "DimensionMismatchUnattributable",
+        AggError::EmptyVectors => "EmptyVectors",
+        AggError::DuplicateTieKey => "DuplicateTieKey",
+        AggError::BulyanTooFewContributions => "BulyanTooFewContributions",
+        AggError::ValueOutOfRange { .. } => "ValueOutOfRange",
+        AggError::ArithmeticOverflow => "ArithmeticOverflow",
+        AggError::BetaDenominatorZero => "BetaDenominatorZero",
+        AggError::BetaTrimsNothing { .. } => "BetaTrimsNothing",
+        AggError::TooMuchWork { .. } => "TooMuchWork",
+        AggError::TooManyContributions { .. } => "TooManyContributions",
+    }
+}
+
+fn contributions_of(rec: &J) -> Vec<Contribution> {
+    rec.get("contributions")
+        .arr()
+        .iter()
+        .map(|c| Contribution {
+            tie_key: c.get("tie_key").string().as_bytes().to_vec(),
+            v: c.get("v").i64_vec(),
+        })
+        .collect()
+}
+
+/// Dispatch a golden record onto the rule it names.
+fn run_rule(rec: &J, cs: &[Contribution]) -> Result<Vec<i64>, AggError> {
+    let opt = |k: &str| rec.try_get(k).map(|v| v.num()).unwrap_or(0);
+    match rec.get("rule").string() {
+        "mean" => mean(cs),
+        "trimmed_mean" => trimmed_mean(cs, opt("beta_num") as u32, opt("beta_den") as u32),
+        "coord_median_trim" => coord_median_trim(cs, opt("f") as usize),
+        "krum_aggregate" => krum_aggregate(cs, opt("f") as usize),
+        "bulyan_aggregate" => bulyan_aggregate(cs, opt("f") as usize),
+        other => panic!("golden names a rule this test cannot dispatch: {other}"),
+    }
+}
+
+/// The two implementations must agree on which inputs are UNANSWERABLE, not only on the
+/// answers to the answerable ones.
+///
+/// This is the half of the cross-implementation claim the `cases` corpus structurally
+/// cannot make. Refusing is not a failure mode here, it is the output: a rule that returns
+/// a plausible number for a ragged set, an out-of-range value, an all-empty set, a Bulyan
+/// population below `n >= 4f+3`, or a beta that trims nothing has produced an aggregate
+/// with nothing behind it, and two implementations that disagree about that disagree about
+/// whether the round happened at all.
+#[test]
+fn the_kernel_refuses_exactly_what_the_reference_refuses() {
+    let doc = load();
+    let recs = doc.get("refusals").arr();
+    assert!(
+        recs.len() >= 6,
+        "the refusal corpus has shrunk to {} records; #91 contributes three entry-gate \
+         inputs plus a duplicate tie key and #92 contributes two beta cases, and a section \
+         that quietly emptied would pass every assertion below. Bulyan's population \
+         precondition is deliberately NOT here -- see the note in golden/generate.py",
+        recs.len()
+    );
+
+    let mut seen_issues: Vec<i64> = Vec::new();
+    for rec in recs {
+        let name = rec.get("name").string();
+        let issue = rec.get("issue").num();
+        seen_issues.push(issue);
+        let cs = contributions_of(rec);
+        let got = run_rule(rec, &cs);
+        let reference = rec.get("reference");
+
+        // 1. THIS implementation refuses, and refuses for the stated reason.
+        let err = match &got {
+            Ok(v) => panic!(
+                "[{name}] this crate RETURNED {v:?} for an input issue #{issue} says it must \
+                 refuse. A rule that answers here hands the caller an aggregate with no \
+                 guarantee behind it, at success, with no diagnostic."
+            ),
+            Err(e) => e,
+        };
+        assert_eq!(
+            variant_name(err),
+            rec.get("rust_error").string(),
+            "[{name}] refused with the WRONG class ({err}). The class is the operator's \
+             remedy -- a dimension mismatch names a contribution to exclude and an \
+             out-of-range value names a different one -- so refusing for the wrong reason \
+             accuses the wrong party."
+        );
+
+        // 2. And the reference agrees that the input is unanswerable. `refused` is what the
+        //    reference ACTUALLY did when these vectors were generated, so this fires the
+        //    moment it goes back to computing -- or to crashing, which is not the same thing
+        //    as refusing and is recorded separately for exactly that reason.
+        assert!(
+            reference.get("refused").boolean(),
+            "[{name}] CROSS-IMPLEMENTATION DIVERGENCE, issue #{issue}: this crate refuses \
+             with {err}, and the reference did not refuse -- it returned {:?} / raised {:?}. \
+             A spec that computes where the implementation refuses is worse than one that \
+             merely differs: an implementer reading it builds a kernel that answers \
+             confidently on exactly the inputs the design calls unanswerable.",
+            reference.get("value"),
+            reference.get("error"),
+        );
+        assert_eq!(
+            reference.get("error").string(),
+            "AggError",
+            "[{name}] the reference declined by raising {:?}, which is a CRASH and not a \
+             refusal. Neither side returning a number is not the same as both sides \
+             agreeing the input is unanswerable.",
+            reference.get("error"),
+        );
+        assert_eq!(
+            *reference.get("value"),
+            J::Null,
+            "[{name}] a refusal must carry no value"
+        );
+    }
+
+    assert!(
+        seen_issues.contains(&91) && seen_issues.contains(&92),
+        "both refusal divergences must stay instantiated; saw issues {seen_issues:?}"
+    );
+
+    // POSITIVE CONTROL. Every assertion above is satisfied by a kernel that refuses
+    // EVERYTHING and by a reference gate that raises unconditionally, which would be a
+    // strictly worse crate passing a green test. The control is the same rule and the same
+    // shape of input with a beta that does trim, and it must produce a VALUE on both sides.
+    let ctl = doc.get("refusal_control");
+    let cs = contributions_of(ctl);
+    let want = ctl.get("reference").get("value").i64_vec();
+    assert!(
+        !ctl.get("reference").get("refused").boolean(),
+        "the control must be an input the reference ANSWERS, or it controls nothing"
+    );
+    assert_eq!(
+        run_rule(ctl, &cs).expect(
+            "the control input must be ANSWERABLE -- if this crate refuses it, the refusals \
+             above prove nothing, because a rule that declines every input satisfies them all"
+        ),
+        want,
+        "the control disagrees with the reference on an input both sides answer"
     );
 }

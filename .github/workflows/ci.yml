@@ -56,6 +56,23 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
 
+      # RUSTDOC WARNINGS ARE SILENT BY DEFAULT. `cargo doc` prints a broken intra-doc link and
+      # then exits 0, so nothing downstream of it can tell a clean tree from a broken one --
+      # and four such links shipped. Two were PUBLIC pages linking to `pub(crate)` items, which
+      # renders as prose promising an anchor the reader will never find; one was a bare
+      # `[1,2,3]` in a measurement table, which rustdoc reads as a link to an item named
+      # `1,2,3`. All four are the same defect as the rest of this file guards against: output
+      # nobody's exit code depends on.
+      #
+      # `-D warnings` goes through RUSTDOCFLAGS and NOT on the cargo command line. `cargo doc
+      # --no-deps -D warnings` is rejected by cargo before rustdoc ever runs ("error:
+      # unexpected argument '-D' found"), so spelling it that way would fail this job on every
+      # push for a reason that has nothing to do with the docs.
+      #
+      # Measured on the tree that added this step: exit 0 clean, exit 101 with a single broken
+      # link reintroduced. A gate that has not been shown to fail is not a gate.
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+
 
   # REVERT GUARD. Fails if a landed fix, its guard test, or the cross-architecture fingerprint
   # is reverted. The full suite already reds when a FIX is reverted (each fix has a
