@@ -8,11 +8,33 @@
 //! the `MAGIC_V1` arm from `wire::decode` left **154 tests passing and 0 failing**. A promise no
 //! test can falsify is not a guarantee, it is a comment.
 //!
-//! THE FIXTURES ARE NOT HAND-ROLLED. They are the `wire_vectors` example output of the actual
-//! `v0.3.0` tag, byte for byte. Fixtures written by hand against the CURRENT reading of the old
-//! format would only prove that this file agrees with itself -- the same trap the second-author
-//! decoder in `golden/decode_wire.py` exists to avoid. These bytes were produced by code that
-//! never knew v2 would exist.
+//! THE FIXTURES ARE NOT HAND-ROLLED. The first five are the `wire_vectors` example output of the
+//! actual `v0.3.0` tag, byte for byte -- diffed against a fresh `git archive v0.3.0` build in the
+//! session that added the sixth, and identical including the trailing newline, which is why this
+//! file is kept in the generator's exact one-object-per-line shape rather than reformatted.
+//! Fixtures written by hand against the CURRENT reading of the old format would only prove that
+//! this file agrees with itself -- the same trap the second-author decoder in
+//! `golden/decode_wire.py` exists to avoid. These bytes were produced by code that never knew v2
+//! would exist.
+//!
+//! THE SIXTH, `equivocation-proof-v1`, IS THE SAME TAG BUT A DIFFERENT GENERATOR, kept verbatim
+//! at `golden/gen_v1_equiv_vector.v030.rs.txt`. It exists because `wire_vectors` never makes a
+//! node equivocate, so all five of its vectors carry `proofs = 0` and the v1 branch of
+//! `EquivProof::leaf` -- the SECOND `matches!(sig_preimage, V2)` site in `entry.rs` -- was
+//! reached by no fixture in this file. MEASURED on the five-vector corpus, immediately before the
+//! sixth was added: forcing that second site to `true` left this suite entirely green, 5 passed 0
+//! failed, while forcing the FIRST site (the contribution leaf) reddened 3 of those 5. One of two
+//! textually identical guards was carrying the whole burden of proof, which is the shape of #81.
+//! With the sixth vector present the same second-site mutation reddens 2 of 6 --
+//! `the_v1_proof_leaf_alone_reproduces_its_v0_3_0_hash` and
+//! `v0_3_0_receipts_still_decode_and_report_v1_signature_semantics` -- and first-site reddens 4 of
+//! 6, two of those because the reordered contribution leaves make `decode` refuse the receipt
+//! outright rather than because any hash was compared.
+//!
+//! SCOPE OF THE "REACHED BY NOTHING" CLAIM: it is measured for THIS test binary. A crate-wide
+//! before/after was attempted and is NOT reported, because other files in the crate were being
+//! edited concurrently and one apparent catch turned out to be someone else's in-flight change to
+//! `acfa-verify.rs`, not the mutation -- re-run in isolation, that test passed under the mutant.
 //!
 //! HONEST LIMIT: this pins the FULL-receipt v1 path. The redacted v1 path (`ACFA-X1`) has its
 //! own decode arm and is NOT covered here -- see the `redacted_v1` note at the bottom.
@@ -22,6 +44,10 @@ use acfa_receipt::wire::{decode, MAGIC_V1, MAGIC_V2};
 use acfa_receipt::State;
 
 use serde_json::Value;
+
+/// The name of the one fixture that carries an equivocation proof. Named rather than "the last
+/// one" so that appending a seventh vector cannot silently move what these tests are aiming at.
+const EQUIV_FIXTURE: &str = "equivocation-proof-v1";
 
 fn unhex(s: &str) -> Vec<u8> {
     hex::decode(s).expect("hex")
@@ -53,7 +79,28 @@ fn agg_of(v: &Value) -> Option<Vec<i64>> {
 #[test]
 fn the_fixtures_really_are_v0_3_0_v1_receipts() {
     let vs = vectors();
-    assert_eq!(vs.len(), 5, "expected the five v0.3.0 wire vectors");
+    assert_eq!(vs.len(), 6, "expected the six v0.3.0 wire vectors");
+
+    // A GATE THAT MUST REFUSE AT ZERO. Every test below iterates the vector list, so a corpus
+    // that lost its only proof-carrying fixture would go on passing while covering strictly
+    // less -- the loops over `r.proofs` would simply run zero times. This is the assertion that
+    // notices, and it is why it lives in the same test as the magic check rather than beside
+    // the code it protects.
+    let with_proofs = vs
+        .iter()
+        .filter(|v| v["proofs"].as_u64().expect("proofs") > 0)
+        .count();
+    assert_eq!(
+        with_proofs, 1,
+        "expected exactly one fixture carrying an equivocation proof; got {with_proofs}. \
+         At zero, the v1 branch of `EquivProof::leaf` is reached by nothing in this file and \
+         its guard is unwitnessed -- which is the state this corpus was in before #106."
+    );
+    assert!(
+        vs.iter().any(|v| name(v) == EQUIV_FIXTURE),
+        "the proof-carrying fixture is no longer called {EQUIV_FIXTURE}"
+    );
+
     for v in &vs {
         let b = wire(v);
         assert_eq!(
@@ -77,6 +124,11 @@ fn v0_3_0_receipts_still_decode_and_report_v1_signature_semantics() {
             r.contributions.len() as u64,
             v["contribs"].as_u64().expect("contribs"),
             "{n}"
+        );
+        assert_eq!(
+            r.proofs.len() as u64,
+            v["proofs"].as_u64().expect("proofs"),
+            "{n}: the number of equivocation proofs decoded off the wire moved"
         );
         // RECOMPUTED FROM THE ENTRIES, NOT READ BACK OFF THE WIRE.
         //
@@ -126,6 +178,20 @@ fn v0_3_0_receipts_still_decode_and_report_v1_signature_semantics() {
             );
             assert_eq!(c.ctx, NO_CONTEXT, "{n}");
         }
+        // The proof half of the same claim. `wire::decode` stamps `sig_preimage` onto proofs
+        // from the same magic-derived variable it uses for contributions, so this looks like a
+        // duplicate of the loop above -- it is not, because the two are read by DIFFERENT
+        // dispatch sites (`Contribution::leaf` / `EquivProof::leaf`, `signature_valid` /
+        // `valid`) and only the contribution ones had a fixture reaching them.
+        for p in &r.proofs {
+            assert_eq!(
+                p.sig_preimage,
+                PreimageVersion::V1,
+                "{n} proof not marked v1 -- its leaf would be hashed the v2 way and its two \
+                 signatures checked under the v2 preimage, un-convicting a node on real evidence"
+            );
+            assert_eq!(p.ctx, NO_CONTEXT, "{n} proof carries a context");
+        }
     }
 }
 
@@ -133,6 +199,7 @@ fn v0_3_0_receipts_still_decode_and_report_v1_signature_semantics() {
 #[test]
 fn v0_3_0_signatures_still_verify_under_the_v1_preimage() {
     let mut checked = 0;
+    let mut proofs_checked = 0;
     for v in vectors() {
         let n = name(&v).to_string();
         let r = decode(&wire(&v)).expect("decode");
@@ -143,10 +210,66 @@ fn v0_3_0_signatures_still_verify_under_the_v1_preimage() {
             );
             checked += 1;
         }
+        // CONVICTION PERMANENCE, not merely signature permanence. `EquivProof::valid` has its
+        // own V1/V2 preimage dispatch, separate from `Contribution::signature_valid`, and the
+        // comment on that dispatch records it once being absent -- a v0.3.0 receipt carrying a
+        // genuine conviction decoded, reproduced its root, and then failed to validate, which
+        // silently un-convicts a node on evidence it published. No fixture reached that arm
+        // until this one existed.
+        for p in &r.proofs {
+            assert!(
+                p.valid(&r.pki),
+                "{n}: an equivocation proof written by v0.3.0 no longer validates -- a node \
+                 this receipt convicted has been silently un-convicted"
+            );
+            proofs_checked += 1;
+        }
     }
-    assert!(
-        checked >= 11,
-        "only {checked} v1 signatures exercised; expected all 11"
+    assert_eq!(
+        checked, 17,
+        "expected all 17 v1 contribution signatures to be exercised, got {checked}"
+    );
+    assert_eq!(
+        proofs_checked, 1,
+        "expected the one v1 equivocation proof to be exercised, got {proofs_checked}; at zero \
+         this test says nothing about `EquivProof::valid`'s v1 arm"
+    );
+}
+
+/// THE WITNESS FOR THE SECOND `matches!(sig_preimage, V2)` SITE, in isolation (#106).
+///
+/// `v0_3_0_receipts_still_decode_and_report_v1_signature_semantics` already reddens if the proof
+/// leaf moves, because it re-roots the whole rebuilt state. But that root mixes six contribution
+/// leaves with one proof leaf, so it cannot say WHICH derivation moved, and its failure message
+/// points at the contribution path that has always been covered. This test roots a state holding
+/// the proof and NOTHING ELSE, so the only input to the number below is `EquivProof::leaf`.
+///
+/// PROVENANCE OF THE PINNED ROOT. It is not an independent v0.3.0 publication -- v0.3.0 published
+/// the root of the FULL state, which is asserted separately. It is the single-proof root measured
+/// from this tree, and it is only trustworthy because the full-state root it participates in
+/// matches the value the v0.3.0 build wrote into the receipt: a wrong proof leaf here would have
+/// to be compensated by an equal and opposite error in the contribution leaves or in
+/// `merkle_root` to leave that full root intact.
+#[test]
+fn the_v1_proof_leaf_alone_reproduces_its_v0_3_0_hash() {
+    let v = vectors()
+        .into_iter()
+        .find(|x| name(x) == EQUIV_FIXTURE)
+        .expect("the proof-carrying fixture");
+    let r = decode(&wire(&v)).expect("decode");
+    assert_eq!(
+        r.proofs.len(),
+        1,
+        "this test is written for exactly one proof; with zero it would pass vacuously"
+    );
+
+    let mut only_proof = State::new();
+    only_proof.add_proof(r.proofs[0].clone());
+    assert_eq!(
+        hexs(&only_proof.root()),
+        "13bec5eceeeaa8725be6079694be3ec266e7beafcabce8e5b7ca97def9f5ac8a",
+        "the v1 equivocation proof's leaf has moved -- `EquivProof::leaf` is folding the \
+         context and round params into an entry that was signed before either existed"
     );
 }
 

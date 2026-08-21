@@ -24,7 +24,13 @@ released tree.
 
 ---
 
-## v0.4.0 — 2026-08-20
+## v0.4.0 — UNRELEASED
+
+> **There is no `v0.4.0` tag.** This section describes work on `main` that has NOT been released.
+> Releases are signed annotated tags (see the README); until that tag exists, a build of this tree
+> is not a released artefact and the fingerprint below identifies `main`, not a release. This
+> section becomes dated at tag time. Tracked as
+> [#100](https://github.com/mgillr/acfa-rs/issues/100).
 
 The context release. It closes #79 — a cross-context forgery that let two *honest*
 contributions be assembled into a valid-looking equivocation proof against their author — and it

@@ -423,6 +423,13 @@ silently change the aggregate"
                     "node {node_id}'s round parameters disagree with the receipt header \
                      (encode-side error)"
                 ),
+                // Encode-side only for a sharper reason than the two above: `decode` reads the
+                // preimage version OUT of the magic and stamps every entry with it, so a decoded
+                // receipt cannot disagree with itself about this field.
+                WireError::PreimageDisagreesWithMagic { node_id } => format!(
+                    "node {node_id}'s entry is marked v1 but the receipt is written v2 \
+                     (encode-side error)"
+                ),
             };
             eprintln!("acfa-verify: UNPARSEABLE -- {why}");
             return ExitCode::from(2);

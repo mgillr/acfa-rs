@@ -125,10 +125,15 @@ the Python adapter, so `Cargo.toml` identifies the release; before v0.3.0 it did
 
 | Version | Date | What it is |
 |---|---|---|
-| v0.4.0 | 2026-08-20 | Closes the cross-context forgery (#79): the signed preimage now binds the context and node id (`ACFA-R1` → `ACFA-R2`). First release in which the fingerprint moves; v1 receipts still decode and verify |
+| v0.4.0 | **unreleased** | Closes the cross-context forgery (#79): the signed preimage now binds the context and node id (`ACFA-R1` → `ACFA-R2`). First release in which the fingerprint moves; v1 receipts still decode and verify |
 | v0.3.0 | 2026-08-20 | Ships the paper's Lemma 12 no-flip certificate; redacted receipts (zero-plaintext audit artefact); a caller-supplied verifier work budget; round retirement to conviction witnesses |
 | v0.2.0 | 2026-08-19 | First production-signed release; full audit closed; adapter published to PyPI |
 | v0.1.0 | 2026-08-17 | First public tag |
+
+**`v0.4.0` IS NOT RELEASED.** The crate manifests declare `0.4.0` and the section above describes
+it, but no `v0.4.0` tag exists on the remote — `git ls-remote --tags` returns `v0.1.0`, `v0.2.0`,
+`v0.3.0`. A build of current `main` is therefore **not a released artefact** and cannot be verified
+as one by the process described above. Tracked as [#100](https://github.com/mgillr/acfa-rs/issues/100).
 
 **To identify a build, check the fingerprint, not the version string.**
 
