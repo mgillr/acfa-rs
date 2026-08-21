@@ -380,7 +380,7 @@ fn main() -> ExitCode {
                 // The library kept the compatibility promise and the binary broke it, which is
                 // the worse of the two: an operator reads UNPARSEABLE and concludes the archive
                 // is corrupt. The constant's own doc comment says reading accepts V1 forever.
-                Ok(()) if READABLE_MAGICS.iter().any(|m| &head == *m) => {}
+                Ok(()) if READABLE_MAGICS.contains(&&head) => {}
                 // Too short to carry a magic, or the magic is wrong. Either way this is not
                 // a receipt and there is nothing to gain by reading the remainder.
                 _ => {

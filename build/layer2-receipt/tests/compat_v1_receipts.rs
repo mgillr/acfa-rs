@@ -206,7 +206,11 @@ fn a_v1_receipt_reads_identically_from_a_file_and_from_stdin() {
         .find(|x| name(x) == "three-contribs")
         .expect("vector");
     let bytes = wire(&v);
-    assert_eq!(&bytes[..8], &MAGIC_V1[..], "this fixture must be a v1 receipt");
+    assert_eq!(
+        &bytes[..8],
+        &MAGIC_V1[..],
+        "this fixture must be a v1 receipt"
+    );
 
     let dir = std::env::temp_dir().join(format!("acfa-v1-cli-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
