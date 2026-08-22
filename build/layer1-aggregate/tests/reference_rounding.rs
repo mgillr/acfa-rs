@@ -103,7 +103,29 @@ except ModuleNotFoundError as e:
                  "cryptography.exceptions"):
         stubs[name] = types.ModuleType(name)
     ed = stubs["cryptography.hazmat.primitives.asymmetric.ed25519"]
-    ed.Ed25519PrivateKey = ed.Ed25519PublicKey = object
+    # NOT `object`. acfa.py's `Node` declares
+    #     sk: Ed25519PrivateKey = field(default_factory=Ed25519PrivateKey.generate)
+    # and a dataclass field default_factory is resolved when the CLASS BODY runs, i.e.
+    # at import. `object.generate` does not exist, so a bare `object` stub imports the
+    # names and then dies with AttributeError three lines later -- which is exactly how
+    # this failed on windows-latest. The stub must therefore satisfy every module-level
+    # USE of these names, not merely their import. It stays non-functional on purpose:
+    # calling it raises, so a test that reaches real signing fails loudly instead of
+    # silently comparing against a fake key.
+    class _Stub:
+        @staticmethod
+        def generate():
+            raise RuntimeError(
+                "cryptography is stubbed for fp_encode; this test must not sign")
+        @staticmethod
+        def from_private_bytes(_b):
+            raise RuntimeError(
+                "cryptography is stubbed for fp_encode; this test must not sign")
+        @staticmethod
+        def from_public_bytes(_b):
+            raise RuntimeError(
+                "cryptography is stubbed for fp_encode; this test must not verify")
+    ed.Ed25519PrivateKey = ed.Ed25519PublicKey = _Stub
     stubs["cryptography.exceptions"].InvalidSignature = type(
         "InvalidSignature", (Exception,), {})
     sys.modules.update(stubs)

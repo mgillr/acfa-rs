@@ -363,6 +363,15 @@ jobs:
             -v "$PWD":/w -w /w ${{ matrix.image }} bash -c '
               set -e
               echo "arch: $(uname -m)"
+              # reference_rounding.rs shells out to the vendored reference/acfa.py and FAILS
+              # CLOSED when it cannot -- which is the correct rule and is why these four legs
+              # were red. The rust:*-slim images carry no python3. Under QEMU the absence does
+              # not even surface as a spawn error: the exec fails inside the emulated child, so
+              # the parent sees "exited 127" with EMPTY stderr rather than NotFound. Install it
+              # so the comparison is actually performed on every architecture, which is the
+              # entire point of this job.
+              apt-get update -qq && apt-get install -y -qq --no-install-recommends python3
+              python3 -c "import sys; print(\"python3:\", sys.version.split()[0])"
               cd build/layer1-aggregate && cargo test --release
               cd ../layer2-receipt && cargo test --release
               cargo run --release --example digest > /w/fp-raw.txt
