@@ -3,7 +3,6 @@
 Deterministic Byzantine-robust aggregation for federated learning and distributed systems,
 with verifiable receipts.
 
-[![ci](https://github.com/mgillr/acfa-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/mgillr/acfa-rs/actions/workflows/ci.yml)
 [![arXiv](https://img.shields.io/badge/arXiv-2607.10305-b31b1b.svg)](https://arxiv.org/abs/2607.10305)
 
 Aggregate vectors from mutually distrusting parties. Get the same bytes on every machine,
